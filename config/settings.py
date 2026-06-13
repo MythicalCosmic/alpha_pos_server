@@ -26,6 +26,8 @@ ASGI_APPLICATION = 'config.asgi.application'
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {'hosts': [REDIS_URL]},  # noqa: F405
+        # capacity per channel: the default 100 silently DROPS messages under a
+        # burst (load test: 100 -> 50% delivered; 5000 -> 100% at ~68k msg/s fanout).
+        'CONFIG': {'hosts': [REDIS_URL], 'capacity': 5000},  # noqa: F405
     },
 }
