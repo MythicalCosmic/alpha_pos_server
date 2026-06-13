@@ -1,0 +1,75 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-alpha_pos}
+      POSTGRES_USER: ${DB_USER:-alpha_pos}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-alpha_pos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      args:
+        # Stamped into the image -> reported by /healthz. The deploy scripts
+        # export GIT_SHA before `up --build`; defaults to "unknown" otherwise.
+        GIT_SHA: ${GIT_SHA:-unknown}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      # The security-critical trio is set HERE (environment overrides env_file)
+      # so a production bring-up can't silently inherit a stale DEBUG=True or a
+      # placeholder SECRET_KEY from a developer .env:
+      #   - DEBUG defaults to False; a developer opts in via DEBUG=True in .env.
+      #   - SECRET_KEY is fail-loud — compose refuses to start without it.
+      #   - ALLOWED_HOSTS defaults to localhost; set it for any real hostname.
+      DEBUG: ${DEBUG:-False}
+      # Single-quoted: the ':' in the error message would otherwise make YAML
+      # read it as a nested mapping. Compose still interpolates ${...} after.
+      SECRET_KEY: '${SECRET_KEY:?SECRET_KEY must be set in .env (generate: python -c "import secrets; print(secrets.token_urlsafe(64))")}'
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DB_ENGINE: ${DB_ENGINE:-django.db.backends.postgresql}
+      DB_NAME: ${DB_NAME:-alpha_pos}
+      DB_USER: ${DB_USER:-alpha_pos}
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      USE_REDIS: ${USE_REDIS:-True}
+      # Pin MEDIA_ROOT to the persisted volume below so HR documents
+      # (ID scans, contracts, medical books) survive container rebuilds.
+      MEDIA_ROOT: /app/private_media
+    volumes:
+      # Without this, HR uploads land in the container's writable layer and
+      # are silently lost on every `docker compose up --build` / redeploy.
+      - media_data:/app/private_media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

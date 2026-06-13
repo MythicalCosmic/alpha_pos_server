@@ -1,0 +1,40 @@
+# Continuous-deploy overlay for the SERVER.
+#
+# Layer it on top of the base + edge compose files so `web` runs the image that
+# CI publishes to GHCR (instead of building on the server), and Watchtower
+# auto-pulls new images and recreates the container. Migrations run from the
+# container entrypoint on every (re)start, so a redeploy self-migrates.
+#
+# Bring up (note: NO --build — the server pulls the published image):
+#   docker compose -f docker-compose.yaml \
+#                  -f docker-compose.edge.yml \
+#                  -f deploy/docker-compose.cd.yml up -d
+#
+# See deploy/DEPLOY.md ("Continuous deployment") for the one-time setup.
+services:
+  web:
+    # Run the published image rather than a local build. Override the tag via
+    # WEB_IMAGE in .env to pin or roll back, e.g.:
+    #   WEB_IMAGE=ghcr.io/mythicalcosmic/alpha_pos:sha-<commit>
+    image: ${WEB_IMAGE:-ghcr.io/mythicalcosmic/alpha_pos:latest}
+    pull_policy: always
+    labels:
+      # Watchtower only updates containers carrying this label (it runs with
+      # WATCHTOWER_LABEL_ENABLE so db/redis/caddy are left alone).
+      com.centurylinklabs.watchtower.enable: "true"
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Lets Watchtower pull a PRIVATE GHCR image. Create this once on the
+      # server (see DEPLOY.md): docker login ghcr.io -u <user> --password-stdin
+      # If you make the GHCR package PUBLIC instead, this mount is optional.
+      - ${HOME}/.docker/config.json:/config.json:ro
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"   # only touch labelled containers
+      WATCHTOWER_CLEANUP: "true"        # delete old images after updating
+      WATCHTOWER_ROLLING_RESTART: "true"
+      # How often to poll the registry (seconds). 300 = every 5 min.
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-300}

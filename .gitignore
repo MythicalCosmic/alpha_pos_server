@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Django / runtime
+*.log
+db.sqlite3
+/staticfiles/
+/media/
+
+# Secrets / deploy-generated (NEVER commit)
+.env
+*.pem
+deploy/caddy/Caddyfile
+docker-compose.edge.yml
+
+# Tests / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

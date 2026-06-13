@@ -1,0 +1,25 @@
+Django==6.0.3
+asgiref==3.11.1
+sqlparse==0.5.5
+# IANA timezone database. The python:slim base image ships no system tzdata,
+# and Django only pulls the tzdata wheel transitively on Windows — so without
+# this the Linux container raises ZoneInfoNotFoundError (HTTP 500) the first
+# time a view touches TIME_ZONE='Asia/Tashkent' (attendance/analytics/shifts).
+tzdata==2025.2
+redis==7.3.0
+django-redis==6.0.0
+requests==2.32.5
+# Fernet encryption of the license key at rest + HMAC verification of
+# heartbeat responses (licensing/services/crypto.py, heartbeat.py). Pinned
+# explicitly — nothing else pulls it in transitively.
+cryptography==48.0.0
+psycopg2-binary==2.9.10
+gunicorn==23.0.0
+django-cors-headers==4.9.0
+# Serves collected static files (admin assets) from gunicorn in production;
+# without it DEBUG=False + no nginx 404s every /static/ request.
+whitenoise==6.8.2
+# AI providers — the stock assistant + demand forecaster call whichever the
+# operator picks (AI_PROVIDER) via base/services/llm.py.
+anthropic==0.74.0
+google-genai==2.7.0

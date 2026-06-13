@@ -1,0 +1,19 @@
+# Oneshot unit that runs the self-redeploy poll once. Driven by the matching
+# .timer. Install: see deploy/DEPLOY.md ("Self-redeploy without CI").
+#
+# Adjust User= and the ALPHA_DIR/ExecStart path below to your repo location
+# (default: /var/www/alpha_pos). Verify with: ls -d <path>/.git
+[Unit]
+Description=Alpha POS self-redeploy (git pull + docker compose up --build)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=DEPLOY_BRANCH=main
+Environment=ALPHA_DIR=/var/www/alpha_pos
+ExecStart=/var/www/alpha_pos/deploy/auto_redeploy.sh
+# Don't let a single failed deploy mark the unit broken forever; the next timer
+# tick retries.
+SuccessExitStatus=0 1

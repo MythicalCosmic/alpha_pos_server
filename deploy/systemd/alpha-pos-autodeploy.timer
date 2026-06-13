@@ -1,0 +1,13 @@
+# Fires the self-redeploy check every 3 minutes (and ~1 min after boot).
+# Install: see deploy/DEPLOY.md ("Self-redeploy without CI").
+[Unit]
+Description=Run Alpha POS self-redeploy on a schedule
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=3min
+# Catch up after downtime instead of waiting a full interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
