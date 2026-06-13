@@ -1,0 +1,3 @@
+[submodule "alpha_pos_core"]
+	path = alpha_pos_core
+	url = https://github.com/MythicalCosmic/alpha_pos_core.git

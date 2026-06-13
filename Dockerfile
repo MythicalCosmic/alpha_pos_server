@@ -13,13 +13,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 1) Shared spine from the vendored wheel (pulls Django / channels / psycopg v3 /
-#    redis / ... via its own pinned deps), then the server-edition extras. Kept
-#    before `COPY . .` so this dependency layer caches across app-only rebuilds.
-#    (When alpha_pos_core is published to PyPI this becomes a line in requirements.txt.)
-COPY vendor/ /wheels/
+# 1) Shared spine from the `alpha_pos_core` git submodule. The deploy script clones
+#    the repo with `--recurse-submodules`, so the core source is present in the build
+#    context here. Installed before `COPY . .` so this dependency layer caches across
+#    app-only rebuilds. (pip install pulls Django / channels / psycopg v3 / redis /...
+#    from core's own pinned deps.)
+COPY alpha_pos_core/ ./alpha_pos_core/
 COPY requirements.txt .
-RUN pip install /wheels/alpha_pos_core-*.whl -r requirements.txt
+RUN pip install ./alpha_pos_core -r requirements.txt
 
 # 2) Server edition app code (config/, admins/, deploy/, manage.py, ...).
 COPY . .
