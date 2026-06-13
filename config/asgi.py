@@ -1,17 +1,20 @@
-"""ASGI entrypoint — server edition.
-
-Phase 0: a plain Django ASGI app (served by uvicorn workers in place of
-gunicorn-WSGI). The websocket phase wraps this in a channels ProtocolTypeRouter:
-
-    application = ProtocolTypeRouter({
-        'http': django_asgi_app,
-        'websocket': AuthMiddlewareStack(URLRouter(core.realtime.routing.websocket_urlpatterns)),
-    })
-"""
+"""ASGI entrypoint — server edition. Serves HTTP (Django) + websockets (channels)
+through a single ProtocolTypeRouter. Run with uvicorn workers in production."""
 import os
-
-from django.core.asgi import get_asgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
-application = get_asgi_application()
+from django.core.asgi import get_asgi_application
+
+# Initialise Django (populate the app registry) BEFORE importing consumers.
+django_asgi_app = get_asgi_application()
+
+from channels.auth import AuthMiddlewareStack
+from channels.routing import ProtocolTypeRouter, URLRouter
+
+from core.realtime.routing import websocket_urlpatterns
+
+application = ProtocolTypeRouter({
+    'http': django_asgi_app,
+    'websocket': AuthMiddlewareStack(URLRouter(websocket_urlpatterns)),
+})
