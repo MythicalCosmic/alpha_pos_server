@@ -4,8 +4,8 @@ set -eu
 DB_HOST="${DB_HOST:-db}"
 DB_PORT="${DB_PORT:-5432}"
 
-# Wait up to ~60s for the DB to accept connections. Bail out instead of
-# spinning forever so a misconfiguration surfaces in container logs.
+# Wait up to ~60s for the DB to accept connections. Bail out instead of spinning
+# forever so a misconfiguration surfaces in container logs.
 echo "Waiting for ${DB_HOST}:${DB_PORT}..."
 i=0
 until python -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('${DB_HOST}', ${DB_PORT})) == 0 else 1)" 2>/dev/null; do
@@ -21,21 +21,19 @@ echo "DB reachable."
 echo "Running migrations..."
 python manage.py migrate --noinput
 
-# License heartbeat runs as a sibling process — NOT inside gunicorn.
-# Spawning it from AppConfig.ready() would create one heartbeat thread
-# per worker (3 by default), tripling control-center load and skewing
-# last_heartbeat_at attribution. Running it separately keeps a single
-# loop, makes it observable in `docker logs`, and lets `docker stop`
-# kill it cleanly via SIGTERM. Skipped when LICENSE_HEARTBEAT_DISABLED
-# is set, for local development against a stub control center.
+# License heartbeat runs as a sibling process (a single loop, observable in
+# `docker logs`, killed cleanly by SIGTERM) — NOT one-per-worker inside the
+# server. Skipped when LICENSE_HEARTBEAT_DISABLED is set.
 if [ -z "${LICENSE_HEARTBEAT_DISABLED:-}" ]; then
     python manage.py heartbeat_daemon &
 fi
 
-echo "Starting gunicorn..."
-exec gunicorn alpha_pos.wsgi:application \
-    --bind 0.0.0.0:8000 \
-    --workers "${GUNICORN_WORKERS:-3}" \
-    --timeout "${GUNICORN_TIMEOUT:-120}" \
-    --access-logfile - \
-    --error-logfile -
+# ASGI server: serves HTTP *and* websockets (channels) on one port. Multiple
+# workers share websocket groups via the Redis channel layer (channels-redis).
+# --lifespan off: channels' ProtocolTypeRouter has no lifespan handler.
+echo "Starting uvicorn (ASGI: HTTP + websockets)..."
+exec uvicorn config.asgi:application \
+    --host 0.0.0.0 --port 8000 \
+    --workers "${WEB_CONCURRENCY:-3}" \
+    --lifespan off \
+    --log-level info
