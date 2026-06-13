@@ -10,6 +10,7 @@ from django.http import HttpResponse
 from django.urls import path, include
 
 from base.services.sync.views import get_sync_urls
+from notifications.views import customer_bot_views
 
 
 def healthz(_request):
@@ -29,4 +30,7 @@ urlpatterns = [
     path('api/sync/', include(get_sync_urls())),
     path('api/licensing/', include('licensing.urls')),
     path('api/fiscalization/', include('fiscalization.urls')),
+    # Customer-facing Telegram bot (separate token) — greet + open the web app.
+    path('api/customer-bot/webhook/', customer_bot_views.customer_webhook,
+         name='customer-bot-webhook'),
 ]
