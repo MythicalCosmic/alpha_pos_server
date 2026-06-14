@@ -47,6 +47,8 @@ if ! git merge --ff-only "origin/$BRANCH"; then
     exit 1
 fi
 
+git submodule update --init --recursive
+
 COMPOSE="docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
 # Stamp the build with the commit we just checked out so /healthz reports it.
 export GIT_SHA="$(git rev-parse --short=12 HEAD)"

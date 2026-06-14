@@ -39,6 +39,19 @@ rand()   { head -c "${1:-48}" /dev/urandom | base64 | tr -d '\n' | tr '+/' '-_' 
 fernet() { head -c 32 /dev/urandom | base64 | tr '+/' '-_'; }  # 32-byte urlsafe b64 = Fernet key
 keep()   { local f="$1" k="$2"; [ -f "$f" ] && sed -n "s/^${k}=//p" "$f" | head -n1 || true; }
 
+# --- 0. core submodule ------------------------------------------------------
+# The shared spine (alpha_pos_core) is a git submodule the Dockerfile installs via
+# `pip install ./alpha_pos_core`. A clone done without --recurse-submodules leaves
+# that dir empty and the image build fails. Pull it defensively so the deploy works
+# regardless of how the repo was cloned.
+if [ -f "$ALPHA_DIR/.gitmodules" ]; then
+    git -C "$ALPHA_DIR" submodule update --init --recursive
+fi
+[ -f "$ALPHA_DIR/alpha_pos_core/pyproject.toml" ] || {
+    echo "!! core submodule missing at $ALPHA_DIR/alpha_pos_core"
+    echo "   run: git -C $ALPHA_DIR submodule update --init --recursive"; exit 1; }
+echo ">> core submodule present"
+
 # --- 1. shared edge network ------------------------------------------------
 docker network inspect edge >/dev/null 2>&1 || docker network create edge
 echo ">> edge network ready"

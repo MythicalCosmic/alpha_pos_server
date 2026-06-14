@@ -416,6 +416,10 @@ class AdminOrderService:
                 ready_at=now if instant else None,
             ))
         OrderItem.objects.bulk_create(new_items)
+        # bulk_create bypasses SyncMixin.save(), so synced_at stays NULL and the
+        # /changes feed (synced_at__gt) never ships these lines to branches (orders
+        # arrive as empty shells). Stamp them so cloud-created items actually sync.
+        OrderItem.objects.filter(order=order, synced_at__isnull=True).update(synced_at=now)
 
         # An order made up entirely of instant items has nothing to cook —
         # it's ready the moment it's placed.

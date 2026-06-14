@@ -20,14 +20,16 @@ nip.io resolves that name to the IP automatically — nothing to register.
 ## Steps (run on the SERVER)
 
 ```bash
-# 1. Get both repos side by side
-#    (alpha_pos deploy bundle + prelaunch fixes live on the prelaunch-fixes branch)
+# 1. Get both repos side by side. The server repo carries the shared spine
+#    (alpha_pos_core) as a git SUBMODULE, so clone it RECURSIVELY — without
+#    --recurse-submodules the alpha_pos_core/ dir is empty and the image build
+#    fails. (deploy.sh also runs `git submodule update --init` defensively.)
 cd ~
-git clone -b prelaunch-fixes https://github.com/MythicalCosmic/alpha_pos.git
+git clone --recurse-submodules https://github.com/MythicalCosmic/alpha_pos_server.git
 git clone https://github.com/MythicalCosmic/pos_control.git
 
 # 2. Deploy (replace with your real public IP)
-cd ~/alpha_pos/deploy
+cd ~/alpha_pos_server/deploy
 chmod +x deploy.sh
 ./deploy.sh 203.0.113.10
 ```
@@ -43,7 +45,7 @@ curl -fsSI https://control.<IP>.nip.io/ | head -1
 ```
 
 > First HTTPS hit can take ~30s while Caddy obtains certificates. If it fails,
-> check `docker compose logs caddy` in `~/alpha_pos/deploy/caddy` — the usual
+> check `docker compose logs caddy` in `~/alpha_pos_server/deploy/caddy` — the usual
 > cause is port 80/443 not reachable from the internet.
 
 ## Point a desktop POS at these servers
@@ -59,16 +61,16 @@ control center), and run a sale to test sync.
 
 ## Updating after a code change
 ```bash
-cd ~/alpha_pos   && git pull && docker compose -f docker-compose.yaml -f docker-compose.edge.yml up -d --build
+cd ~/alpha_pos_server   && git pull && docker compose -f docker-compose.yaml -f docker-compose.edge.yml up -d --build
 cd ~/pos_control && git pull && docker compose -f docker-compose.yaml -f docker-compose.edge.yml up -d --build
 ```
 
 ## Useful
 ```bash
 # logs
-cd ~/alpha_pos && docker compose -f docker-compose.yaml -f docker-compose.edge.yml logs -f web
+cd ~/alpha_pos_server && docker compose -f docker-compose.yaml -f docker-compose.edge.yml logs -f web
 # restart everything
-cd ~/alpha_pos/deploy && ./deploy.sh <IP>
+cd ~/alpha_pos_server/deploy && ./deploy.sh <IP>
 ```
 
 Secrets live only in the generated `.env` files (gitignored). Re-running
@@ -98,10 +100,10 @@ server pull it automatically.
 echo <PAT_WITH_read:packages> | docker login ghcr.io -u <github-user> --password-stdin
 
 # b) Pin the image in the alpha_pos .env (owner/repo lowercased):
-echo 'WEB_IMAGE=ghcr.io/mythicalcosmic/alpha_pos:latest' >> ~/alpha_pos/.env
+echo 'WEB_IMAGE=ghcr.io/mythicalcosmic/alpha_pos_server:latest' >> ~/alpha_pos_server/.env
 
 # c) Bring the stack up with the CD overlay (NOTE: no --build — pull the image):
-cd ~/alpha_pos && docker compose \
+cd ~/alpha_pos_server && docker compose \
   -f docker-compose.yaml -f docker-compose.edge.yml -f deploy/docker-compose.cd.yml up -d
 ```
 
@@ -110,7 +112,7 @@ run on the server.
 
 **Force an immediate update** (don't wait for the poll):
 ```bash
-cd ~/alpha_pos && docker compose \
+cd ~/alpha_pos_server && docker compose \
   -f docker-compose.yaml -f docker-compose.edge.yml -f deploy/docker-compose.cd.yml \
   pull web && docker compose \
   -f docker-compose.yaml -f docker-compose.edge.yml -f deploy/docker-compose.cd.yml up -d web
@@ -119,8 +121,8 @@ cd ~/alpha_pos && docker compose \
 **Roll back** to a known-good build:
 ```bash
 # set the pinned SHA tag, then up -d
-sed -i 's#^WEB_IMAGE=.*#WEB_IMAGE=ghcr.io/mythicalcosmic/alpha_pos:sha-<commit>#' ~/alpha_pos/.env
-cd ~/alpha_pos && docker compose \
+sed -i 's#^WEB_IMAGE=.*#WEB_IMAGE=ghcr.io/mythicalcosmic/alpha_pos_server:sha-<commit>#' ~/alpha_pos_server/.env
+cd ~/alpha_pos_server && docker compose \
   -f docker-compose.yaml -f docker-compose.edge.yml -f deploy/docker-compose.cd.yml up -d web
 ```
 
@@ -139,7 +141,7 @@ itself — no Actions, no GHCR, no Watchtower.
 
 **Install (once, on the server):**
 ```bash
-cd ~/alpha_pos && git checkout main && git pull
+cd ~/alpha_pos_server && git checkout main && git pull
 chmod +x deploy/auto_redeploy.sh
 
 # Edit the unit if you don't deploy as root from /root/alpha_pos:

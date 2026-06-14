@@ -2,8 +2,9 @@
 #
 # The shared spine (Django, channels, psycopg v3, redis, django-redis, requests,
 # cryptography, whitenoise, corsheaders, anthropic, google-genai, tzdata, ...) is
-# installed from the vendored alpha_pos_core wheel in the Dockerfile. This file is
-# ONLY the server-edition extras layered on top. When alpha_pos_core is published
-# to PyPI, add `alpha_pos_core==<ver>` here and drop the vendored wheel.
+# installed from the alpha_pos_core git SUBMODULE in the Dockerfile
+# (`pip install ./alpha_pos_core`). This file is ONLY the server-edition extras
+# layered on top. The first checkout MUST be `git clone --recurse-submodules`
+# (deploy.sh also runs `git submodule update --init` defensively).
 channels-redis==4.3.0        # Redis channel layer: websocket group fan-out across uvicorn workers
 uvicorn[standard]==0.49.0    # ASGI server (replaces gunicorn / WSGI)
