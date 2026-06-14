@@ -73,8 +73,15 @@ services:
 
   bot:
     # Customer Telegram bot poller (getUpdates). Reuses the web image (built
-    # once, above). SINGLE instance only — Telegram forbids two getUpdates
-    # pollers. The HTTP API + websockets stay on `web`; this only drives Telegram.
+    # SINGLE instance only — Telegram forbids two getUpdates pollers. The HTTP API
+    # + websockets stay on `web`; this only drives Telegram.
+    # Same build as `web` so Compose BUILDS this image instead of trying to PULL the
+    # local-only tag from a registry (which fails with "pull access denied"). The
+    # shared image: tag means it's the same image as web (built once / cache hit).
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: alpha_pos_server:local
     command: python manage.py run_customer_bot
     # on-failure (not unless-stopped): if CUSTOMER_BOT_TOKEN is unset the command
