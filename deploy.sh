@@ -121,6 +121,18 @@ SHA="$(git -C "$DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 
 # --- 7. license + admin (idempotent) --------------------------------------
 DC="cd \"$DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py"
+# Wait for the web container's entrypoint to FINISH migrations before provisioning.
+# `up -d` returns when the container starts, not when migrate completes; uvicorn
+# only starts after migrate, so a passing /healthz means the schema is ready.
+# Without this, activate_offline raced a half-migrated DB -> "relation
+# licensing_license does not exist".
+echo ">> waiting for web (migrations + uvicorn) ..."
+for _i in $(seq 1 90); do
+    ( cd "$DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 ) \
+        && { echo ">> web ready"; break; }
+    sleep 2
+done
+eval "$DC migrate --noinput" || true   # idempotent safety-net in case the wait timed out
 eval "$DC activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
 eval "$DC bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'" || true
 

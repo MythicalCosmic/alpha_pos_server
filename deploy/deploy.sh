@@ -225,7 +225,16 @@ echo ">> starting/reloading caddy ..."
 
 # --- 6. provision (idempotent, auto) --------------------------------------
 A="cd \"$ALPHA_DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
+# Wait for migrations to finish (uvicorn starts only after migrate) so provisioning
+# doesn't race a half-migrated DB ("relation licensing_license does not exist").
+echo ">> waiting for alpha_pos web (migrations + uvicorn) ..."
+for _i in $(seq 1 90); do
+    ( cd "$ALPHA_DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 ) \
+        && { echo ">> alpha_pos web ready"; break; }
+    sleep 2
+done
 echo ">> provisioning alpha_pos: license + admins ..."
+eval "$A exec -T web python manage.py migrate --noinput" || true
 eval "$A exec -T web python manage.py activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
 eval "$A exec -T web python manage.py bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'" || true
 # Django admin users: superuser + normal user, both password root1234.
