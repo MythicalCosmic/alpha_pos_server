@@ -124,9 +124,24 @@ DC="cd \"$DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.
 eval "$DC activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
 eval "$DC bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'" || true
 
+# Django admin users (idempotent): a superuser for /admin/ + a normal user, both
+# with password root1234 (default auth.User model). Piped to manage.py shell.
+( cd "$DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py shell ) <<'PYEOF' || true
+from django.contrib.auth import get_user_model
+U = get_user_model()
+a, _ = U.objects.get_or_create(username='admin', defaults={'email': 'admin@local'})
+a.is_staff = a.is_superuser = a.is_active = True
+a.set_password('root1234'); a.save()
+n, _ = U.objects.get_or_create(username='user', defaults={'email': 'user@local'})
+n.is_active = True
+n.set_password('root1234'); n.save()
+print('Django admin users ready: admin (superuser) + user, password root1234')
+PYEOF
+
 echo ""
 echo "============================================================"
 echo "  Alpha POS server is up:  https://${HOST}"
-echo "  Admin: admin@alpha.local / CHANGE-ME-strong  (CHANGE IT)"
+echo "  POS API admin: admin@alpha.local / CHANGE-ME-strong  (CHANGE IT)"
+echo "  Django /admin/: admin / root1234 (superuser)  +  user / root1234"
 echo "  Desktop tills use this as CLOUD_SYNC_TOKEN:  ${BTOK}"
 echo "============================================================"

@@ -223,17 +223,48 @@ echo ">> starting/reloading caddy ..."
     && ( docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
          || docker compose restart caddy ) )
 
-# --- 6. next steps ---------------------------------------------------------
+# --- 6. provision (idempotent, auto) --------------------------------------
 A="cd \"$ALPHA_DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
+echo ">> provisioning alpha_pos: license + admins ..."
+eval "$A exec -T web python manage.py activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
+eval "$A exec -T web python manage.py bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'" || true
+# Django admin users: superuser + normal user, both password root1234.
+( cd "$ALPHA_DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py shell ) <<'PYEOF' || true
+from django.contrib.auth import get_user_model
+U = get_user_model()
+a, _ = U.objects.get_or_create(username='admin', defaults={'email': 'admin@local'})
+a.is_staff = a.is_superuser = a.is_active = True
+a.set_password('root1234'); a.save()
+n, _ = U.objects.get_or_create(username='user', defaults={'email': 'user@local'})
+n.is_active = True
+n.set_password('root1234'); n.save()
+print('alpha_pos Django admin: admin (superuser) + user, password root1234')
+PYEOF
+if $HAVE_CONTROL; then
+    echo ">> provisioning pos_control: django admin users ..."
+    ( cd "$CONTROL_DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py shell ) <<'PYEOF' || true
+from django.contrib.auth import get_user_model
+U = get_user_model()
+a, _ = U.objects.get_or_create(username='admin', defaults={'email': 'admin@local'})
+a.is_staff = a.is_superuser = a.is_active = True
+a.set_password('root1234'); a.save()
+n, _ = U.objects.get_or_create(username='user', defaults={'email': 'user@local'})
+n.is_active = True
+n.set_password('root1234'); n.save()
+print('pos_control Django admin: admin (superuser) + user, password root1234')
+PYEOF
+fi
+
+# --- 7. next steps ---------------------------------------------------------
 cat <<EOF
 
 ============================================================
   Stacks are up. Finish with these one-time steps:
 ============================================================
 
-# 1) Alpha POS cloud — license offline (clears the kill switch) + make admin:
-$A exec -T web python manage.py activate_offline --email vendor@local --org "AlphaPOS Cloud" --perpetual
-$A exec -T web python manage.py bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'
+# 1) Provisioning ran automatically (license + POS admin + Django admin users):
+#      POS API admin : admin@alpha.local / CHANGE-ME-strong   (CHANGE IT)
+#      Django /admin/: admin / root1234 (superuser)  +  user / root1234
 
 # 2) Verify (give Caddy ~30s on first run to issue the certificate):
 curl -fsS https://${POS_HOST}/healthz && echo "  POS OK"
@@ -249,8 +280,7 @@ EOF
 if $HAVE_CONTROL; then
 cat <<EOF
 
-# 3) Control center — create the dashboard superuser (interactive):
-cd "$CONTROL_DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec web python manage.py createsuperuser
+# 3) Control center Django /admin/ (auto-created): admin / root1234 (superuser) + user / root1234
 Control center  : https://${CONTROL_HOST}/
 EOF
 else
