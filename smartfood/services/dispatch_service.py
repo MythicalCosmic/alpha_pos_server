@@ -1,0 +1,195 @@
+"""Dispatch a PENDING BotOrder to a SPECIFIC on-duty cashier — the core flow.
+
+Creates a real base.Order under that cashier so it lands in THAT cashier's shift
+(POS attributes orders by cashier_id + the shift's time window — there is no Shift
+FK). OrderItem prices are the bot's FROZEN unit prices (base + size + toppings),
+so the cashier's revenue and the customer's charge match the quote — note that
+AdminOrderService.create_order would re-price at base product price only, which is
+why we mint the order directly here. The existing Order post_save signal
+broadcasts it to the cashier queue + KDS automatically.
+"""
+import logging
+from decimal import Decimal
+
+from django.db import transaction
+from django.db.models import F
+from django.utils import timezone
+
+from base.helpers.response import ServiceResponse
+from base.repositories import OrderRepository
+from base.repositories.shift import ShiftRepository
+from smartfood.models import BotOrder, Customer
+
+logger = logging.getLogger(__name__)
+
+_PLACEHOLDER_EMAIL = 'smartfood-bot@local'
+
+
+def _bot_customer_user():
+    """Singleton placeholder base.User used as Order.user for dispatched bot
+    orders (the real customer identity lives on the BotOrder). SUSPENDED so it can
+    never log in. base.Order.user is required, so dispatched orders need a row."""
+    from base.models import User
+    user, _ = User.objects.get_or_create(
+        email=_PLACEHOLDER_EMAIL,
+        defaults={'first_name': 'Smart Food', 'last_name': 'Customer',
+                  'role': 'USER', 'status': 'SUSPENDED', 'password': '!'},
+    )
+    return user
+
+
+def _notify(bot_order, event):
+    try:
+        from smartfood.services.notification_service import notify_customer
+        notify_customer(bot_order, event)
+    except Exception:
+        logger.debug('customer notify failed (%s)', event, exc_info=True)
+
+
+class DispatchService:
+    @staticmethod
+    @transaction.atomic
+    def dispatch(bot_order_id, cashier_id, operator=None):
+        bot_order = (BotOrder.objects.select_for_update()
+                     .filter(id=bot_order_id).first())
+        if not bot_order:
+            return ServiceResponse.not_found('Order not found')
+        if bot_order.status != BotOrder.Status.PENDING:
+            return {'success': False, 'code': 'already_handled',
+                    'message': f'Order already {bot_order.status.lower()}'}, 409
+
+        # The cashier MUST be on an active shift so the new order falls inside
+        # their shift window (attribution = cashier_id + time, no Shift FK).
+        if not ShiftRepository.get_active_for_user(cashier_id):
+            return ServiceResponse.error('Selected cashier is not on an active shift')
+
+        items = list(bot_order.items.select_related('product').all())
+        if not items:
+            return ServiceResponse.error('Order has no items')
+
+        from base.models import OrderItem
+        now = timezone.now()
+        placeholder = _bot_customer_user()
+        food_total = sum((it.line_total for it in items), Decimal('0.00'))
+
+        # The POS order's total_amount must equal what the customer actually pays
+        # (food net of loyalty discount, plus delivery + tip) so the cashier
+        # collects/records the right amount. The full breakdown goes in the
+        # description so it's visible on the till + courier slip.
+        econ = [f'Food {int(food_total)}']
+        if bot_order.delivery_fee:
+            econ.append(f'Delivery +{int(bot_order.delivery_fee)}')
+        if bot_order.tip:
+            econ.append(f'Tip +{int(bot_order.tip)}')
+        if bot_order.discount:
+            econ.append(f'Loyalty -{int(bot_order.discount)}')
+        econ.append(f'TOTAL {int(bot_order.total)} ({bot_order.payment_method})')
+        parts = [p for p in (bot_order.address_text, bot_order.note, ' | '.join(econ)) if p]
+        description = ' || '.join(parts)
+
+        order = OrderRepository.create(
+            user_id=placeholder.id,
+            cashier_id=cashier_id,
+            display_id=OrderRepository.next_display_id(),
+            chef_queue_number=OrderRepository.next_chef_queue_number(),
+            order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
+            phone_number=bot_order.phone_number,
+            description=description,
+            status='PREPARING',
+            is_paid=False,
+            subtotal=food_total,
+            total_amount=bot_order.total,             # what the customer pays (nets discount + delivery + tip)
+        )
+
+        any_kitchen = False
+        new_items = []
+        for it in items:
+            instant = it.product.is_instant
+            any_kitchen = any_kitchen or (not instant)
+            new_items.append(OrderItem(
+                order=order, product=it.product, detail=(it.detail or None),
+                quantity=it.quantity, price=it.unit_price,   # frozen: base + size + toppings
+                ready_at=now if instant else None,
+            ))
+        OrderItem.objects.bulk_create(new_items)
+        # bulk_create bypasses SyncMixin.save() -> stamp synced_at so /changes ships them.
+        OrderItem.objects.filter(order=order, synced_at__isnull=True).update(synced_at=now)
+
+        if not any_kitchen:
+            order.status = 'READY'
+            order.ready_at = now
+            order.save(update_fields=['status', 'ready_at'])
+
+        # Stock deduction (best-effort). Toppings are price-only; base products drive
+        # stock. Run inside a SAVEPOINT so the stock layer's transaction.set_rollback()
+        # on insufficient stock rolls back ONLY the deduction, never the dispatch
+        # itself (oversell is allowed here, matching the POS create path; the order is
+        # still dispatched + recorded).
+        try:
+            from stock.services import OrderStatusHandler, StockSettingsService
+            location_id = StockSettingsService.get_default_location_id()
+            if location_id:
+                with transaction.atomic():
+                    OrderStatusHandler.on_status_change(
+                        order.id, None, 'PREPARING',
+                        [{'product_id': it.product_id, 'quantity': it.quantity} for it in items],
+                        location_id, placeholder.id)
+        except Exception:
+            logger.exception('stock handler failed during bot dispatch (order=%s)', order.id)
+
+        # Credit earned loyalty points now that it's a real order.
+        if bot_order.loyalty_points_earned:
+            Customer.objects.filter(id=bot_order.customer_id).update(
+                loyalty_points=F('loyalty_points') + bot_order.loyalty_points_earned)
+
+        bot_order.pos_order = order
+        bot_order.dispatched_cashier_id = cashier_id
+        bot_order.dispatched_by = operator
+        bot_order.dispatched_at = now
+        bot_order.status = BotOrder.Status.DISPATCHED
+        bot_order.save(update_fields=['pos_order', 'dispatched_cashier', 'dispatched_by',
+                                      'dispatched_at', 'status', 'updated_at'])
+        _notify(bot_order, 'dispatched')
+        return ServiceResponse.success(data={
+            'bot_order_id': bot_order.id,
+            'pos_order_id': order.id,
+            'pos_order_uuid': str(order.uuid),
+            'display_id': order.display_id,
+        })
+
+    @staticmethod
+    @transaction.atomic
+    def reject(bot_order_id, reason='', operator=None):
+        bot_order = BotOrder.objects.select_for_update().filter(id=bot_order_id).first()
+        if not bot_order:
+            return ServiceResponse.not_found('Order not found')
+        if bot_order.status != BotOrder.Status.PENDING:
+            return {'success': False, 'code': 'already_handled',
+                    'message': f'Order already {bot_order.status.lower()}'}, 409
+        if bot_order.loyalty_points_used:   # refund reserved points
+            Customer.objects.filter(id=bot_order.customer_id).update(
+                loyalty_points=F('loyalty_points') + bot_order.loyalty_points_used)
+        bot_order.status = BotOrder.Status.REJECTED
+        bot_order.reject_reason = (reason or '')[:200]
+        bot_order.dispatched_by = operator
+        bot_order.save(update_fields=['status', 'reject_reason', 'dispatched_by', 'updated_at'])
+        _notify(bot_order, 'rejected')
+        return ServiceResponse.success(data={'bot_order_id': bot_order.id, 'status': bot_order.status})
+
+    @staticmethod
+    def pending_queue():
+        from smartfood.serializers import bot_order_dict
+        orders = (BotOrder.objects.filter(status=BotOrder.Status.PENDING)
+                  .prefetch_related('items').select_related('customer', 'pos_order').order_by('id'))
+        return ServiceResponse.success(data={'items': [bot_order_dict(o) for o in orders]})
+
+    @staticmethod
+    def active_cashiers_list():
+        from smartfood.gating import active_cashiers
+        rows = [{
+            'cashier_id': s.user_id,
+            'name': f"{s.user.first_name} {s.user.last_name}".strip(),
+            'shift_id': s.id,
+            'start_time': s.start_time.isoformat() if s.start_time else None,
+        } for s in active_cashiers().order_by('start_time')]
+        return ServiceResponse.success(data={'items': rows})

@@ -33,4 +33,7 @@ urlpatterns = [
     # Customer-facing Telegram bot (separate token) — greet + open the web app.
     path('api/customer-bot/webhook/', customer_bot_views.customer_webhook,
          name='customer-bot-webhook'),
+    # Smart Food customer delivery: Mini App API (customer-auth) + operator console.
+    path('api/smartfood/', include('smartfood.urls')),
+    path('api/admins/smartfood/', include('smartfood.admin_urls')),
 ]

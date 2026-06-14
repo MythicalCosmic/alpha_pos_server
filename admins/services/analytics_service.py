@@ -81,7 +81,7 @@ def shift_performance(shift):
         'orders_cancelled': cancelled,
         'orders_paid': counts['paid'] or 0,
         'cancel_rate_pct': cancel_rate,
-        'revenue': str(revenue),
+        'revenue': str(int(revenue)),   # integer so'm (UZS), backend-independent
         'avg_prep_seconds': avg_prep_seconds,
         'orders_per_hour': orders_per_hour,
         'revenue_per_hour': str(revenue_per_hour),

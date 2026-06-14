@@ -34,6 +34,17 @@ def _safe(label, fn, default):
         return default
 
 
+def _uzs(value):
+    """Money as an integer-so'm string (UZS has no minor unit). Consistent across
+    empty (None -> '0') and non-empty (Decimal('150000.00') -> '150000') — the POS
+    domain format the dashboard FE expects, instead of a backend-dependent mix of
+    '0' and '150000.00'."""
+    try:
+        return str(int(value or 0))
+    except (TypeError, ValueError):
+        return '0'
+
+
 def _today_window():
     now = timezone.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -51,7 +62,7 @@ def _today_revenue():
         orders=Count('id'),
     )
     return {
-        'revenue': str(agg['total'] or 0),
+        'revenue': _uzs(agg['total']),
         'paid_orders': agg['orders'] or 0,
     }
 
@@ -126,7 +137,7 @@ def _today_payment_breakdown():
         MIXED=Coalesce(Sum('total_amount', filter=Q(payment_method='MIXED')),
                        Decimal('0.00'), output_field=DecimalField()),
     )
-    return {m: str(agg[m]) for m in _PAYMENT_METHODS}
+    return {m: _uzs(agg[m]) for m in _PAYMENT_METHODS}
 
 
 def _today_category_stats():
@@ -144,15 +155,19 @@ def _today_category_stats():
         )
         .exclude(order__status='CANCELED')
         .values('product__category_id', 'product__category__name')
-        .annotate(quantity=Sum('quantity'), revenue=Sum(line_total))
+        # Alias the unit count as `units`, NOT `quantity`: the revenue expression
+        # references F('quantity'), and reusing the column name as an aggregate alias
+        # makes Django resolve that F() to the aggregate -> "is an aggregate"
+        # FieldError (silently emptied category stats on Postgres).
+        .annotate(units=Sum('quantity'), revenue=Sum(line_total))
         .order_by('-revenue')
     )
     return [
         {
             'category_id': r['product__category_id'],
             'category': r['product__category__name'],
-            'quantity': int(r['quantity'] or 0),
-            'revenue': str(r['revenue'] or 0),
+            'quantity': int(r['units'] or 0),
+            'revenue': _uzs(r['revenue']),
         }
         for r in rows
     ]
@@ -206,7 +221,7 @@ def _today_money_entered():
     agg = CashReconciliation.objects.filter(
         is_deleted=False, created_at__gte=start, created_at__lt=end,
     ).aggregate(total=Sum('actual_cash'))
-    return str(agg['total'] or 0)
+    return _uzs(agg['total'])
 
 
 def _low_stock_count():

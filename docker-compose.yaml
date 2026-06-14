@@ -32,6 +32,8 @@ services:
         # Stamped into the image -> reported by /healthz. The deploy scripts
         # export GIT_SHA before `up --build`; defaults to "unknown" otherwise.
         GIT_SHA: ${GIT_SHA:-unknown}
+    # Tag the built image so the customer-bot poller can reuse it (built once).
+    image: alpha_pos_server:local
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-8000}:8000"
@@ -64,6 +66,31 @@ services:
       # are silently lost on every `docker compose up --build` / redeploy.
       - media_data:/app/private_media
     depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  bot:
+    # Customer Telegram bot poller (getUpdates). Reuses the web image (built
+    # once, above). SINGLE instance only — Telegram forbids two getUpdates
+    # pollers. The HTTP API + websockets stay on `web`; this only drives Telegram.
+    image: alpha_pos_server:local
+    command: python manage.py run_customer_bot
+    # on-failure (not unless-stopped): if CUSTOMER_BOT_TOKEN is unset the command
+    # exits 0 cleanly — don't crash-loop it; a real crash still restarts.
+    restart: on-failure
+    env_file:
+      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: '${SECRET_KEY:?SECRET_KEY must be set in .env}'
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      web:
+        condition: service_started
       db:
         condition: service_healthy
       redis:
