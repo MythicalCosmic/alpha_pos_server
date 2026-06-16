@@ -12,7 +12,11 @@ django_asgi_app = get_asgi_application()
 from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
 
-from core.realtime.routing import websocket_urlpatterns
+from core.realtime.routing import websocket_urlpatterns as core_ws_urlpatterns
+from couriers.routing import websocket_urlpatterns as courier_ws_urlpatterns
+
+# In-store realtime (orders/kds/cashiers) + courier layer (/ws/courier/, /ws/cashier/).
+websocket_urlpatterns = core_ws_urlpatterns + courier_ws_urlpatterns
 
 application = ProtocolTypeRouter({
     'http': django_asgi_app,

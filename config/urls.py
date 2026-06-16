@@ -36,4 +36,9 @@ urlpatterns = [
     # Smart Food customer delivery: Mini App API (customer-auth) + operator console.
     path('api/smartfood/', include('smartfood.urls')),
     path('api/admins/smartfood/', include('smartfood.admin_urls')),
+    # Courier delivery: back-office assignment endpoints…
+    path('api/admins/couriers/', include('couriers.admin_urls')),
+    # …and the rider app's own paths at root (/auth/courier/login/, /courier/…,
+    # /orders/<id>/accept|decline|status/) exactly as the mobile app calls them.
+    path('', include('couriers.urls')),
 ]

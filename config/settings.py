@@ -15,7 +15,11 @@ EDITION = 'server'
 # here (no POS order-taking on the server). hr IS installed (shared) and its UI is
 # mounted in config.urls; admins' order-WRITE routes are intentionally not mounted.
 # smartfood = the customer Telegram Mini App delivery backend (server-only).
-INSTALLED_APPS = build_installed_apps(['admins', 'smartfood'])  # noqa: F405
+# couriers = the delivery-rider backend (assignment, courier lifecycle, GPS relay).
+INSTALLED_APPS = build_installed_apps(['admins', 'smartfood', 'couriers'])  # noqa: F405
+
+# Expo push (courier app background notifications). Optional in dev; set for prod.
+EXPO_ACCESS_TOKEN = os.environ.get('EXPO_ACCESS_TOKEN', '')
 
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
