@@ -58,6 +58,17 @@ def _serialize_order(parent, order):
     if order.phone_number:
         ET.SubElement(doc, 'ТелефонКонтакта').text = order.phone_number
 
+    # Linked client (base.Customer) as the CommerceML buyer counterparty, so
+    # 1C/ingest sees who the order belongs to. Walk-in orders have no customer.
+    if order.customer_id:
+        cps = ET.SubElement(doc, 'Контрагенты')
+        cp = ET.SubElement(cps, 'Контрагент')
+        ET.SubElement(cp, 'Ид').text = str(order.customer.uuid)
+        ET.SubElement(cp, 'Наименование').text = order.customer.name or ''
+        ET.SubElement(cp, 'Роль').text = 'Покупатель'
+        if order.customer.phone_number:
+            ET.SubElement(cp, 'Телефон').text = order.customer.phone_number
+
     items_el = ET.SubElement(doc, 'Товары')
     # The outer build_export call prefetches `items__product`, so iterate the
     # cached attribute instead of issuing a fresh `.select_related('product')`
@@ -88,7 +99,7 @@ def build_export(date_from, date_to, include_unpaid=False):
             created_at__date__gte=date_from,
             created_at__date__lte=date_to,
         )
-        .select_related('user', 'cashier')
+        .select_related('user', 'cashier', 'customer')
         .prefetch_related(
             Prefetch('items', queryset=OrderItem.objects.select_related('product')),
         )
