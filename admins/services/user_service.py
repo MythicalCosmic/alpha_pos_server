@@ -61,14 +61,21 @@ class AdminUserService:
                 message='Validation failed',
             )
 
-        # POS staff sign in with a 4-digit PIN, not a full password.
-        pin = str(password or '').strip()
-        if not pin.isdigit() or len(pin) != 4:
-            return ServiceResponse.validation_error(
-                errors={'password': 'PIN must be exactly 4 digits'},
-                message='Validation failed',
-            )
-        password = pin
+        # CHEF is a non-login kitchen label — no PIN/password required. Store an
+        # empty password: it's an UNUSABLE credential (verify_password(*, '')
+        # always fails), so a chef can never sign in, and CHEF is already absent
+        # from the cashier login picker (get_pos_staff admits only CASHIER/MANAGER).
+        if role == User.RoleChoices.CHEF:
+            password = ''
+        else:
+            # POS staff sign in with a 4-digit PIN, not a full password.
+            pin = str(password or '').strip()
+            if not pin.isdigit() or len(pin) != 4:
+                return ServiceResponse.validation_error(
+                    errors={'password': 'PIN must be exactly 4 digits'},
+                    message='Validation failed',
+                )
+            password = hash_password(pin)
 
         if role not in User.RoleChoices.values:
             return ServiceResponse.validation_error(
@@ -115,7 +122,10 @@ class AdminUserService:
                 first_name=first_name.strip(),
                 last_name=last_name.strip(),
                 email=email,
-                password=hash_password(str(password)),
+                # Already finalised above: bcrypt hash for staff (4-digit PIN),
+                # or '' for a passwordless CHEF. Do NOT re-hash (would hash '' into
+                # a usable credential and double-hash the PIN).
+                password=password,
                 role=role,
                 status='ACTIVE',
             )

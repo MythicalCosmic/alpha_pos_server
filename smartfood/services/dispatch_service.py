@@ -70,6 +70,21 @@ class DispatchService:
         from base.models import OrderItem
         now = timezone.now()
         placeholder = _bot_customer_user()
+        # Reconcile the Telegram customer into a base.Customer so the POS order
+        # carries the client id — the same Order.customer link the desktop POS
+        # sets. Matched by the unique telegram_id (fall back to phone for the
+        # name/phone snapshot). base.Order.user stays the bot placeholder.
+        pos_customer = None
+        sf_customer = bot_order.customer
+        if sf_customer is not None:
+            from base.models import Customer as PosCustomer
+            pos_customer, _ = PosCustomer.objects.get_or_create(
+                telegram_id=sf_customer.telegram_id,
+                defaults={
+                    'name': sf_customer.name,
+                    'phone_number': sf_customer.phone_number or bot_order.phone_number or '',
+                },
+            )
         food_total = sum((it.line_total for it in items), Decimal('0.00'))
 
         # The POS order's total_amount must equal what the customer actually pays
@@ -90,6 +105,7 @@ class DispatchService:
         order = OrderRepository.create(
             user_id=placeholder.id,
             cashier_id=cashier_id,
+            customer_id=pos_customer.id if pos_customer else None,
             display_id=OrderRepository.next_display_id(),
             chef_queue_number=OrderRepository.next_chef_queue_number(),
             order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
