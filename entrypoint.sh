@@ -18,6 +18,18 @@ until python -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit
 done
 echo "DB reachable."
 
+# An explicit command (docker-compose `command:` or `docker run … <cmd>`) marks
+# this container as a SIDECAR — e.g. the customer-bot getUpdates poller
+# (`python manage.py run_customer_bot`) — not the web server. The entrypoint MUST
+# exec it; otherwise the override is silently ignored and the sidecar just boots a
+# second uvicorn (which is exactly what happened to the `bot` service: it answered
+# /healthz and looked "healthy" while the bot never polled). Sidecars skip the
+# migrate / license-heartbeat / uvicorn that belong to the web container.
+if [ "$#" -gt 0 ]; then
+    echo "Running override command: $*"
+    exec "$@"
+fi
+
 echo "Running migrations..."
 python manage.py migrate --noinput
 
