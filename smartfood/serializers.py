@@ -165,3 +165,68 @@ def config_dict(cfg):
             'email': cfg.support_email,
         },
     }
+
+
+# ---- loyalty: rewards, redemptions, ledger -------------------------------- #
+def reward_dict(r, lang='uz', points=0):
+    """A gift in the catalog. `points` is the viewer's balance (for `affordable`)."""
+    return {
+        'id': r.id,
+        'name': tri(r, 'name', lang, 'Gift'),
+        'names': names(r, 'name'),
+        'description': tri(r, 'desc', lang),
+        'kind': r.kind,
+        'points_cost': r.points_cost,
+        'image_url': r.image_url,
+        'discount_amount': uzs(r.discount_amount) if r.kind == 'DISCOUNT' else None,
+        'product_id': r.product_id,
+        'in_stock': (r.stock is None or r.stock > 0),
+        'affordable': points >= r.points_cost,
+    }
+
+
+def redemption_dict(r):
+    return {
+        'id': r.id,
+        'code': r.code,
+        'reward_name': r.reward_name,
+        'kind': r.kind,
+        'points_spent': r.points_spent,
+        'status': r.status,
+        'created_at': r.created_at.isoformat() if r.created_at else None,
+        'fulfilled_at': r.fulfilled_at.isoformat() if r.fulfilled_at else None,
+    }
+
+
+def loyalty_txn_dict(t):
+    """One ledger row. Keeps the legacy {code, points_earned, points_used} shape
+    the Mini App history already renders, plus richer fields."""
+    if t.bot_order_id:
+        code = t.bot_order.code
+    elif t.redemption_id:
+        code = t.redemption.code
+    else:
+        code = t.get_kind_display()
+    return {
+        'kind': t.kind,
+        'points': t.points,
+        'balance_after': t.balance_after,
+        'reason': t.reason,
+        'code': code,
+        'points_earned': t.points if t.points > 0 else 0,
+        'points_used': -t.points if t.points < 0 else 0,
+        'created_at': t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+def member_dict(c):
+    """Staff-facing customer summary (loyalty scan/lookup)."""
+    return {
+        'id': c.id,
+        'telegram_id': c.telegram_id,
+        'member_id': f'SF-{c.telegram_id}',
+        'name': c.name,
+        'phone': c.phone_number,
+        'points': c.loyalty_points,
+        'is_blocked': c.is_blocked,
+    }

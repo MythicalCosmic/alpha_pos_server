@@ -153,10 +153,14 @@ class DispatchService:
         except Exception:
             logger.exception('stock handler failed during bot dispatch (order=%s)', order.id)
 
-        # Credit earned loyalty points now that it's a real order.
+        # Credit earned loyalty points now that it's a real order (via the ledger).
         if bot_order.loyalty_points_earned:
-            Customer.objects.filter(id=bot_order.customer_id).update(
-                loyalty_points=F('loyalty_points') + bot_order.loyalty_points_earned)
+            from smartfood.models import LoyaltyTransaction
+            from smartfood.services.loyalty_service import LoyaltyService
+            LoyaltyService.record(
+                bot_order.customer_id, LoyaltyTransaction.Kind.EARN_ORDER,
+                bot_order.loyalty_points_earned,
+                reason=f'Earned on order {bot_order.code}', bot_order=bot_order)
 
         bot_order.pos_order = order
         bot_order.dispatched_cashier_id = cashier_id
@@ -182,9 +186,13 @@ class DispatchService:
         if bot_order.status != BotOrder.Status.PENDING:
             return {'success': False, 'code': 'already_handled',
                     'message': f'Order already {bot_order.status.lower()}'}, 409
-        if bot_order.loyalty_points_used:   # refund reserved points
-            Customer.objects.filter(id=bot_order.customer_id).update(
-                loyalty_points=F('loyalty_points') + bot_order.loyalty_points_used)
+        if bot_order.loyalty_points_used:   # refund reserved points (via the ledger)
+            from smartfood.models import LoyaltyTransaction
+            from smartfood.services.loyalty_service import LoyaltyService
+            LoyaltyService.record(
+                bot_order.customer_id, LoyaltyTransaction.Kind.REFUND,
+                bot_order.loyalty_points_used,
+                reason=f'Refund rejected order {bot_order.code}', bot_order=bot_order)
         bot_order.status = BotOrder.Status.REJECTED
         bot_order.reject_reason = (reason or '')[:200]
         bot_order.dispatched_by = operator

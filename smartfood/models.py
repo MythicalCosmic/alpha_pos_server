@@ -363,3 +363,104 @@ class SupportMessage(TimeStamped):
 
     def __str__(self):
         return f"SupportMessage(ticket={self.ticket_id}, {self.sender})"
+
+
+# --------------------------------------------------------------------------- #
+#  Loyalty — rewards (gifts), redemptions, and the points ledger              #
+# --------------------------------------------------------------------------- #
+class Reward(TimeStamped):
+    """A gift a customer can redeem loyalty points for. Operator-managed (admin).
+
+    Price is always points_cost. `kind` describes what the customer gets; the
+    staff fulfils it when the customer shows the redemption code/QR.
+    """
+    class Kind(models.TextChoices):
+        FREE_PRODUCT = 'FREE_PRODUCT', 'Free product'
+        DISCOUNT = 'DISCOUNT', 'Discount (UZS off)'
+        FREE_DELIVERY = 'FREE_DELIVERY', 'Free delivery'
+        CUSTOM = 'CUSTOM', 'Custom prize'
+
+    name_uz = models.CharField(max_length=120, blank=True, default='')
+    name_ru = models.CharField(max_length=120, blank=True, default='')
+    name_en = models.CharField(max_length=120, blank=True, default='')
+    desc_uz = models.TextField(blank=True, default='')
+    desc_ru = models.TextField(blank=True, default='')
+    desc_en = models.TextField(blank=True, default='')
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.CUSTOM)
+    points_cost = models.PositiveIntegerField(default=0)
+    # FREE_PRODUCT: which product is gifted. DISCOUNT: how much UZS off.
+    product = models.ForeignKey('base.Product', on_delete=models.SET_NULL,
+                                null=True, blank=True, related_name='+')
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    image_url = models.URLField(blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    stock = models.IntegerField(null=True, blank=True,
+                                help_text='Remaining stock; blank = unlimited.')
+    per_customer_limit = models.PositiveIntegerField(
+        default=0, help_text='Max redemptions per customer; 0 = unlimited.')
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+
+    def __str__(self):
+        return f"Reward({self.name_uz or self.name_en or self.id}, {self.points_cost}p)"
+
+
+class Redemption(TimeStamped):
+    """A redeemed reward — issued with a unique code, fulfilled by staff."""
+    class Status(models.TextChoices):
+        ISSUED = 'ISSUED', 'Issued'
+        FULFILLED = 'FULFILLED', 'Fulfilled'
+        CANCELED = 'CANCELED', 'Canceled'
+
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='redemptions')
+    reward = models.ForeignKey(Reward, on_delete=models.PROTECT, related_name='redemptions')
+    code = models.CharField(max_length=20, unique=True, db_index=True)
+    points_spent = models.PositiveIntegerField(default=0)
+    reward_name = models.CharField(max_length=120, blank=True, default='')   # snapshot
+    kind = models.CharField(max_length=16, blank=True, default='')           # snapshot
+    status = models.CharField(max_length=12, choices=Status.choices,
+                              default=Status.ISSUED, db_index=True)
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
+    fulfilled_by = models.ForeignKey('base.User', on_delete=models.SET_NULL,
+                                     null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-id']
+
+    @property
+    def is_active(self):
+        return self.status == self.Status.ISSUED
+
+    def __str__(self):
+        return f"Redemption({self.code}, {self.status})"
+
+
+class LoyaltyTransaction(TimeStamped):
+    """Append-only ledger of every loyalty point change (drives history + audit)."""
+    class Kind(models.TextChoices):
+        EARN_ORDER = 'EARN_ORDER', 'Earned (order)'
+        EARN_SCAN = 'EARN_SCAN', 'Earned (in-store)'
+        SPEND_ORDER = 'SPEND_ORDER', 'Spent (order)'
+        REDEEM = 'REDEEM', 'Redeemed (gift)'
+        GRANT = 'GRANT', 'Granted (bonus/gift)'
+        REFUND = 'REFUND', 'Refunded'
+        ADJUST = 'ADJUST', 'Adjustment'
+
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='loyalty_txns')
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    points = models.IntegerField(default=0)              # signed: + earn, - spend
+    balance_after = models.IntegerField(default=0)
+    reason = models.CharField(max_length=200, blank=True, default='')
+    bot_order = models.ForeignKey(BotOrder, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    reward = models.ForeignKey(Reward, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    redemption = models.ForeignKey(Redemption, on_delete=models.SET_NULL, null=True, blank=True, related_name='txns')
+    staff = models.ForeignKey('base.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-id']
+        indexes = [models.Index(fields=['customer', '-id'])]
+
+    def __str__(self):
+        return f"LoyaltyTxn({self.customer_id}, {self.kind}, {self.points:+d})"

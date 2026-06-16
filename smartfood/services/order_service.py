@@ -60,9 +60,14 @@ class BotOrderService:
         ])
 
         # Reserve redeemed loyalty points now (refunded if the order is rejected).
+        # Routed through the ledger so the balance + LoyaltyTransaction history stay
+        # in lock-step (see LoyaltyService.record).
         if priced['points_used']:
-            Customer.objects.filter(id=customer.id).update(
-                loyalty_points=F('loyalty_points') - priced['points_used'])
+            from smartfood.models import LoyaltyTransaction
+            from smartfood.services.loyalty_service import LoyaltyService
+            LoyaltyService.record(
+                customer.id, LoyaltyTransaction.Kind.SPEND_ORDER, -priced['points_used'],
+                reason=f'Redeemed on order {order.code}', bot_order=order)
 
         order = BotOrder.objects.prefetch_related('items').select_related('pos_order').get(id=order.id)
         return ServiceResponse.created(data=bot_order_dict(order))
@@ -95,8 +100,11 @@ class BotOrderService:
             return {'success': False, 'code': 'cannot_cancel',
                     'message': 'Only pending orders can be canceled'}, 409
         if order.loyalty_points_used:
-            Customer.objects.filter(id=customer.id).update(
-                loyalty_points=F('loyalty_points') + order.loyalty_points_used)
+            from smartfood.models import LoyaltyTransaction
+            from smartfood.services.loyalty_service import LoyaltyService
+            LoyaltyService.record(
+                customer.id, LoyaltyTransaction.Kind.REFUND, order.loyalty_points_used,
+                reason=f'Refund canceled order {order.code}', bot_order=order)
         order.status = BotOrder.Status.CANCELED
         order.save(update_fields=['status', 'updated_at'])
         return ServiceResponse.success(data={'id': order.id, 'status': order.status})
