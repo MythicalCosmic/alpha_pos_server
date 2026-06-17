@@ -8,8 +8,28 @@ from django.db.models import F
 
 from base.helpers.response import ServiceResponse
 from smartfood.models import Address, BotOrder, BotOrderItem, Customer
-from smartfood.serializers import bot_order_dict
+from smartfood.serializers import bot_order_dict, instore_order_dict
 from smartfood.services.cart_service import price_cart, CartError
+
+
+def _instore_orders_for(sf_customer, limit=30):
+    """In-store base.Orders for the unified client linked to this Telegram account
+    (by telegram_id). Excludes dispatched bot orders (bot_order link) — those are
+    already in the bot list — and cancelled orders. Returns [] if no link/orders."""
+    tid = getattr(sf_customer, 'telegram_id', None)
+    if not tid:
+        return []
+    from base.models import Customer as BaseCustomer, Order as BaseOrder
+    base_client = (BaseCustomer.objects.filter(is_deleted=False, telegram_id=tid)
+                   .order_by('id').first())
+    if not base_client:
+        return []
+    orders = (BaseOrder.objects
+              .filter(customer=base_client, is_deleted=False, bot_order__isnull=True)
+              .exclude(status='CANCELED')
+              .prefetch_related('items__product')
+              .order_by('-created_at')[:limit])
+    return [instore_order_dict(o) for o in orders]
 
 
 class BotOrderService:
@@ -80,7 +100,12 @@ class BotOrderService:
             qs = qs.filter(status__in=[BotOrder.Status.PENDING, BotOrder.Status.DISPATCHED])
         elif status == 'history':
             qs = qs.filter(status__in=[BotOrder.Status.REJECTED, BotOrder.Status.CANCELED])
-        return ServiceResponse.success(data={'items': [bot_order_dict(o) for o in qs]})
+        data = {'items': [bot_order_dict(o) for o in qs]}
+        # In-store orders made OUTSIDE the bot, surfaced for the phone-matched
+        # unified client. Skipped on the 'active' tab (that's in-flight bot orders).
+        if status != 'active':
+            data['in_store'] = _instore_orders_for(customer)
+        return ServiceResponse.success(data=data)
 
     @staticmethod
     def get_for(customer, order_id):

@@ -70,20 +70,19 @@ class DispatchService:
         from base.models import OrderItem
         now = timezone.now()
         placeholder = _bot_customer_user()
-        # Reconcile the Telegram customer into a base.Customer so the POS order
-        # carries the client id — the same Order.customer link the desktop POS
-        # sets. Matched by the unique telegram_id (fall back to phone for the
-        # name/phone snapshot). base.Order.user stays the bot placeholder.
+        # Reconcile the Telegram customer onto the unified base.Customer so the POS
+        # order carries the client id — the same Order.customer link the desktop POS
+        # sets. Customer.resolve matches by phone FIRST then telegram_id, so a
+        # dispatched bot order converges onto the walk-in's existing in-store client
+        # row when the phone matches (instead of forking a telegram-only row).
         pos_customer = None
         sf_customer = bot_order.customer
         if sf_customer is not None:
             from base.models import Customer as PosCustomer
-            pos_customer, _ = PosCustomer.objects.get_or_create(
+            pos_customer, _ = PosCustomer.resolve(
+                phone=sf_customer.phone_number or bot_order.phone_number or None,
                 telegram_id=sf_customer.telegram_id,
-                defaults={
-                    'name': sf_customer.name,
-                    'phone_number': sf_customer.phone_number or bot_order.phone_number or '',
-                },
+                name=sf_customer.name,
             )
         food_total = sum((it.line_total for it in items), Decimal('0.00'))
 

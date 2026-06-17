@@ -142,6 +142,38 @@ def bot_order_dict(o):
     }
 
 
+def instore_order_dict(o):
+    """A base.Order (made in-store, outside the bot) rendered in the bot order
+    shape + a `source: in_store` marker, so the Mini App can list a phone-matched
+    client's past in-store purchases alongside their bot orders."""
+    items = list(o.items.all())
+    return {
+        'id': 'IS-%d' % o.id,
+        'code': ('#%s' % o.display_id) if getattr(o, 'display_id', None) else ('IS-%d' % o.id),
+        'source': 'in_store',
+        'status': o.status,
+        'order_type': o.order_type,
+        'created_at': o.created_at.isoformat() if o.created_at else None,
+        'phone': o.phone_number or '',
+        'payment_method': o.payment_method or '',
+        'is_paid': o.is_paid,
+        'totals': {
+            'subtotal': uzs(o.subtotal if o.subtotal is not None else o.total_amount),
+            'delivery_fee': 0,
+            'discount': uzs(getattr(o, 'discount_amount', 0) or 0),
+            'tip': 0,
+            'total': uzs(o.total_amount),
+        },
+        'items': [{
+            'product_id': it.product_id,
+            'name': it.product.name if it.product else None,
+            'quantity': it.quantity,
+            'unit_price': uzs(it.price),
+            'line_total': uzs(it.price * it.quantity),
+        } for it in items],
+    }
+
+
 # ---- config --------------------------------------------------------------- #
 def config_dict(cfg):
     return {

@@ -3,6 +3,7 @@
 Mirrors the staff auth token shape: a 32-byte hex token is returned to the
 client and only its SHA-256 digest is stored (CustomerSession.payload).
 """
+import logging
 import secrets
 from datetime import timedelta
 
@@ -15,10 +16,28 @@ from smartfood.repositories import CustomerSessionRepository
 from smartfood.security import verify_init_data, _auth_ttl
 from smartfood.serializers import customer_dict
 
+logger = logging.getLogger(__name__)
+
 
 def _norm_lang(code):
     c = (code or '').lower()[:2]
     return c if c in ('uz', 'ru', 'en') else 'uz'
+
+
+def _link_base_customer(sf_customer):
+    """Converge this Telegram customer onto the unified master base.Customer
+    (keyed by phone, then telegram_id). This is what lets a phone-matched walk-in's
+    in-store orders + loyalty show up for this Telegram account. Best-effort."""
+    try:
+        from base.models import Customer as BaseCustomer
+        BaseCustomer.resolve(
+            phone=sf_customer.phone_number or None,
+            telegram_id=sf_customer.telegram_id,
+            name=sf_customer.name,
+        )
+    except Exception:  # noqa: BLE001 — never block auth on the cross-model link
+        logger.exception('smartfood: base.Customer link failed for tg=%s',
+                         sf_customer.telegram_id)
 
 
 class CustomerAuthService:
@@ -49,6 +68,9 @@ class CustomerAuthService:
                 customer.save()
         if customer.is_blocked:
             return ServiceResponse.forbidden('Account blocked')
+
+        # Link to the unified master client (by telegram_id now; by phone once set).
+        _link_base_customer(customer)
 
         raw = secrets.token_hex(32)
         ttl = _auth_ttl()
@@ -85,4 +107,7 @@ class CustomerAuthService:
         if language is not None:
             customer.language = _norm_lang(language)
         customer.save()
+        # A phone entered here is the cross-channel key — converge the master client.
+        if phone is not None:
+            _link_base_customer(customer)
         return ServiceResponse.success(data=customer_dict(customer))
