@@ -200,18 +200,33 @@ class TestShiftEndReconcileFlow:
         _, st = ShiftService.reconcile(s.id, actual_cash='0', notes='', reconciled_by_id=admin_user.id)
         assert st == 400
 
-    def test_end_blocked_when_open_order(self, cashier_user, regular_user):
+    def test_end_blocked_when_unpaid_open_cart(self, cashier_user, regular_user):
         from base.models import Order
         from admins.services.shift_service import ShiftService
         s = self._active_shift(cashier_user)
-        # An order the cashier opened this shift that's still on the line.
+        # A genuinely in-progress sale: an OPEN cart that hasn't been paid (no
+        # money in the drawer for it yet) — this still blocks the close.
         Order.objects.create(
-            user=regular_user, cashier=cashier_user, status='PREPARING',
+            user=regular_user, cashier=cashier_user, status='OPEN',
             is_paid=False, display_id=1, subtotal='10.00', total_amount='10.00')
         _, st = ShiftService.end_shift(s.id, cashier_user.id, 'done')
         assert st == 400
         s.refresh_from_db()
         assert s.status == 'ACTIVE'  # close was refused
+
+    def test_end_allowed_with_paid_kitchen_order(self, cashier_user, regular_user):
+        from base.models import Order
+        from admins.services.shift_service import ShiftService
+        s = self._active_shift(cashier_user)
+        # Paid order still PREPARING (kitchen hasn't marked it COMPLETED) is
+        # settled and carries over — it must NOT block the close. This is the bug
+        # that left tills open forever once paid orders piled up in the kitchen.
+        Order.objects.create(
+            user=regular_user, cashier=cashier_user, status='PREPARING',
+            is_paid=True, display_id=1, subtotal='10.00', total_amount='10.00')
+        res, st = ShiftService.end_shift(s.id, cashier_user.id, 'done')
+        assert st == 200, res
+        assert res['data']['status'] == 'ENDED'
 
     def test_end_allowed_when_order_completed(self, cashier_user, regular_user):
         from base.models import Order
