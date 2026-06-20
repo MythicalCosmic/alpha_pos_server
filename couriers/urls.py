@@ -7,6 +7,7 @@ from couriers import views
 urlpatterns = [
     # auth
     path('auth/courier/login/', views.courier_login, name='courier-login'),
+    path('auth/courier/logout/', views.courier_logout, name='courier-logout'),
 
     # profile + feeds
     path('courier/me/', views.me, name='courier-me'),
@@ -15,13 +16,20 @@ urlpatterns = [
     path('courier/stats/today/', views.stats_today, name='courier-stats-today'),
     path('courier/balance/', views.balance, name='courier-balance'),
     path('courier/notifications/', views.notifications, name='courier-notifications'),
+    path('courier/notifications/read/', views.notifications_read, name='courier-notifications-read'),
     path('courier/shift/reconciliation/', views.shift_reconciliation, name='courier-reconciliation'),
 
     # shift / location / push
     path('courier/location/', views.location, name='courier-location'),
     path('courier/shift/online/', views.shift_online, name='courier-shift-online'),
+    path('courier/shift/share-location/', views.shift_share_location, name='courier-shift-share-location'),
     path('courier/shift/settle/', views.shift_settle, name='courier-shift-settle'),
     path('courier/push-token/', views.push_token, name='courier-push-token'),
+
+    # payments
+    path('payments/create/', views.payment_create, name='courier-payment-create'),
+    path('payments/<int:payment_id>/refund/', views.payment_refund, name='courier-payment-refund'),
+    path('payments/webhook/', views.payment_webhook, name='courier-payment-webhook'),
 
     # order actions
     path('orders/<int:order_id>/accept/', views.order_accept, name='courier-order-accept'),

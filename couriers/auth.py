@@ -51,6 +51,19 @@ def resolve_courier(request):
     return user, courier, token
 
 
+def logout_session(token):
+    """Invalidate the courier's session (logout): delete the Session row whose
+    payload matches the token's hash and drop its cache entry. Idempotent."""
+    if not token:
+        return
+    from base.models import Session
+    token_hash = SessionRepository.hash_token(token)
+    if not token_hash:
+        return
+    SessionRepository.invalidate_cache(token)
+    Session.objects.filter(payload=token_hash).delete()
+
+
 def courier_required(view_func):
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):

@@ -18,6 +18,18 @@ def hhmm(dt):
     return timezone.localtime(dt).strftime('%H:%M')
 
 
+def short_dt(dt):
+    """A compact local display string: "19:35" for today, else "Jun 19" — used
+    for ledger/notification rows that can span days."""
+    if not dt:
+        return ''
+    local = timezone.localtime(dt)
+    if local.date() == timezone.localtime().date():
+        return local.strftime('%H:%M')
+    # Avoid platform-specific %-d (fails on Windows); build "Jun 19" by hand.
+    return f'{local.strftime("%b")} {local.day}'
+
+
 def so_m(value):
     """Decimal/float money -> integer so'm (never floats on the wire)."""
     if value is None:
@@ -94,6 +106,7 @@ def courier_dict(courier):
         'phone': courier.phone, 'vehicle': courier.vehicle, 'plate': courier.plate,
         'id': courier.code, 'branch': courier.branch_name or courier.branch_id,
         'rating': float(courier.rating), 'online': courier.online,
+        'shareLocation': courier.share_loc,
     }
 
 
@@ -127,4 +140,76 @@ def completed_order_dict(order, assignment):
         'minutes': minutes,
         'customer': {'name': _customer(order)['name']},
         'area': (addr['landmark'] or '').strip(),
+    }
+
+
+def notification_dict(n):
+    """Bell-feed row. `id` is a string (React key / read-marking); `unread` is
+    derived from read_at; `at` is a short display string."""
+    return {
+        'id': str(n.id),
+        'icon': n.icon or 'bell',
+        'tone': n.tone or 'primary',
+        'title': n.title,
+        'body': n.body or '',
+        'at': short_dt(n.created_at),
+        'unread': n.read_at is None,
+        'order': n.order_id,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# money: balance / reconciliation / settlement (snake_case on the wire)
+# --------------------------------------------------------------------------- #
+def ledger_row(*, at, kind, amount, label, order=None):
+    return {'at': short_dt(at), 'kind': kind, 'order': order,
+            'amount': int(amount), 'label': label}
+
+
+def balance_dict(snapshot, ledger):
+    """The /courier/balance/ payload. `balance` = net payable to the courier
+    (fees + bonuses + tips) this unsettled window; `heldTotal` = cash to hand
+    over; `ledger` = recent money rows."""
+    return {
+        'balance': snapshot['net_payout'],
+        'heldTotal': snapshot['cash_in_hand'],
+        'held': snapshot['held'],
+        'ledger': ledger,
+    }
+
+
+def reconciliation_dict(snapshot, courier):
+    """The /courier/shift/reconciliation/ payload (snake_case, spec §3)."""
+    return {
+        'collected_cash': snapshot['cash_collected'],
+        'qr_collected': snapshot['qr_collected'],
+        'delivery_fees': snapshot['delivery_fees'],
+        'bonuses': snapshot['bonuses'],
+        'tips': snapshot['tips'],
+        'cash_orders': snapshot['cash_orders'],
+        'qr_orders': snapshot['qr_orders'],
+        'shift_start': hhmm(courier.shift_started_at),
+        'handover_code': f'ALP-{courier.id:04d}',
+        'net_payout': snapshot['net_payout'],
+        'cash_in_hand': snapshot['cash_in_hand'],
+    }
+
+
+def settlement_dict(s):
+    """A frozen CourierSettlement snapshot (the settle response + ledger source).
+    `at` is the short display string (matching the balance ledger's convention);
+    `atIso` carries the machine timestamp for anything that needs it."""
+    return {
+        'id': s.id,
+        'at': short_dt(s.at),
+        'atIso': s.at.isoformat() if s.at else None,
+        'deliveries': s.deliveries,
+        'collected_cash': s.cash_collected,
+        'qr_collected': s.qr_collected,
+        'delivery_fees': s.delivery_fees,
+        'bonuses': s.bonuses,
+        'tips': s.tips,
+        'net_payout': s.net_payout,
+        'cash_in_hand': s.cash_collected,
+        'handover_code': s.handover_code,
     }

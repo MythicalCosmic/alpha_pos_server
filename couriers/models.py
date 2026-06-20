@@ -160,3 +160,150 @@ class PushToken(models.Model):
 
     def __str__(self):
         return f'{self.courier_id}:{self.platform}'
+
+
+class CourierPayment(models.Model):
+    """A payment the courier collects against a delivery order.
+
+    Record-only (see ``couriers.payments``): there is no live gateway, so the
+    courier confirms the method at the door and the row lands ``PAID`` — exactly
+    like recording cash. ``status`` + ``external_id`` exist so a future gateway
+    webhook can drive a ``PENDING -> PAID`` flow without a schema change. Money
+    is integer so'm. This is courier-layer state — NOT a synced ``OrderPayment``
+    row (the cloud sets the Order's rolled-up paid fields instead, which is what
+    the shift/AI reports read)."""
+
+    class Provider(models.TextChoices):
+        CASH = 'CASH', 'Cash'
+        CARD = 'CARD', 'Card (terminal)'
+        QR = 'QR', 'QR / online'
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        PAID = 'PAID', 'Paid'
+        REFUNDED = 'REFUNDED', 'Refunded'
+        FAILED = 'FAILED', 'Failed'
+
+    # Maps the courier-facing provider onto the POS Order.PaymentMethod so the
+    # order's rolled-up payment_method stays consistent with the rest of the POS.
+    PROVIDER_TO_METHOD = {
+        Provider.CASH: 'CASH',
+        Provider.CARD: 'UZCARD',
+        Provider.QR: 'PAYME',
+    }
+
+    order = models.ForeignKey(
+        'base.Order', on_delete=models.CASCADE, related_name='courier_payments',
+    )
+    courier = models.ForeignKey(
+        Courier, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='payments',
+    )
+    provider = models.CharField(max_length=8, choices=Provider.choices)
+    amount = models.BigIntegerField()                       # so'm
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True,
+    )
+    link = models.CharField(max_length=512, blank=True, default='')   # gateway pay link (QR/online)
+    external_id = models.CharField(            # gateway ref / idempotency key
+        max_length=128, blank=True, default='', db_index=True,
+    )
+    branch_id = models.CharField(max_length=50, blank=True, default='', db_index=True)
+    note = models.CharField(max_length=200, blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['courier', 'status']),
+            models.Index(fields=['order', 'status']),
+        ]
+
+    def __str__(self):
+        return f'CourierPayment<{self.provider} {self.amount} #{self.order_id} {self.status}>'
+
+    @property
+    def is_cash(self):
+        return self.provider == self.Provider.CASH
+
+
+class CourierSettlement(models.Model):
+    """A shift-handover snapshot. Closing one is what "settles" the courier:
+    every payment/delivery created at or before ``period_end`` is considered
+    settled, so the next reconciliation only counts events after it. The numbers
+    are a frozen copy of the reconciliation at handover time (so'm)."""
+
+    courier = models.ForeignKey(
+        Courier, on_delete=models.CASCADE, related_name='settlements',
+    )
+    at = models.DateTimeField(auto_now_add=True, db_index=True)
+    period_start = models.DateTimeField(null=True, blank=True)
+    period_end = models.DateTimeField(db_index=True)
+
+    deliveries = models.IntegerField(default=0)
+    cash_collected = models.BigIntegerField(default=0)
+    qr_collected = models.BigIntegerField(default=0)     # card + QR (non-cash)
+    delivery_fees = models.BigIntegerField(default=0)
+    bonuses = models.BigIntegerField(default=0)
+    tips = models.BigIntegerField(default=0)
+    net_payout = models.BigIntegerField(default=0)       # fees + bonuses + tips
+    handover_code = models.CharField(max_length=24, blank=True, default='')
+    note = models.CharField(max_length=200, blank=True, default='')
+
+    class Meta:
+        ordering = ['-at']
+        indexes = [models.Index(fields=['courier', 'period_end'])]
+
+    def __str__(self):
+        return f'Settlement<{self.courier_id} @ {self.at:%Y-%m-%d %H:%M}>'
+
+
+class CourierNotification(models.Model):
+    """A persisted notification for the courier app's bell feed. Written when an
+    order is assigned / ready / paid; the app marks them read. Shapes mirror the
+    feed the app already renders (icon/tone are display tokens)."""
+
+    courier = models.ForeignKey(
+        Courier, on_delete=models.CASCADE, related_name='notifications',
+    )
+    icon = models.CharField(max_length=24, blank=True, default='bell')
+    tone = models.CharField(max_length=12, blank=True, default='primary')
+    title = models.CharField(max_length=160)
+    body = models.CharField(max_length=400, blank=True, default='')
+    order = models.ForeignKey(
+        'base.Order', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['courier', 'read_at'])]
+
+    def __str__(self):
+        return f'Notif<{self.courier_id} {self.title!r}>'
+
+
+class LocationTrailPoint(models.Model):
+    """An appended GPS breadcrumb (unlike ``LocationPing`` which keeps only the
+    latest). Used to compute the courier's distanceKm over a shift. Recorded
+    only while on-shift + sharing location; pruned by age at end of shift
+    (services.set_online) and by the ``prune_courier_trail`` management command."""
+
+    courier = models.ForeignKey(
+        Courier, on_delete=models.CASCADE, related_name='trail',
+    )
+    lat = models.FloatField()
+    lng = models.FloatField()
+    at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['at']
+        indexes = [models.Index(fields=['courier', 'at'])]
+
+    def __str__(self):
+        return f'{self.courier_id} trail @ {self.lat},{self.lng}'

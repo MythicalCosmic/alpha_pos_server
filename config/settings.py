@@ -21,6 +21,10 @@ INSTALLED_APPS = build_installed_apps(['admins', 'smartfood', 'couriers'])  # no
 # Expo push (courier app background notifications). Optional in dev; set for prod.
 EXPO_ACCESS_TOKEN = os.environ.get('EXPO_ACCESS_TOKEN', '')
 
+# Shared secret for the courier payment webhook (online-gateway confirmation).
+# Empty = the webhook endpoint is disabled (the launch is record-only / cash).
+COURIER_PAYMENT_WEBHOOK_SECRET = os.environ.get('COURIER_PAYMENT_WEBHOOK_SECRET', '')
+
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'

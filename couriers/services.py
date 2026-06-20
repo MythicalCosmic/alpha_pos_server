@@ -14,12 +14,21 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from couriers.models import Courier, DeliveryAssignment, LocationPing
-from couriers import realtime, push, presenters
+from couriers.models import (
+    Courier, DeliveryAssignment, LocationPing, LocationTrailPoint,
+    CourierPayment, CourierSettlement, CourierNotification,
+)
+from couriers import realtime, push, presenters, geo
 
 logger = logging.getLogger('couriers.services')
 
 ACCEPT_WINDOW_SECONDS = 20      # IncomingOrderSheet hold-to-accept countdown
+TRAIL_RETENTION_DAYS = 7        # GPS breadcrumbs older than this are pruned
+
+
+def _today_start():
+    now = timezone.localtime()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -38,6 +47,21 @@ def _emit(order, event, data, *, courier_id=None, to_cashiers=True, push_title=N
     if push_title and courier_for_push is not None:
         push.push_to_courier(courier_for_push, push_title, push_body or '',
                              data={'order_id': order.id})
+
+
+def notify(courier, *, icon='bell', tone='primary', title='', body='', order=None):
+    """Persist a courier-app notification (the bell feed). Best-effort — a feed
+    write must never break the order/payment flow it rides along with."""
+    if courier is None or not title:
+        return None
+    try:
+        return CourierNotification.objects.create(
+            courier=courier, icon=(icon or 'bell')[:24], tone=(tone or 'primary')[:12],
+            title=title[:160], body=(body or '')[:400], order=order,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug('courier notify failed', exc_info=True)
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +106,9 @@ def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=No
     realtime.send_to_cashiers(order.branch_id, 'order.status', {
         'order_id': order.id, 'courier_id': courier.code, 'step': assignment.step,
     })
+    notify(courier, icon='scooter', tone='primary',
+           title=f'New order #{order.id}',
+           body='Assigned — kitchen is preparing.', order=order)
     return assignment
 
 
@@ -134,6 +161,9 @@ def mark_ready(order):
           push_title=f'Order #{order.id} is ready',
           push_body='Ready for pickup at the counter.',
           courier_for_push=courier)
+    notify(courier, icon='checkcircle', tone='success',
+           title=f'Order #{order.id} is ready',
+           body='Ready for pickup at the counter.', order=order)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,6 +221,10 @@ def update_location(courier, lat, lng):
     LocationPing.objects.update_or_create(
         courier=courier, defaults={'lat': lat, 'lng': lng},
     )
+    # Append a trail breadcrumb only while on-shift + sharing, so distanceKm is
+    # scoped to active shifts and we don't store a trail for an idle/private app.
+    if courier.online and courier.share_loc:
+        LocationTrailPoint.objects.create(courier=courier, lat=lat, lng=lng)
     if not courier.share_loc:
         return
     assignment = courier.current_delivery()
@@ -209,4 +243,153 @@ def set_online(courier, online):
     if not online:
         courier.shift_started_at = None
     courier.save(update_fields=['online', 'shift_started_at', 'updated_at'])
+    # Opportunistic prune at end of shift keeps the trail table bounded without a
+    # cron (the standalone `prune_courier_trail` command exists for ops too).
+    if not online:
+        prune_trail(courier)
     return courier
+
+
+def prune_trail(courier=None, *, days=TRAIL_RETENTION_DAYS):
+    """Delete GPS breadcrumbs older than `days`. Scoped to one courier when given,
+    else fleet-wide. Returns the number of rows removed."""
+    cutoff = timezone.now() - timedelta(days=days)
+    qs = LocationTrailPoint.objects.filter(at__lt=cutoff)
+    if courier is not None:
+        qs = qs.filter(courier=courier)
+    deleted, _ = qs.delete()
+    return deleted
+
+
+def set_share_location(courier, share):
+    courier.share_loc = bool(share)
+    courier.save(update_fields=['share_loc', 'updated_at'])
+    return courier
+
+
+# --------------------------------------------------------------------------- #
+# distance (GPS trail -> km)
+# --------------------------------------------------------------------------- #
+def shift_distance_km(courier):
+    """Kilometres travelled this shift, summed from the GPS trail. 0.0 when not
+    on shift or with too few fixes."""
+    start = courier.shift_started_at or _today_start()
+    pts = (LocationTrailPoint.objects
+           .filter(courier=courier, at__gte=start)
+           .order_by('at').only('lat', 'lng'))
+    return round(geo.trail_distance_km(pts), 1)
+
+
+# --------------------------------------------------------------------------- #
+# money: reconciliation + settlement (the courier's cash/payout ledger)
+# --------------------------------------------------------------------------- #
+def unsettled_start(courier):
+    """Start of the courier's current (unsettled) accounting window.
+
+    The end of the last settlement if there is one. Otherwise a STABLE anchor:
+    the earliest unsettled money event (first PAID payment / first delivery),
+    falling back to midnight. Deliberately NOT based on ``shift_started_at`` —
+    that flag is nulled on going offline, which would otherwise move the window
+    (and the cash-in-hand the rider sees) without any money changing hands, and
+    would drop pre-midnight cash from a shift that spans midnight."""
+    last = courier.settlements.order_by('-period_end').first()
+    if last and last.period_end:
+        return last.period_end
+    first_pay = (CourierPayment.objects
+                 .filter(courier=courier, status=CourierPayment.Status.PAID, paid_at__isnull=False)
+                 .order_by('paid_at').values_list('paid_at', flat=True).first())
+    first_del = (DeliveryAssignment.objects
+                 .filter(courier=courier, step=DeliveryAssignment.Step.DELIVERED,
+                         delivered_at__isnull=False)
+                 .order_by('delivered_at').values_list('delivered_at', flat=True).first())
+    candidates = [t for t in (first_pay, first_del) if t]
+    return min(candidates) if candidates else _today_start()
+
+
+def reconciliation_snapshot(courier, *, start=None, end=None, bonuses=0, tips=0):
+    """Aggregate the courier's money over [start, end) — defaults to the
+    unsettled window up to now. Returns raw integer so'm (presenters shape the
+    wire). Cash is collected cash; qr_collected folds card + QR (non-cash).
+    bonuses/tips have no live source, so they default to 0 and are only set at
+    settle time when an operator records them.
+
+    Fees are windowed by delivered_at and payments by paid_at. In the cash-first
+    door-confirmed flow these happen within seconds of each other, so a single
+    delivery's fee and cash land in the same window; the only edge where they
+    split is a settlement landing in the brief gap between the two — accepted as
+    a known limitation for the record-only launch."""
+    start = start or unsettled_start(courier)
+    end = end or timezone.now()
+
+    done = (DeliveryAssignment.objects.filter(
+        courier=courier, step=DeliveryAssignment.Step.DELIVERED,
+        delivered_at__gte=start, delivered_at__lt=end))
+    deliveries = 0
+    delivery_fees = 0
+    for a in done:
+        deliveries += 1
+        delivery_fees += int(a.fee or 0)
+
+    pays = (CourierPayment.objects.filter(
+        courier=courier, status=CourierPayment.Status.PAID,
+        paid_at__gte=start, paid_at__lt=end))
+    cash_collected = 0
+    qr_collected = 0
+    cash_orders = set()
+    qr_orders = set()
+    held = []
+    for p in pays:
+        amt = int(p.amount)
+        if p.provider == CourierPayment.Provider.CASH:
+            cash_collected += amt
+            cash_orders.add(p.order_id)
+            held.append({'order': p.order_id, 'amount': amt})
+        else:
+            qr_collected += amt
+            qr_orders.add(p.order_id)
+
+    bonuses = int(bonuses or 0)
+    tips = int(tips or 0)
+    net_payout = delivery_fees + bonuses + tips
+    return {
+        'deliveries': deliveries,
+        'cash_collected': cash_collected,
+        'qr_collected': qr_collected,
+        'delivery_fees': delivery_fees,
+        'bonuses': bonuses,
+        'tips': tips,
+        'cash_orders': len(cash_orders),
+        'qr_orders': len(qr_orders),
+        'net_payout': net_payout,
+        'cash_in_hand': cash_collected,
+        'held': held,
+        'period_start': start,
+        'period_end': end,
+    }
+
+
+@transaction.atomic
+def settle(courier, *, bonuses=0, tips=0, note=''):
+    """Close the unsettled window: freeze a CourierSettlement snapshot and reset
+    'unsettled' to now (everything up to period_end is settled). Returns the row.
+
+    Serialized per courier with a row lock so a double-tapped / retried handover
+    can't write two settlements over the same window (which would double-count
+    the cash + payout)."""
+    courier = Courier.objects.select_for_update().get(pk=courier.pk)
+    end = timezone.now()
+    start = unsettled_start(courier)
+    snap = reconciliation_snapshot(courier, start=start, end=end,
+                                   bonuses=bonuses, tips=tips)
+    return CourierSettlement.objects.create(
+        courier=courier,
+        period_start=start, period_end=end,
+        deliveries=snap['deliveries'],
+        cash_collected=snap['cash_collected'],
+        qr_collected=snap['qr_collected'],
+        delivery_fees=snap['delivery_fees'],
+        bonuses=snap['bonuses'], tips=snap['tips'],
+        net_payout=snap['net_payout'],
+        handover_code=f'ALP-{courier.id:04d}',
+        note=(note or '')[:200],
+    )

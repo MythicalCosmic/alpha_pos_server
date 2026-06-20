@@ -14,9 +14,8 @@ from urllib.parse import parse_qs
 from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
 from django.conf import settings
-from django.utils import timezone
 
-from couriers.realtime import courier_group, branch_group, send_to_cashiers
+from couriers.realtime import courier_group, branch_group
 
 logger = logging.getLogger('couriers.ws')
 
@@ -61,6 +60,14 @@ def _session_user(token):
         return None
     if not session or not session.user_id or session.user_id.is_deleted:
         return None
+    # Enforce token lifetime, same as the REST path (couriers.auth.resolve_courier
+    # / base.security): an expired session must NOT grant a live socket.
+    if session.is_expired():
+        try:
+            SessionRepository.invalidate_cache(token)
+        except Exception:
+            pass
+        return None
     if getattr(session.user_id, 'status', 'ACTIVE') != 'ACTIVE':
         return None
     return session.user_id
@@ -103,27 +110,14 @@ class CourierConsumer(JsonWebsocketConsumer):
             return
         if not (_LAT_MIN <= lat <= _LAT_MAX and _LNG_MIN <= lng <= _LNG_MAX):
             return
-        from couriers.models import Courier, LocationPing
-        try:
-            courier = Courier.objects.select_related('user').get(pk=self.courier_id)
-        except Courier.DoesNotExist:
+        from couriers.models import Courier
+        from couriers import services
+        courier = Courier.objects.select_related('user').filter(pk=self.courier_id).first()
+        if not courier:
             return
-        if not courier.share_loc:
-            return
-        LocationPing.objects.update_or_create(
-            courier=courier, defaults={'lat': lat, 'lng': lng},
-        )
-        # Relay only while actively delivering, scoped to the order's branch.
-        assignment = courier.current_delivery()
-        if not assignment:
-            return
-        send_to_cashiers(assignment.order.branch_id, 'courier.location', {
-            'courier_id': courier.code,
-            'order_id': assignment.order_id,
-            'lat': lat,
-            'lng': lng,
-            'at': timezone.now().isoformat(),
-        })
+        # Single funnel: stores last-known + trail breadcrumb and relays to the
+        # cashier map (scoped to share_loc / active delivery inside the service).
+        services.update_location(courier, lat, lng)
 
     # --- group_send handlers ----------------------------------------------- #
     def courier_event(self, message):
@@ -135,19 +129,37 @@ class CashierConsumer(JsonWebsocketConsumer):
     ``branch_<branch_id>`` (from ?branch= or the staff user's branch). Receives
     courier.location / order.status / order.delivered."""
 
+    # Roles allowed to watch ANY branch's courier map (multi-branch back-office).
+    _ALL_BRANCH_ROLES = ('ADMIN', 'MANAGER')
+
     def connect(self):
         if _license_blocked():
             self.close(code=_CLOSE_FORBIDDEN)
             return
+        qs = parse_qs((self.scope.get('query_string') or b'').decode('utf-8', 'ignore'))
+        requested = (qs.get('branch') or [None])[0]
         # Trusted-LAN desktop edition would set OPEN_LAN; on the cloud server we
-        # require a staff session.
+        # require a staff session AND that the user may watch the requested branch.
         if not getattr(settings, 'OPEN_LAN', False):
             user = _session_user(_handshake_token(self.scope))
             if user is None:
                 self.close(code=_CLOSE_AUTH)
                 return
-        qs = parse_qs((self.scope.get('query_string') or b'').decode('utf-8', 'ignore'))
-        branch = (qs.get('branch') or [getattr(settings, 'BRANCH_ID', 'cloud')])[0]
+            # A courier account is not a cashier — it must not subscribe to the
+            # branch operations/location feed.
+            if getattr(user, 'courier', None) is not None:
+                self.close(code=_CLOSE_FORBIDDEN)
+                return
+            role = getattr(user, 'role', '')
+            own_branch = getattr(user, 'branch_id', '') or ''
+            if role not in self._ALL_BRANCH_ROLES:
+                # Non-admins are pinned to their own branch; ignore/deny a
+                # mismatching client-supplied ?branch= (cross-branch IDOR).
+                if requested and own_branch and requested != own_branch:
+                    self.close(code=_CLOSE_FORBIDDEN)
+                    return
+                requested = own_branch or requested
+        branch = requested or getattr(settings, 'BRANCH_ID', 'cloud')
         self.group = branch_group(branch)
         async_to_sync(self.channel_layer.group_add)(self.group, self.channel_name)
         self.accept()

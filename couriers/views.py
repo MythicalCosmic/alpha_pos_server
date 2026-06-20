@@ -12,13 +12,19 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
+from django.conf import settings
+from django.db.models import Sum
+
 from base.helpers.request import parse_json_body
+from base.models import Order
 from base.repositories.session import SessionRepository
 from base.security.hashing import verify_password, verify_password_dummy
 
-from couriers.auth import courier_required
-from couriers.models import Courier, DeliveryAssignment, PushToken
-from couriers import services, presenters
+from couriers.auth import courier_required, logout_session
+from couriers.models import (
+    Courier, DeliveryAssignment, PushToken, CourierPayment, CourierNotification,
+)
+from couriers import services, presenters, payments
 
 SESSION_TTL_DAYS = 7
 
@@ -88,6 +94,15 @@ def courier_login(request):
     return JsonResponse({'token': token})
 
 
+@csrf_exempt
+@require_POST
+@courier_required
+def courier_logout(request):
+    """POST /auth/courier/logout/ -> revoke the current session token."""
+    logout_session(getattr(request, 'session_key', None))
+    return JsonResponse({'ok': True})
+
+
 # --------------------------------------------------------------------------- #
 # profile + feeds (camelCase)
 # --------------------------------------------------------------------------- #
@@ -129,20 +144,24 @@ def stats_today(request):
             .select_related('order'))
     deliveries = 0
     earnings = 0
-    cash_collected = 0
     minutes_total = 0
     by_hour = {f'{h:02d}': 0 for h in range(8, 24)}
     for a in done:
         deliveries += 1
         earnings += int(a.fee or 0)
-        if not a.order.is_paid or a.order.payment_method == 'CASH':
-            cash_collected += presenters.so_m(a.order.total_amount)
         if a.delivered_at and a.order.created_at:
             minutes_total += int((a.delivered_at - a.order.created_at).total_seconds() // 60)
         if a.delivered_at:
             h = timezone.localtime(a.delivered_at).strftime('%H')
             by_hour[h] = by_hour.get(h, 0) + 1
     avg_minutes = int(minutes_total / deliveries) if deliveries else 0
+    # Cash actually collected today = PAID CASH payment rows (consistent with the
+    # balance/reconciliation ledger), not inferred from order paid-state.
+    cash_collected = (CourierPayment.objects.filter(
+        courier=request.courier, status=CourierPayment.Status.PAID,
+        provider=CourierPayment.Provider.CASH,
+        paid_at__gte=start, paid_at__lt=end)
+        .aggregate(s=Sum('amount'))['s'] or 0)
     started = request.courier.shift_started_at
     active_hours = ''
     if started:
@@ -154,7 +173,7 @@ def stats_today(request):
         'cashCollected': cash_collected,
         'avgMinutes': avg_minutes,
         'activeHours': active_hours,
-        'distanceKm': 0,   # TODO: sum from location trail if you persist one
+        'distanceKm': services.shift_distance_km(request.courier),
         'byHour': [{'h': str(int(h)), 'n': n} for h, n in sorted(by_hour.items())],
     })
 
@@ -162,86 +181,75 @@ def stats_today(request):
 @require_GET
 @courier_required
 def balance(request):
-    """Cash held / payout. The real numbers come from the payments ledger
-    (companion BACKEND_INTEGRATION.md §5). Until that's wired, derive cash-held
-    from undelivered-but-collected orders and return the documented shape."""
-    held = []
-    held_total = 0
-    active = (DeliveryAssignment.objects
-              .filter(courier=request.courier)
-              .exclude(step__in=(DeliveryAssignment.Step.DELIVERED,
-                                 DeliveryAssignment.Step.DECLINED))
-              .select_related('order'))
-    for a in active:
-        if a.order.is_paid and a.order.payment_method == 'CASH':
-            amt = presenters.so_m(a.order.total_amount)
-            held_total += amt
-            held.append({'order': a.order_id, 'amount': amt})
-    return JsonResponse({
-        'balance': 0,            # TODO payments doc §5: net payable to the courier
-        'heldTotal': held_total,
-        'held': held,
-        'ledger': [],            # TODO payments doc §5: settlement ledger rows
-    })
+    """Cash held + net payable, backed by the courier payment/settlement ledger.
+    `balance` is the unsettled net payout; `heldTotal` the unsettled cash to hand
+    over; `ledger` recent settlements + payments, newest first."""
+    courier = request.courier
+    snap = services.reconciliation_snapshot(courier)
+
+    # (timestamp, row) pairs so we can sort chronologically before the `at`
+    # field is flattened to a display string.
+    rows = []
+    for s in courier.settlements.all()[:20]:
+        rows.append((s.at, presenters.ledger_row(
+            at=s.at, kind='settlement', amount=s.net_payout,
+            label=f'Shift settled · {s.deliveries} deliveries')))
+    for p in (CourierPayment.objects.filter(courier=courier)
+              .exclude(status=CourierPayment.Status.PENDING)
+              .order_by('-created_at')[:20]):
+        signed = -int(p.amount) if p.status == CourierPayment.Status.REFUNDED else int(p.amount)
+        verb = 'Refund' if p.status == CourierPayment.Status.REFUNDED else 'Collected'
+        when = p.refunded_at or p.paid_at or p.created_at
+        rows.append((when, presenters.ledger_row(
+            at=when, kind='payment', amount=signed, order=p.order_id,
+            label=f'{verb} · {p.get_provider_display()} · order #{p.order_id}')))
+    rows.sort(key=lambda r: r[0] or timezone.now(), reverse=True)
+    ledger = [row for _, row in rows[:30]]
+
+    return JsonResponse(presenters.balance_dict(snap, ledger))
 
 
 @require_GET
 @courier_required
 def notifications(request):
-    """Recent courier notifications. Derived from this courier's assignments;
-    swap for a persisted Notification table if you add one."""
-    out = []
-    recent = (DeliveryAssignment.objects
-              .filter(courier=request.courier)
-              .select_related('order')
-              .order_by('-updated_at')[:30])
-    for a in recent:
-        if a.step == DeliveryAssignment.Step.READY:
-            out.append({'id': f'n{a.id}', 'icon': 'checkcircle', 'tone': 'success',
-                        'title': f'Order #{a.order_id} is ready',
-                        'body': 'Ready for pickup at the counter.',
-                        'at': presenters.hhmm(a.ready_at), 'unread': True, 'order': a.order_id})
-        elif a.step == DeliveryAssignment.Step.ASSIGNED:
-            out.append({'id': f'n{a.id}', 'icon': 'scooter', 'tone': 'primary',
-                        'title': f'New order #{a.order_id}',
-                        'body': 'Assigned — kitchen is preparing.',
-                        'at': presenters.hhmm(a.assigned_at), 'unread': True, 'order': a.order_id})
-    return JsonResponse(out, safe=False)
+    """The courier's recent persisted notifications (bell feed), newest first."""
+    qs = (CourierNotification.objects
+          .filter(courier=request.courier)
+          .order_by('-created_at')[:50])
+    return JsonResponse([presenters.notification_dict(n) for n in qs], safe=False)
+
+
+@csrf_exempt
+@require_POST
+@courier_required
+def notifications_read(request):
+    """Mark notifications read. Body ``{"ids": [...]}`` marks those (tolerant of
+    'n123' or 123); an empty/absent ids marks all unread read. Returns the
+    remaining unread count."""
+    data, _ = parse_json_body(request)
+    ids = (data or {}).get('ids')
+    qs = CourierNotification.objects.filter(courier=request.courier, read_at__isnull=True)
+    if ids:
+        parsed = []
+        for raw in ids:
+            try:
+                parsed.append(int(str(raw).lstrip('n')))
+            except (TypeError, ValueError):
+                continue
+        qs = qs.filter(id__in=parsed)
+    qs.update(read_at=timezone.now())
+    unread = CourierNotification.objects.filter(
+        courier=request.courier, read_at__isnull=True).count()
+    return JsonResponse({'ok': True, 'unread': unread})
 
 
 @require_GET
 @courier_required
 def shift_reconciliation(request):
-    """SNAKE_CASE on the wire (spec §3 / payments doc §5). Cash totals are the
-    real numbers; QR/fees/bonuses/tips come from the payments ledger — stubbed
-    until that's wired, but the shape is exact."""
-    start, _ = _today_range()
-    done = (DeliveryAssignment.objects
-            .filter(courier=request.courier, step=DeliveryAssignment.Step.DELIVERED,
-                    delivered_at__gte=start)
-            .select_related('order'))
-    collected_cash = 0
-    delivery_fees = 0
-    cash_orders = 0
-    for a in done:
-        delivery_fees += int(a.fee or 0)
-        if a.order.payment_method == 'CASH':
-            collected_cash += presenters.so_m(a.order.total_amount)
-            cash_orders += 1
-    started = request.courier.shift_started_at
-    return JsonResponse({
-        'collected_cash': collected_cash,
-        'qr_collected': 0,        # TODO payments doc §5
-        'delivery_fees': delivery_fees,
-        'bonuses': 0,             # TODO
-        'tips': 0,                # TODO
-        'cash_orders': cash_orders,
-        'qr_orders': 0,           # TODO
-        'shift_start': presenters.hhmm(started),
-        'handover_code': f'ALP-{request.courier.id:04d}',
-        'net_payout': delivery_fees,   # TODO payments doc §5
-        'cash_in_hand': collected_cash,
-    })
+    """SNAKE_CASE on the wire (spec §3). The unsettled-window totals from the
+    courier payment/fee ledger — cash, non-cash, fees, net payout, cash-in-hand."""
+    snap = services.reconciliation_snapshot(request.courier)
+    return JsonResponse(presenters.reconciliation_dict(snap, request.courier))
 
 
 # --------------------------------------------------------------------------- #
@@ -333,10 +341,39 @@ def shift_online(request):
 @csrf_exempt
 @require_POST
 @courier_required
+def shift_share_location(request):
+    """Toggle the 'share live location' setting. Body ``{"share": true}`` (also
+    accepts ``shareLocation``/``online`` aliases)."""
+    data, error = parse_json_body(request)
+    if error:
+        return JsonResponse(error[0], status=error[1])
+    if 'share' in data:
+        share = data.get('share')
+    elif 'shareLocation' in data:
+        share = data.get('shareLocation')
+    else:
+        share = data.get('enabled')
+    courier = services.set_share_location(request.courier, bool(share))
+    return JsonResponse({'shareLocation': courier.share_loc})
+
+
+@csrf_exempt
+@require_POST
+@courier_required
 def shift_settle(request):
-    """Clears cash-in-hand at handover. Real settlement -> payments doc §5."""
-    # TODO payments doc §5: write the settlement ledger row + reset held cash.
-    return JsonResponse({'ok': True})
+    """Handover: freeze a settlement snapshot and reset the unsettled window.
+    Optional body ``{bonuses, tips, note}`` records handover-time adjustments."""
+    data, _ = parse_json_body(request)
+    data = data or {}
+    try:
+        bonuses = int(data.get('bonuses') or 0)
+        tips = int(data.get('tips') or 0)
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'message': 'bonuses/tips must be integers'},
+                            status=400)
+    settlement = services.settle(request.courier, bonuses=bonuses, tips=tips,
+                                 note=(data.get('note') or ''))
+    return JsonResponse(presenters.settlement_dict(settlement))
 
 
 @csrf_exempt
@@ -354,3 +391,78 @@ def push_token(request):
         defaults={'courier': request.courier, 'platform': data.get('platform', '')[:8]},
     )
     return JsonResponse({'ok': True})
+
+
+# --------------------------------------------------------------------------- #
+# payments (record-only; see couriers.payments)
+# --------------------------------------------------------------------------- #
+@csrf_exempt
+@require_POST
+@courier_required
+def payment_create(request):
+    """POST /payments/create/  {order_id, provider, amount?} -> {payment_id, status, link}.
+    Records a courier-collected payment as PAID and fires ``payment.paid``."""
+    data, error = parse_json_body(request)
+    if error:
+        return JsonResponse(error[0], status=error[1])
+    try:
+        order = Order.objects.filter(pk=int(data.get('order_id'))).first()
+    except (TypeError, ValueError):
+        order = None
+    if not order:
+        return JsonResponse({'success': False, 'message': 'order not found'}, status=404)
+    if not _owned_assignment(request, order.id):
+        return JsonResponse({'success': False, 'message': 'Order not assigned to you'},
+                            status=403)
+    payment, err = payments.create_payment(
+        request.courier, order, data.get('provider'),
+        amount=data.get('amount'), note=data.get('note', ''),
+        external_id=data.get('external_id', ''))
+    if err:
+        return JsonResponse({'success': False, 'message': err}, status=400)
+    return JsonResponse({'payment_id': payment.id, 'status': payment.status,
+                         'link': payment.link})
+
+
+@csrf_exempt
+@require_POST
+@courier_required
+def payment_refund(request, payment_id):
+    """POST /payments/<id>/refund/ -> reverse the courier's own payment."""
+    payment = (CourierPayment.objects.select_related('order', 'courier')
+               .filter(pk=payment_id, courier=request.courier).first())
+    if not payment:
+        return JsonResponse({'success': False, 'message': 'payment not found'}, status=404)
+    refunded, err = payments.refund_payment(payment)
+    if err:
+        return JsonResponse({'success': False, 'message': err}, status=409)
+    return JsonResponse({'ok': True, 'status': refunded.status})
+
+
+@csrf_exempt
+@require_POST
+def payment_webhook(request):
+    """POST /payments/webhook/  — gateway-driven confirmation/reversal. Guarded
+    by the shared secret in the ``X-Webhook-Secret`` header; inert (503) until
+    ``COURIER_PAYMENT_WEBHOOK_SECRET`` is configured. The online-payment seam for
+    when a real gateway is wired (the launch is record-only/cash)."""
+    secret = getattr(settings, 'COURIER_PAYMENT_WEBHOOK_SECRET', '') or ''
+    if not secret:
+        return JsonResponse({'success': False, 'message': 'webhook disabled'}, status=503)
+    provided = request.META.get('HTTP_X_WEBHOOK_SECRET', '')
+    if not provided or not secrets.compare_digest(provided, secret):
+        return JsonResponse({'success': False, 'message': 'forbidden'}, status=403)
+    data, error = parse_json_body(request)
+    if error:
+        return JsonResponse(error[0], status=error[1])
+    payment, err = payments.apply_webhook(
+        external_id=(data.get('external_id') or ''),
+        payment_id=data.get('payment_id'),
+        status=(data.get('status') or ''),
+        order_id=data.get('order_id'),
+        provider=(data.get('provider') or 'QR'),
+        amount=data.get('amount'))
+    if err:
+        return JsonResponse({'success': False, 'message': err}, status=400)
+    return JsonResponse({'ok': True, 'payment_id': getattr(payment, 'id', None),
+                         'status': getattr(payment, 'status', None)})
