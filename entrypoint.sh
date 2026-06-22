@@ -33,6 +33,11 @@ fi
 echo "Running migrations..."
 python manage.py migrate --noinput
 
+# Ensure the notification message templates exist (idempotent get_or_create).
+# The staff Telegram bot runs server-side now, so the server — not the till —
+# needs the order.*/shift.*/hr.*/telegram.* templates seeded.
+python manage.py seed_templates || echo "seed_templates failed (non-fatal)"
+
 # License heartbeat runs as a sibling process (a single loop, observable in
 # `docker logs`, killed cleanly by SIGTERM) — NOT one-per-worker inside the
 # server. Skipped when LICENSE_HEARTBEAT_DISABLED is set.
