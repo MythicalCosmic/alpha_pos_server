@@ -25,6 +25,16 @@ EXPO_ACCESS_TOKEN = os.environ.get('EXPO_ACCESS_TOKEN', '')
 # Empty = the webhook endpoint is disabled (the launch is record-only / cash).
 COURIER_PAYMENT_WEBHOOK_SECRET = os.environ.get('COURIER_PAYMENT_WEBHOOK_SECRET', '')
 
+# Auto-dispatch a bot order to the active cashier on a CONNECTED POS the moment it
+# lands (WS Phase 3). ON by default; set false to restore the manual operator queue.
+SMARTFOOD_AUTO_DISPATCH = os.environ.get(
+    'SMARTFOOD_AUTO_DISPATCH', 'True').strip().lower() in ('1', 'true', 'yes', 'on')
+
+# Auto-assign an available courier to a DELIVERY order right after dispatch. OFF by
+# default — couriers are chosen by hand via POST /api/admins/couriers/assign.
+COURIER_AUTO_ASSIGN = os.environ.get(
+    'COURIER_AUTO_ASSIGN', 'False').strip().lower() in ('1', 'true', 'yes', 'on')
+
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'

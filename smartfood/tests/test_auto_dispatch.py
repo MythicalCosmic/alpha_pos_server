@@ -1,5 +1,7 @@
 """WS Phase 3: auto-dispatch a bot order to the active cashier on a CONNECTED
-POS (presence registry), and REJECT when no POS is online (product decision)."""
+POS (presence registry), and REJECT when no POS is online (product decision).
+Plus auto courier-assign (Phase 4, default OFF)."""
+import secrets
 from decimal import Decimal
 
 import pytest
@@ -89,3 +91,50 @@ class TestCreateAutoDispatchIntegration:
         assert st == 201
         bo = BotOrder.objects.get(id=res['data']['id'])
         assert bo.status == 'REJECTED'
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAutoCourierAssign:
+    """Phase 4: auto courier-assign is OFF by default; when enabled it hands a
+    dispatched DELIVERY order to an available online courier. Manual assignment
+    (POST /api/admins/couriers/assign) is always available regardless."""
+
+    def _courier(self, online=True):
+        from base.models import User
+        from couriers.models import Courier
+        u = User.objects.create(
+            first_name='Co', last_name='Ur', email=f'cour-{secrets.token_hex(3)}@x.local',
+            role='USER', status='ACTIVE', password='!')
+        return Courier.objects.create(
+            user=u, code=f'C{secrets.randbelow(9999)}', phone='+998900000000',
+            branch_id='cloud', online=online)
+
+    def _dispatch(self, customer, product, cashier):
+        from smartfood.services.dispatch_service import DispatchService
+        o = _bot_order(customer, product)            # DELIVERY
+        body, st = DispatchService.dispatch(o.id, cashier.id)
+        assert st == 200, body
+        o.refresh_from_db()
+        return o
+
+    def test_assigns_when_enabled(self, settings, cfg, active_shift, cashier, product, customer):
+        settings.COURIER_AUTO_ASSIGN = True
+        courier = self._courier(online=True)
+        o = self._dispatch(customer, product, cashier)
+        from couriers.models import DeliveryAssignment
+        assert DeliveryAssignment.objects.filter(
+            order_id=o.pos_order_id, courier=courier).exists()
+
+    def test_no_assign_when_disabled(self, settings, cfg, active_shift, cashier, product, customer):
+        settings.COURIER_AUTO_ASSIGN = False
+        self._courier(online=True)
+        o = self._dispatch(customer, product, cashier)
+        from couriers.models import DeliveryAssignment
+        assert not DeliveryAssignment.objects.filter(order_id=o.pos_order_id).exists()
+
+    def test_no_assign_when_no_online_courier(self, settings, cfg, active_shift, cashier, product, customer):
+        settings.COURIER_AUTO_ASSIGN = True
+        self._courier(online=False)                  # offline -> not eligible
+        o = self._dispatch(customer, product, cashier)
+        from couriers.models import DeliveryAssignment
+        assert not DeliveryAssignment.objects.filter(order_id=o.pos_order_id).exists()

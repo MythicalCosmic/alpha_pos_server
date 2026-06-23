@@ -11,6 +11,7 @@ broadcasts it to the cashier queue + KDS automatically.
 import logging
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
@@ -23,6 +24,34 @@ from smartfood.models import BotOrder, Customer
 logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_EMAIL = 'smartfood-bot@local'
+
+
+def _auto_assign_courier_safe(bot_order_id, pos_order_id):
+    """Auto-assign an available courier to a freshly-dispatched DELIVERY order.
+    Default OFF (COURIER_AUTO_ASSIGN); manual assignment via
+    POST /api/admins/couriers/assign is always available. Best-effort — never
+    breaks the dispatch; skips if a courier was already assigned by hand."""
+    try:
+        from couriers.models import DeliveryAssignment
+        from couriers.services import assign, pick_available_courier
+        from base.models import Order
+        if DeliveryAssignment.objects.filter(order_id=pos_order_id).exists():
+            return                                  # already assigned (e.g. manually)
+        courier = pick_available_courier()
+        if not courier:
+            logger.info('auto courier-assign: no available courier (order=%s)', pos_order_id)
+            return
+        order = Order.objects.filter(id=pos_order_id).first()
+        bot_order = BotOrder.objects.select_related('address').filter(id=bot_order_id).first()
+        if not order or not bot_order:
+            return
+        addr = bot_order.address
+        assign(order, courier, fee=bot_order.delivery_fee,
+               addr_text=bot_order.address_text,
+               addr_lat=(addr.lat if addr else None),
+               addr_lng=(addr.lng if addr else None))
+    except Exception:
+        logger.exception('auto courier-assign failed (order=%s)', pos_order_id)
 
 
 def _bot_customer_user():
@@ -178,6 +207,12 @@ class DispatchService:
         bot_order.save(update_fields=['pos_order', 'dispatched_cashier', 'dispatched_by',
                                       'dispatched_at', 'status', 'updated_at'])
         _notify(bot_order, 'dispatched')
+        # Auto courier-assign (default OFF): hand a DELIVERY order to an available
+        # courier right after dispatch. Runs after commit; manual assignment via
+        # POST /api/admins/couriers/assign stays the default and an override.
+        if order.order_type == 'DELIVERY' and getattr(settings, 'COURIER_AUTO_ASSIGN', False):
+            _bo_id, _po_id = bot_order.id, order.id
+            transaction.on_commit(lambda: _auto_assign_courier_safe(_bo_id, _po_id))
         return ServiceResponse.success(data={
             'bot_order_id': bot_order.id,
             'pos_order_id': order.id,

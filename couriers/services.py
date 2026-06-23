@@ -68,6 +68,19 @@ def notify(courier, *, icon='bell', tone='primary', title='', body='', order=Non
 # assignment (cashier/admin -> courier)
 # --------------------------------------------------------------------------- #
 @transaction.atomic
+def pick_available_courier():
+    """Auto-assign policy: the first ONLINE courier with no in-flight delivery
+    (ASSIGNED/READY/PICKED_UP). Deliberately simple — swap for nearest /
+    round-robin later. Returns a Courier or None when all are busy/offline."""
+    busy = DeliveryAssignment.objects.filter(
+        step__in=(DeliveryAssignment.Step.ASSIGNED,
+                  DeliveryAssignment.Step.READY,
+                  DeliveryAssignment.Step.PICKED_UP),
+    ).values_list('courier_id', flat=True)
+    return (Courier.objects.filter(online=True).exclude(id__in=list(busy))
+            .order_by('id').first())
+
+
 def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=None,
            addr_lng=None, distance_km=None):
     """Assign a delivery order to a courier; (re)opens the hold-to-accept window
