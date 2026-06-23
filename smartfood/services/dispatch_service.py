@@ -209,6 +209,44 @@ class DispatchService:
         return ServiceResponse.success(data={'bot_order_id': bot_order.id, 'status': bot_order.status})
 
     @staticmethod
+    def auto_dispatch(bot_order_id):
+        """Phase 3: resolve the active cashier on a CONNECTED till (presence
+        registry) and dispatch the order to them automatically. If no POS is
+        online / no on-shift cashier is present, REJECT the order (product
+        decision) so the customer is told immediately rather than the order
+        hanging PENDING forever. Returns the dispatch/reject (body, status)."""
+        from base.services.presence import resolve_active_cashier
+        resolved = resolve_active_cashier()
+        if not resolved:
+            logger.info('auto-dispatch: no connected POS for bot order %s -> reject',
+                        bot_order_id)
+            return DispatchService.reject(
+                bot_order_id,
+                reason='No POS terminal is online to accept the order right now',
+            )
+        return DispatchService.dispatch(bot_order_id, resolved['cashier_id'])
+
+    @staticmethod
+    def connected_pos():
+        """Live tills + their active cashier — operator visibility (Phase 2)."""
+        from base.services.presence import live_devices
+        from base.models import User
+        names = {}
+        rows = []
+        for d in live_devices():
+            cid = d.get('cashier_id')
+            if cid and cid not in names:
+                u = User.objects.filter(id=cid).first()
+                names[cid] = (f'{u.first_name} {u.last_name}'.strip() if u else '')
+            rows.append({
+                'device_id': d.get('device_id'),
+                'branch_id': d.get('branch_id'),
+                'cashier_id': cid,
+                'cashier_name': names.get(cid, ''),
+            })
+        return ServiceResponse.success(data={'items': rows})
+
+    @staticmethod
     def pending_queue():
         from smartfood.serializers import bot_order_dict
         orders = (BotOrder.objects.filter(status=BotOrder.Status.PENDING)

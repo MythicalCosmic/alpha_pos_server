@@ -61,6 +61,16 @@ def active_cashiers(request):
 
 
 @csrf_exempt
+@require_GET
+@manager_required
+def connected_pos(request):
+    """Live POS terminals (presence heartbeat) + their active cashier — so the
+    operator can see which tills auto-dispatch can reach."""
+    result, status = DispatchService.connected_pos()
+    return JsonResponse(result, status=status)
+
+
+@csrf_exempt
 @require_POST
 @manager_required
 def dispatch_order(request, bot_order_id):
@@ -94,6 +104,7 @@ urlpatterns = [
     path('config/enable', config_enable, name='bot-config-enable'),
     path('orders/pending', pending_orders, name='bot-orders-pending'),
     path('cashiers/active', active_cashiers, name='bot-cashiers-active'),
+    path('pos/connected', connected_pos, name='bot-pos-connected'),
     path('orders/<int:bot_order_id>/dispatch', dispatch_order, name='bot-order-dispatch'),
     path('orders/<int:bot_order_id>/reject', reject_order, name='bot-order-reject'),
 ]

@@ -3,6 +3,9 @@
 Money is recomputed server-side via cart_service; redeemed loyalty points are
 reserved at create and refunded on reject (in dispatch_service).
 """
+import logging
+
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 
@@ -10,6 +13,19 @@ from base.helpers.response import ServiceResponse
 from smartfood.models import Address, BotOrder, BotOrderItem, Customer
 from smartfood.serializers import bot_order_dict, instore_order_dict
 from smartfood.services.cart_service import price_cart, CartError
+
+logger = logging.getLogger(__name__)
+
+
+def _auto_dispatch_safe(bot_order_id):
+    """Run auto-dispatch outside the create transaction; never surface its errors
+    to the customer (the order is already created PENDING — worst case it falls
+    back to the manual operator queue)."""
+    try:
+        from smartfood.services.dispatch_service import DispatchService
+        DispatchService.auto_dispatch(bot_order_id)
+    except Exception:
+        logger.exception('auto-dispatch failed (bot_order=%s)', bot_order_id)
 
 
 def _instore_orders_for(sf_customer, limit=30):
@@ -90,6 +106,13 @@ class BotOrderService:
                 reason=f'Redeemed on order {order.code}', bot_order=order)
 
         order = BotOrder.objects.prefetch_related('items').select_related('pos_order').get(id=order.id)
+        # Phase 3: auto-dispatch to the active cashier on a connected POS the
+        # moment the order lands (or reject if none online). Gated by a setting so
+        # the manual operator queue can be restored. Runs after commit so the
+        # order row is durable before dispatch reads/locks it.
+        if getattr(settings, 'SMARTFOOD_AUTO_DISPATCH', True):
+            _oid = order.id
+            transaction.on_commit(lambda: _auto_dispatch_safe(_oid))
         return ServiceResponse.created(data=bot_order_dict(order))
 
     @staticmethod
