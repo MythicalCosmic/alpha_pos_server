@@ -44,6 +44,15 @@ def _notify(bot_order, event):
         notify_customer(bot_order, event)
     except Exception:
         logger.debug('customer notify failed (%s)', event, exc_info=True)
+    # Push the same transition to the customer's Mini App over WebSocket, AFTER
+    # the surrounding transaction commits (so the client never sees a status that
+    # was rolled back). Best-effort — realtime never breaks the order flow.
+    try:
+        from smartfood.realtime import publish_bot_order_event
+        _oid = bot_order.id
+        transaction.on_commit(lambda: publish_bot_order_event(_oid, event))
+    except Exception:
+        logger.debug('customer ws publish schedule failed (%s)', event, exc_info=True)
 
 
 class DispatchService:

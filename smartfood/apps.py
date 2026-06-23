@@ -13,3 +13,7 @@ class SmartfoodConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'smartfood'
     verbose_name = 'Smart Food (customer delivery)'
+
+    def ready(self):
+        # Register the customer realtime status bridge (post_save on base.Order).
+        from smartfood import signals  # noqa: F401

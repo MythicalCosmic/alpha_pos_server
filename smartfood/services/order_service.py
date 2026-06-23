@@ -132,4 +132,8 @@ class BotOrderService:
                 reason=f'Refund canceled order {order.code}', bot_order=order)
         order.status = BotOrder.Status.CANCELED
         order.save(update_fields=['status', 'updated_at'])
+        # Push the cancellation to the customer's Mini App over WS after commit.
+        from smartfood.realtime import publish_bot_order_event
+        _oid = order.id
+        transaction.on_commit(lambda: publish_bot_order_event(_oid, 'canceled'))
         return ServiceResponse.success(data={'id': order.id, 'status': order.status})
