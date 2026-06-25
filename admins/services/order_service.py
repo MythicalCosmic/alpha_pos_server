@@ -947,6 +947,33 @@ class AdminOrderService:
         stats = OrderRepository.get_stats_aggregate(date_from_dt, date_to_dt, cashier_id)
         avg_prep = OrderRepository.get_avg_prep_time(date_from_dt, date_to_dt)
 
+        # Paid revenue split into the 3 buckets the admin FE shows, over the SAME
+        # date filter: CASH (incl. legacy NULL), CARD (UZCARD/HUMO/MIXED), DIGITAL
+        # (PAYME). Best-effort so a breakdown error never blanks the whole stats.
+        try:
+            from base.models import Order
+            from django.db.models import DecimalField, Q, Sum
+            from django.db.models.functions import Coalesce
+            from decimal import Decimal as _D
+            pq = Order.objects.filter(is_deleted=False, is_paid=True).exclude(status='CANCELED')
+            if date_from_dt:
+                pq = pq.filter(created_at__gte=date_from_dt)
+            if date_to_dt:
+                pq = pq.filter(created_at__lte=date_to_dt)
+            if cashier_id:
+                pq = pq.filter(cashier_id=cashier_id)
+            _p = pq.aggregate(
+                CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
+                              _D('0.00'), output_field=DecimalField()),
+                CARD=Coalesce(Sum('total_amount', filter=Q(payment_method__in=['UZCARD', 'HUMO', 'MIXED'])),
+                              _D('0.00'), output_field=DecimalField()),
+                DIGITAL=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')),
+                                 _D('0.00'), output_field=DecimalField()),
+            )
+            payment_breakdown = {k: str(_p[k] or 0) for k in ('CASH', 'CARD', 'DIGITAL')}
+        except Exception:
+            payment_breakdown = {'CASH': '0', 'CARD': '0', 'DIGITAL': '0'}
+
         return ServiceResponse.success(data={
             'total_orders': stats['total'],
             'preparing_orders': stats['preparing'],
@@ -957,6 +984,7 @@ class AdminOrderService:
             'unpaid_orders': stats['unpaid'],
             'total_revenue': str(stats['total_revenue']),
             'avg_order_value': str(stats['avg_order_value']),
+            'payment_breakdown': payment_breakdown,
             'average_preparation_time_seconds': avg_prep,
             'average_preparation_time_formatted': _format_duration(avg_prep) if avg_prep else None,
         })

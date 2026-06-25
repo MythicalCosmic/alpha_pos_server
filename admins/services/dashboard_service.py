@@ -293,3 +293,94 @@ def get_today():
         'low_stock_count': _low_stock_count(),
         'clocked_in': _clocked_in(),
     }
+
+
+def _range_window(date_from, date_to):
+    """Parse YYYY-MM-DD from/to into an aware [start, end) window (defaults to
+    today, swapped if reversed; end is midnight after `to` so the whole day is
+    included)."""
+    from datetime import datetime, time, timedelta
+
+    def _d(s):
+        try:
+            return datetime.strptime((s or '').strip(), '%Y-%m-%d').date()
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    today = timezone.localdate()
+    d_from = _d(date_from) or today
+    d_to = _d(date_to) or today
+    if d_to < d_from:
+        d_from, d_to = d_to, d_from
+    tz = timezone.get_current_timezone()
+    start = timezone.make_aware(datetime.combine(d_from, time.min), tz)
+    end = timezone.make_aware(datetime.combine(d_to + timedelta(days=1), time.min), tz)
+    return d_from, d_to, start, end
+
+
+def get_range(date_from=None, date_to=None):
+    """Date-range dashboard (GET /dashboard?from=&to=): the headline figures over
+    an arbitrary [from, to] window (defaults to today)."""
+    from base.models import Order, OrderItem
+    d_from, d_to, start, end = _range_window(date_from, date_to)
+    sold = Order.objects.filter(is_deleted=False, created_at__gte=start, created_at__lt=end)
+    paid = sold.filter(is_paid=True).exclude(status='CANCELED')
+    rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
+    counts = sold.aggregate(total=Count('id'),
+                            cancelled=Count('id', filter=Q(status='CANCELED')))
+    pay = paid.aggregate(
+        CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
+                      Decimal('0.00'), output_field=DecimalField()),
+        UZCARD=Coalesce(Sum('total_amount', filter=Q(payment_method='UZCARD')),
+                        Decimal('0.00'), output_field=DecimalField()),
+        HUMO=Coalesce(Sum('total_amount', filter=Q(payment_method='HUMO')),
+                      Decimal('0.00'), output_field=DecimalField()),
+        PAYME=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')),
+                       Decimal('0.00'), output_field=DecimalField()),
+        MIXED=Coalesce(Sum('total_amount', filter=Q(payment_method='MIXED')),
+                       Decimal('0.00'), output_field=DecimalField()),
+    )
+    line_total = ExpressionWrapper(
+        F('price') * F('quantity'),
+        output_field=DecimalField(max_digits=18, decimal_places=2))
+    items = OrderItem.objects.filter(
+        order__is_deleted=False, order__created_at__gte=start, order__created_at__lt=end,
+    ).exclude(order__status='CANCELED')
+    units = items.aggregate(q=Sum('quantity'))['q'] or 0
+    top = list(items.annotate(lt=line_total).values('product_id', 'product__name')
+               .annotate(quantity=Sum('quantity'), revenue=Sum('lt'))
+               .order_by('-quantity')[:5])
+    return {
+        'range': {'from': d_from.isoformat(), 'to': d_to.isoformat()},
+        'revenue': _uzs(rev['total']),
+        'paid_orders': rev['n'] or 0,
+        'orders': counts['total'] or 0,
+        'cancelled': counts['cancelled'] or 0,
+        'units_sold': int(units),
+        'payment_breakdown': {m: _uzs(pay[m]) for m in _PAYMENT_METHODS},
+        'top_products': [{
+            'product_id': r['product_id'], 'product_name': r['product__name'],
+            'quantity': int(r['quantity'] or 0), 'revenue': _uzs(r['revenue']),
+        } for r in top],
+    }
+
+
+def get_sidebar_counts():
+    """One-call sidebar counters — active shifts + today's order count + today's
+    revenue — replacing two separate 90s polls."""
+    from base.models import Order, Shift
+    start, end = _today_window()
+    active = _safe('sidebar active_shifts',
+                   lambda: Shift.objects.filter(is_deleted=False, status='ACTIVE').count(), 0)
+    today = _safe('sidebar today', lambda: Order.objects.filter(
+        is_deleted=False, created_at__gte=start, created_at__lt=end).aggregate(
+            orders=Count('id'),
+            revenue=Coalesce(
+                Sum('total_amount', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
+                Decimal('0.00'), output_field=DecimalField()),
+        ), {'orders': 0, 'revenue': Decimal('0')})
+    return {
+        'active_shifts': active,
+        'today_orders': today['orders'] or 0,
+        'today_revenue': _uzs(today['revenue']),
+    }

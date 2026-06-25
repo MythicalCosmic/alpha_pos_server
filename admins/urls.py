@@ -109,6 +109,8 @@ urlpatterns = [
     path('exports/1c', export_views.one_c_export, name='export_1c'),
 
     path('dashboard/today', dashboard_views.today_view, name='dashboard_today'),
+    path('dashboard', dashboard_views.range_view, name='dashboard_range'),
+    path('sidebar-counts', dashboard_views.sidebar_counts_view, name='sidebar_counts'),
 
     path('forecast/tomorrow', forecast_views.tomorrow_view, name='forecast_tomorrow'),
 
