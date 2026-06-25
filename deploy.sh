@@ -40,6 +40,11 @@ BTOK="$(keep DESKTOP_BRANCH_TOKEN)";    BTOK="${BTOK:-$(rand 32)}"
 CBOT="$(keep CUSTOMER_BOT_TOKEN)";      CBOT="${CBOT:-8783914595:AAFaThtUdYIzPXt9Sj0gvrhIGMG7f3_BLos}"
 CWHSEC="$(keep CUSTOMER_WEBHOOK_SECRET)"; CWHSEC="${CWHSEC:-$(rand 32)}"
 YGEO="$(keep YANDEX_GEOCODER_KEY)"
+# Auto bot-dispatch + auto courier-assign default OFF for a safe rollout: presence
+# needs tills on 1.0.13+ (older tills send no device presence, so auto-dispatch
+# would reject every bot order). Flip to true in .env once the tills are updated.
+SAD="$(keep SMARTFOOD_AUTO_DISPATCH)";   SAD="${SAD:-false}"
+CAA="$(keep COURIER_AUTO_ASSIGN)";       CAA="${CAA:-false}"
 # AI assistant. Keys are preserved across redeploys via keep() — set each once in
 # .env (never committed to git). Provider + model are safe to bake. OpenAI is the
 # active provider; Claude + Gemini config are kept as fallbacks.
@@ -77,6 +82,8 @@ CUSTOMER_BOT_TOKEN=${CBOT}
 CUSTOMER_WEBAPP_URL=${CUSTOMER_WEBAPP_URL:-https://${HOST}/webapp/}
 CUSTOMER_WEBHOOK_SECRET=${CWHSEC}
 SMARTFOOD_AUTH_TTL=86400
+SMARTFOOD_AUTO_DISPATCH=${SAD}
+COURIER_AUTO_ASSIGN=${CAA}
 YANDEX_GEOCODER_KEY=${YGEO}
 # --- AI assistant (LLM) — server-side only ---
 # OpenAI is active (gpt-5.4-mini) with persisted chat history. Claude + Gemini
