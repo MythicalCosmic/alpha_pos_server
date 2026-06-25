@@ -87,6 +87,13 @@ services:
     # on-failure (not unless-stopped): if CUSTOMER_BOT_TOKEN is unset the command
     # exits 0 cleanly — don't crash-loop it; a real crash still restarts.
     restart: on-failure
+    # The shared image bakes an HTTP `/healthz` HEALTHCHECK for `web`; this poller
+    # runs no web server on :8000, so that probe always fails and marks a perfectly
+    # healthy bot "unhealthy". Liveness for a single-process poller IS the container
+    # running (restart: on-failure covers real crashes), so disable the inherited
+    # probe rather than report a permanent false negative.
+    healthcheck:
+      disable: true
     env_file:
       - .env
     environment:
