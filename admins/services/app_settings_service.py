@@ -9,12 +9,33 @@ logger = logging.getLogger(__name__)
 class AppSettingsService:
 
     @staticmethod
+    def _parse_time(value):
+        """Accept a "HH:MM" / "HH:MM:SS" string (or a time) -> datetime.time, else None."""
+        from datetime import time, datetime as _dt
+        if isinstance(value, time):
+            return value
+        if not isinstance(value, str):
+            return None
+        for fmt in ('%H:%M', '%H:%M:%S'):
+            try:
+                return _dt.strptime(value.strip(), fmt).time()
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    @staticmethod
     def get_all():
         settings = AppSettingsRepository.load()
 
         data = {
             'hr_enabled': settings.hr_enabled,
             'waiter_enabled': settings.waiter_enabled,
+            # Operating-day cutover as "HH:MM" (e.g. "03:00") — the FE uses it to
+            # compute business dates for its date-preset chips.
+            'business_day_start': (
+                settings.business_day_start.strftime('%H:%M')
+                if settings.business_day_start else '03:00'
+            ),
         }
 
         try:
@@ -36,6 +57,15 @@ class AppSettingsService:
         for key, value in kwargs.items():
             if key in app_fields:
                 setattr(settings, key, value)
+
+        if 'business_day_start' in kwargs:
+            parsed = AppSettingsService._parse_time(kwargs['business_day_start'])
+            if parsed is None:
+                return ServiceResponse.validation_error(
+                    errors={'business_day_start': 'Must be a time string "HH:MM" or "HH:MM:SS"'},
+                    message='Invalid business_day_start',
+                )
+            settings.business_day_start = parsed
 
         settings.save()
 

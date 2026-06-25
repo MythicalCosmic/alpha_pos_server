@@ -175,14 +175,24 @@ def _parse_int_list(param):
     return result or None
 
 
+def _business_start():
+    from base.services.business_day import business_day_start
+    return business_day_start()
+
+
 def _parse_date(date_str):
+    """Parse a start-of-range bound. A bare YYYY-MM-DD anchors to the BUSINESS-day
+    start (AppSettings.business_day_start, default 03:00) so reports bound on the
+    operating day, not the calendar day. An explicit timestamp is honored as-is."""
     if not date_str:
         return None
+    s = date_str.strip()
     try:
-        return timezone.make_aware(datetime.strptime(date_str, '%Y-%m-%d'))
+        d = datetime.strptime(s, '%Y-%m-%d').date()
+        return timezone.make_aware(datetime.combine(d, _business_start()))
     except (ValueError, TypeError):
         try:
-            return timezone.make_aware(datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S'))
+            return timezone.make_aware(datetime.strptime(s, '%Y-%m-%d %H:%M:%S'))
         except (ValueError, TypeError):
             return None
 
@@ -190,22 +200,21 @@ def _parse_date(date_str):
 def _parse_date_to(date_str):
     """Parse an inclusive end-of-range bound.
 
-    A bare date like '2026-05-31' parses to midnight, and the stats filters
-    use created_at__lte=date_to — so every order placed during the day was
-    silently excluded (a single-day query returned ~nothing). When only a date
-    is supplied, roll it to the last microsecond of that day so the whole day
-    is included. An explicit timestamp is honored as-is.
+    A bare date rolls to the last microsecond before the NEXT business-day cutover,
+    so the whole operating day is included — an order at 01:00 still counts toward
+    the previous business day (the stats filters use created_at__lte=date_to). An
+    explicit timestamp is honored as-is.
     """
     if not date_str:
         return None
-    dt = _parse_date(date_str)
-    if dt is None:
-        return None
-    # Date-only input (no time component) → extend to end of day.
-    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and dt.microsecond == 0 \
-            and len(date_str.strip()) <= 10:
-        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-    return dt
+    s = date_str.strip()
+    try:
+        d = datetime.strptime(s, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        # Not a bare date — an explicit timestamp (or junk); honor via _parse_date.
+        return _parse_date(date_str)
+    nxt = timezone.make_aware(datetime.combine(d + timedelta(days=1), _business_start()))
+    return nxt - timedelta(microseconds=1)
 
 
 def _recalculate_total(order):

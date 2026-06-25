@@ -122,4 +122,13 @@ urlpatterns = [
     path('analytics/shifts/kitchen', analytics_views.kitchen_shift_analytics_view, name='analytics_shifts_kitchen'),
     # Shift handover report (manager view when a cashier ends their shift).
     path('analytics/shifts/<int:shift_id>/report', analytics_views.shift_report_view, name='analytics_shift_report'),
+
+    # Products dashboard (item 9) — ?from=&to= (YYYY-MM-DD), business-day window.
+    path('analytics/products/overview', analytics_views.products_overview_view, name='analytics_products_overview'),
+    path('analytics/products/categories', analytics_views.products_categories_view, name='analytics_products_categories'),
+    path('analytics/products/pareto', analytics_views.products_pareto_view, name='analytics_products_pareto'),
+    path('analytics/products/trends', analytics_views.products_trends_view, name='analytics_products_trends'),
+
+    # Staff dashboard (item 10) — ?range=30d (or ?from=&to=).
+    path('staff/performance', analytics_views.staff_performance_view, name='staff_performance'),
 ]

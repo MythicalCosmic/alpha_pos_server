@@ -5,7 +5,12 @@ from django.http import JsonResponse
 from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_GET
 
-from admins.services.analytics_service import menu_engineering, shift_performance
+from admins.services.analytics_service import (
+    menu_engineering, shift_performance, staff_performance,
+)
+from admins.services.product_analytics_service import (
+    products_categories, products_overview, products_pareto, products_trends,
+)
 from admins.services.shift_analytics_service import (
     cashier_shift_analytics, kitchen_shift_analytics, shift_handover_report,
 )
@@ -140,3 +145,75 @@ def kitchen_shift_analytics_view(request):
         kwargs['target_prep_seconds'] = target_min * 60
     data = kitchen_shift_analytics(df, dt, **kwargs)
     return JsonResponse({'success': True, 'data': data})
+
+
+# ── Products dashboard (item 9): overview / categories / pareto / trends ──
+# All take ?from=&to= (YYYY-MM-DD); default to the current business day.
+
+@require_GET
+@manager_required
+def products_overview_view(request):
+    df, dt, err = _parse_range(request)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_overview(df, dt)})
+
+
+@require_GET
+@manager_required
+def products_categories_view(request):
+    df, dt, err = _parse_range(request)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_categories(df, dt)})
+
+
+@require_GET
+@manager_required
+def products_pareto_view(request):
+    df, dt, err = _parse_range(request)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_pareto(df, dt)})
+
+
+@require_GET
+@manager_required
+def products_trends_view(request):
+    df, dt, err = _parse_range(request)
+    if err:
+        return err
+    top_n = _int_or_none(request.GET.get('top_n')) or 5
+    top_n = max(1, min(top_n, 20))
+    return JsonResponse({'success': True, 'data': products_trends(df, dt, top_n=top_n)})
+
+
+def _parse_range_token(request):
+    """Staff dashboard range: ?range=30d|7d|90d on the business calendar. An
+    explicit ?from=&to= wins; otherwise the token (default 30d) is resolved to
+    [business_today - (N-1) days, business_today]."""
+    from datetime import timedelta
+    from base.services.business_day import business_date
+
+    if request.GET.get('from') or request.GET.get('to'):
+        return _parse_range(request)
+
+    token = (request.GET.get('range') or '30d').strip().lower()
+    days = 30
+    if token.endswith('d'):
+        days = _int_or_none(token[:-1]) or 30
+    elif token.endswith('m'):  # months -> ~30d each
+        days = (_int_or_none(token[:-1]) or 1) * 30
+    days = max(1, min(days, 366))
+    d_to = business_date()
+    d_from = d_to - timedelta(days=days - 1)
+    return d_from, d_to, None
+
+
+@require_GET
+@manager_required
+def staff_performance_view(request):
+    df, dt, err = _parse_range_token(request)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': staff_performance(df, dt)})

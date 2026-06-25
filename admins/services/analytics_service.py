@@ -194,3 +194,93 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
             'avg_margin_per_unit': str(avg_margin.quantize(Decimal('0.01'))),
         },
     }
+
+
+def staff_performance(date_from, date_to):
+    """Per-staff KPIs over the BUSINESS-day window [date_from, date_to]: order
+    volume, completion/cancellation, paid revenue, units sold, and shifts/hours
+    worked. Powers the admin-panel Staff dashboard (GET /staff/performance?range=).
+    """
+    from base.models import Order, OrderItem, Shift
+    from base.services.business_day import range_window
+
+    lo, hi = range_window(date_from, date_to)
+
+    order_rows = (
+        Order.objects.filter(
+            is_deleted=False, cashier__isnull=False,
+            created_at__gte=lo, created_at__lt=hi,
+        )
+        .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
+        .annotate(
+            orders_total=Count('id'),
+            completed=Count('id', filter=Q(status='COMPLETED')),
+            cancelled=Count('id', filter=Q(status='CANCELED')),
+            paid=Count('id', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
+            revenue=Sum('total_amount', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
+        )
+        .order_by('-revenue')
+    )
+
+    units_map = {
+        r['order__cashier_id']: int(r['u'] or 0)
+        for r in (
+            OrderItem.objects.filter(
+                order__is_deleted=False,
+                order__created_at__gte=lo, order__created_at__lt=hi,
+            )
+            .exclude(order__status='CANCELED')
+            .values('order__cashier_id')
+            .annotate(u=Sum('quantity'))
+        )
+    }
+
+    # Shifts that STARTED inside the window, with worked hours (open shifts run
+    # up to "now"). Aggregated in Python so an open shift's running duration is
+    # handled the same way shift_performance does it.
+    shift_map = {}
+    for s in Shift.objects.filter(is_deleted=False, start_time__gte=lo, start_time__lt=hi):
+        end = s.end_time or timezone.now()
+        secs = max((end - s.start_time).total_seconds(), 0)
+        agg = shift_map.setdefault(s.user_id, {'shifts': 0, 'seconds': 0.0})
+        agg['shifts'] += 1
+        agg['seconds'] += secs
+
+    staff = []
+    for r in order_rows:
+        cid = r['cashier_id']
+        orders_total = r['orders_total'] or 0
+        cancelled = r['cancelled'] or 0
+        paid = r['paid'] or 0
+        revenue = r['revenue'] or Decimal('0')
+        sm = shift_map.get(cid, {'shifts': 0, 'seconds': 0.0})
+        avg_order = (revenue / paid).quantize(Decimal('0.01')) if paid else Decimal('0')
+        staff.append({
+            'user_id': cid,
+            'name': f"{r['cashier__first_name'] or ''} {r['cashier__last_name'] or ''}".strip(),
+            'role': r['cashier__role'],
+            'orders_total': orders_total,
+            'orders_completed': r['completed'] or 0,
+            'orders_cancelled': cancelled,
+            'orders_paid': paid,
+            'cancel_rate_pct': round(cancelled / orders_total * 100, 2) if orders_total else 0.0,
+            'revenue': str(int(revenue)),
+            'avg_order_value': str(int(avg_order)),
+            'units_sold': units_map.get(cid, 0),
+            'shifts_worked': sm['shifts'],
+            'hours_worked': round(sm['seconds'] / 3600, 2),
+        })
+
+    total_revenue = sum((Decimal(s['revenue']) for s in staff), Decimal('0'))
+    total_orders = sum(s['orders_total'] for s in staff)
+    return {
+        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'window_days': (date_to - date_from).days + 1,
+        'staff': staff,
+        'summary': {
+            'staff_count': len(staff),
+            'total_orders': total_orders,
+            'total_revenue': str(int(total_revenue)),
+            'top_performer': staff[0]['name'] if staff else None,
+        },
+    }

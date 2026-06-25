@@ -46,9 +46,10 @@ def _uzs(value):
 
 
 def _today_window():
-    now = timezone.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start, now
+    # "Today" = the current BUSINESS day (cutover at AppSettings.business_day_start,
+    # default 03:00), so a 01:00 sale still counts toward the night before.
+    from base.services.business_day import today_window
+    return today_window()
 
 
 def _today_revenue():
@@ -296,10 +297,11 @@ def get_today():
 
 
 def _range_window(date_from, date_to):
-    """Parse YYYY-MM-DD from/to into an aware [start, end) window (defaults to
-    today, swapped if reversed; end is midnight after `to` so the whole day is
-    included)."""
-    from datetime import datetime, time, timedelta
+    """Parse YYYY-MM-DD from/to into an aware [start, end) BUSINESS-DAY window
+    (defaults to the current business date, swapped if reversed; end is the next
+    business-day cutover after `to` so the whole operating day is included)."""
+    from datetime import datetime
+    from base.services.business_day import business_date, range_window
 
     def _d(s):
         try:
@@ -307,14 +309,12 @@ def _range_window(date_from, date_to):
         except (ValueError, TypeError, AttributeError):
             return None
 
-    today = timezone.localdate()
-    d_from = _d(date_from) or today
-    d_to = _d(date_to) or today
+    default_day = business_date()
+    d_from = _d(date_from) or default_day
+    d_to = _d(date_to) or default_day
     if d_to < d_from:
         d_from, d_to = d_to, d_from
-    tz = timezone.get_current_timezone()
-    start = timezone.make_aware(datetime.combine(d_from, time.min), tz)
-    end = timezone.make_aware(datetime.combine(d_to + timedelta(days=1), time.min), tz)
+    start, end = range_window(d_from, d_to)
     return d_from, d_to, start, end
 
 
