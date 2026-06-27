@@ -145,6 +145,7 @@ class DispatchService:
             customer_id=pos_customer.id if pos_customer else None,
             display_id=OrderRepository.next_display_id(),
             chef_queue_number=OrderRepository.next_chef_queue_number(),
+            order_number=OrderRepository.next_order_number(),
             order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
             phone_number=bot_order.phone_number,
             description=description,

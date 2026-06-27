@@ -36,6 +36,7 @@ def _serialize_order_list(order, include_items=True):
     data = {
         'id': order.id,
         'display_id': order.display_id,
+        'order_number': order.order_number,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
         'description': order.description,
@@ -118,6 +119,7 @@ def _serialize_order_detail(order):
     return {
         'id': order.id,
         'display_id': order.display_id,
+        'order_number': order.order_number,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
         'description': order.description,
@@ -379,6 +381,7 @@ class AdminOrderService:
 
         display_id = OrderRepository.next_display_id()
         chef_queue_number = OrderRepository.next_chef_queue_number()
+        order_number = OrderRepository.next_order_number()
 
         product_ids = [item.get('product_id') for item in items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
@@ -413,6 +416,7 @@ class AdminOrderService:
             cashier_id=cashier_id,
             display_id=display_id,
             chef_queue_number=chef_queue_number,
+            order_number=order_number,
             order_type=order_type,
             phone_number=phone_number,
             description=description,

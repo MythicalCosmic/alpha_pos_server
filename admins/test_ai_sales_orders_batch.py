@@ -178,3 +178,21 @@ class TestProductAffinity:
         for p in data['pairs']:                           # only intra-top-N pairs survive
             assert idx_to_id[p['a']] in ids and idx_to_id[p['b']] in ids
         assert len(data['pairs']) <= 1
+
+
+# ── Order number (item 4) ──
+
+class TestOrderNumber:
+    def test_allocator_monotonic_no_wrap_and_per_branch(self):
+        from base.repositories.order import OrderRepository
+        vals = [OrderRepository.next_order_number() for _ in range(105)]
+        assert vals == list(range(1, 106))                # never wraps at 100 (unlike display_id)
+        assert OrderRepository.next_order_number(scope='branch-x') == 1  # independent per branch
+
+    def test_order_number_in_admin_serializer(self):
+        from base.models import Order
+        from admins.services.order_service import AdminOrderService
+        o = _order_at(_aware(2026, 3, 10, 12, 0))
+        Order.objects.filter(pk=o.pk).update(order_number=7)
+        res, _ = AdminOrderService.get_all_orders(include_items=False)
+        assert res['data']['orders'][0]['order_number'] == 7
