@@ -119,3 +119,62 @@ class TestIncludeItems:
         # items_count is the number of LINE items (1), not the quantity (2).
         assert 'items' in row_with and row_with['items_count'] == 1
         assert 'items' not in row_wo and row_wo['items_count'] == 1  # count stays
+
+
+# ── Product affinity / market-basket (item 16) ──
+
+def _product(name, price='10000'):
+    from base.models import Category, Product
+    cat, _ = Category.objects.get_or_create(name='c', slug='c')
+    return Product.objects.create(name=name, price=Decimal(price), category=cat)
+
+
+def _order_with(products, paid=True, status='COMPLETED'):
+    from base.models import OrderItem
+    o = _order_at(_aware(2026, 3, 10, 12, 0), paid=paid, status=status)
+    for p in products:
+        OrderItem.objects.create(order=o, product=p, quantity=1,
+                                 price=p.price, original_price=p.price)
+    return o
+
+
+class TestProductAffinity:
+    def test_cooccurrence_counts_and_exclusions(self):
+        from datetime import date
+        from admins.services.product_analytics_service import products_affinity
+        A, B, C = _product('A'), _product('B'), _product('C')
+        _order_with([A, B, C])                            # paid
+        _order_with([A, B])                               # paid
+        _order_with([A, C])                               # paid
+        _order_with([A, B], status='CANCELED')            # excluded (cancelled)
+        _order_with([A, B], paid=False, status='OPEN')    # excluded (unpaid)
+
+        data = products_affinity(date(2026, 3, 10), date(2026, 3, 10), limit=10)
+        assert data['totalOrders'] == 3                   # only the 3 paid, non-cancelled
+        by_id = {p['id']: p for p in data['products']}
+        assert by_id[A.id]['orders'] == 3
+        assert by_id[B.id]['orders'] == 2 and by_id[C.id]['orders'] == 2
+        assert data['products'][0]['id'] == A.id          # most orders first
+        # every pair: a<b (by index), count>0
+        assert all(p['a'] < p['b'] and p['count'] > 0 for p in data['pairs'])
+        idx_to_id = [p['id'] for p in data['products']]
+        counts = {tuple(sorted((idx_to_id[p['a']], idx_to_id[p['b']]))): p['count']
+                  for p in data['pairs']}
+        assert counts[tuple(sorted((A.id, B.id)))] == 2
+        assert counts[tuple(sorted((A.id, C.id)))] == 2
+        assert counts[tuple(sorted((B.id, C.id)))] == 1
+        assert len(data['pairs']) == 3
+
+    def test_topn_limit_drops_outside_pairs(self):
+        from datetime import date
+        from admins.services.product_analytics_service import products_affinity
+        A, B, C = _product('A'), _product('B'), _product('C')
+        _order_with([A, B, C]); _order_with([A, B]); _order_with([A, C])
+        data = products_affinity(date(2026, 3, 10), date(2026, 3, 10), limit=2)
+        assert len(data['products']) == 2
+        ids = {p['id'] for p in data['products']}
+        assert A.id in ids                                # A always top (orders=3)
+        idx_to_id = [p['id'] for p in data['products']]
+        for p in data['pairs']:                           # only intra-top-N pairs survive
+            assert idx_to_id[p['a']] in ids and idx_to_id[p['b']] in ids
+        assert len(data['pairs']) <= 1

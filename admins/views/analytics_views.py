@@ -9,7 +9,8 @@ from admins.services.analytics_service import (
     menu_engineering, shift_performance, staff_performance,
 )
 from admins.services.product_analytics_service import (
-    products_categories, products_overview, products_pareto, products_trends,
+    products_affinity, products_categories, products_overview, products_pareto,
+    products_trends,
 )
 from admins.services.shift_analytics_service import (
     cashier_shift_analytics, kitchen_shift_analytics, shift_handover_report,
@@ -199,6 +200,9 @@ def _parse_range_token(request):
         return _parse_range(request)
 
     token = (request.GET.get('range') or '30d').strip().lower()
+    if token == 'today':
+        d = business_date()
+        return d, d, None
     days = 30
     if token.endswith('d'):
         days = _int_or_none(token[:-1]) or 30
@@ -217,3 +221,15 @@ def staff_performance_view(request):
     if err:
         return err
     return JsonResponse({'success': True, 'data': staff_performance(df, dt)})
+
+
+@require_GET
+@manager_required
+def products_affinity_view(request):
+    """GET /analytics/products/affinity?range=30d&limit=10 — market-basket
+    co-occurrence for the Products chord chart (item 16)."""
+    df, dt, err = _parse_range_token(request)
+    if err:
+        return err
+    limit = _int_or_none(request.GET.get('limit')) or 10
+    return JsonResponse({'success': True, 'data': products_affinity(df, dt, limit=limit)})

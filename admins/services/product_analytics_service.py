@@ -232,3 +232,78 @@ def products_trends(date_from, date_to, top_n=5):
         'daily': series,
         'top_products_trend': top_products_trend,
     }
+
+
+def products_affinity(date_from, date_to, limit=10):
+    """Market-basket co-occurrence (item 16): which products are bought together.
+
+    Returns the top-N products (by the number of PAID orders each appears in) and the
+    co-occurrence count for every pair where BOTH products are in the top-N. In the
+    pairs, `a`/`b` are INDICES into products[] (not product ids), a<b, count>0. The
+    FE computes lift = count*N / (A.orders*B.orders) using totalOrders + each product's
+    `orders`. Business-day windowed; one query + a Python pass over the baskets."""
+    from itertools import combinations
+    from base.models import OrderItem, Product
+
+    limit = max(1, min(int(limit or 10), 25))
+    lo, hi = _window(date_from, date_to)
+
+    # (order_id, product_id) for PAID, non-cancelled, non-deleted orders in the window.
+    rows = (
+        OrderItem.objects.filter(
+            order__is_deleted=False, order__is_paid=True,
+            order__created_at__gte=lo, order__created_at__lt=hi,
+        )
+        .exclude(order__status='CANCELED')
+        .values_list('order_id', 'product_id')
+    )
+
+    baskets = {}  # order_id -> {product_id, ...} (distinct products per order)
+    for oid, pid in rows:
+        if pid is not None:
+            baskets.setdefault(oid, set()).add(pid)
+
+    total_orders = len(baskets)
+    product_orders = {}   # pid -> # orders it appears in
+    pair_counts = {}      # (min_pid, max_pid) -> co-occurrence count
+    for pids in baskets.values():
+        for pid in pids:
+            product_orders[pid] = product_orders.get(pid, 0) + 1
+        for a, b in combinations(sorted(pids), 2):
+            pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
+
+    # Top-N products by order appearances (desc; stable tie-break by id).
+    top_ids = [pid for pid, _ in
+               sorted(product_orders.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]]
+    index = {pid: i for i, pid in enumerate(top_ids)}
+
+    detail = {p['id']: p for p in Product.objects.filter(id__in=top_ids)
+              .values('id', 'name', 'price', 'colors')}
+    products = []
+    for pid in top_ids:
+        d = detail.get(pid, {})
+        cols = d.get('colors') or []
+        products.append({
+            'id': pid,
+            'name': d.get('name'),
+            'color': cols[0] if isinstance(cols, list) and cols else None,
+            'orders': product_orders[pid],
+            'price': _uzs(d.get('price')),
+        })
+
+    # Keep only pairs whose BOTH endpoints are top-N; remap product ids -> indices (a<b).
+    pairs = []
+    for (a_pid, b_pid), cnt in pair_counts.items():
+        if cnt > 0 and a_pid in index and b_pid in index:
+            ia, ib = index[a_pid], index[b_pid]
+            if ia > ib:
+                ia, ib = ib, ia
+            pairs.append({'a': ia, 'b': ib, 'count': cnt})
+    pairs.sort(key=lambda p: (-p['count'], p['a'], p['b']))
+
+    return {
+        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'products': products,
+        'pairs': pairs,
+        'totalOrders': total_orders,
+    }
