@@ -44,13 +44,16 @@ def orders(request):
         date_to = request.GET.get('date_to')
         order_by = request.GET.get('order_by', '-created_at')
         include_deleted = request.GET.get('include_deleted', '').lower() == 'true'
+        # Default true (back-compat: item 5 inline items); ?include_items=false
+        # drops items[] from the list payload for lighter list-view fetches (item 14).
+        include_items = request.GET.get('include_items', 'true').lower() != 'false'
 
         result, status_code = AdminOrderService.get_all_orders(
             page=page, per_page=per_page, statuses=statuses,
             payment_status=payment_status, category_ids=category_ids,
             user_id=user_id, cashier_id=cashier_id, order_type=order_type,
             date_from=date_from, date_to=date_to, order_by=order_by,
-            include_deleted=include_deleted,
+            include_deleted=include_deleted, include_items=include_items,
         )
         return JsonResponse(result, status=status_code)
 

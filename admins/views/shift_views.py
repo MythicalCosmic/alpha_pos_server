@@ -68,10 +68,12 @@ def shift_template_detail(request, template_id):
 def shifts(request):
     page = safe_page(request)
     per_page = safe_per_page(request, 20)
-    user_id = request.GET.get('user_id')
+    # cashier_id is the v3 Shifts-page filter name; user_id kept as an alias.
+    user_id = request.GET.get('cashier_id') or request.GET.get('user_id')
     status = request.GET.get('status')
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
+    live_only = (request.GET.get('live_only') or '').strip().lower() in ('1', 'true', 'yes')
 
     result, status_code = ShiftService.list(
         page=page,
@@ -80,6 +82,7 @@ def shifts(request):
         status=status,
         date_from=date_from,
         date_to=date_to,
+        live_only=live_only,
     )
     return JsonResponse(result, status=status_code)
 

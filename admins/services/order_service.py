@@ -32,8 +32,8 @@ def _format_duration(seconds):
     return f"{secs}s"
 
 
-def _serialize_order_list(order):
-    return {
+def _serialize_order_list(order, include_items=True):
+    data = {
         'id': order.id,
         'display_id': order.display_id,
         'order_type': order.order_type,
@@ -65,7 +65,15 @@ def _serialize_order_list(order):
         # instead of `.count()` (extra query) and `.values()` (fresh query
         # that bypasses the prefetch).
         'items_count': len(order.items.all()),
-        'items': [
+        'paid_at': order.paid_at.isoformat() if order.paid_at else None,
+        'ready_at': order.ready_at.isoformat() if order.ready_at else None,
+        'created_at': order.created_at.isoformat(),
+        'updated_at': order.updated_at.isoformat(),
+    }
+    # Inline line items (item 5). Skippable with ?include_items=false (item 14) to
+    # lighten the list payload for views that only need headers (items_count stays).
+    if include_items:
+        data['items'] = [
             {
                 'id': i.id,
                 'product__id': i.product_id,
@@ -80,12 +88,8 @@ def _serialize_order_list(order):
                 'ready_at': i.ready_at,
             }
             for i in order.items.all()
-        ],
-        'paid_at': order.paid_at.isoformat() if order.paid_at else None,
-        'ready_at': order.ready_at.isoformat() if order.ready_at else None,
-        'created_at': order.created_at.isoformat(),
-        'updated_at': order.updated_at.isoformat(),
-    }
+        ]
+    return data
 
 
 def _serialize_order_detail(order):
@@ -281,7 +285,8 @@ class AdminOrderService:
     def get_all_orders(page=1, per_page=20, statuses=None, payment_status=None,
                        category_ids=None, user_id=None, cashier_id=None,
                        order_type=None, date_from=None, date_to=None,
-                       order_by='-created_at', include_deleted=False):
+                       order_by='-created_at', include_deleted=False,
+                       include_items=True):
         statuses_list = _parse_statuses(statuses)
         category_ids_list = _parse_int_list(category_ids)
         date_from_dt = _parse_date(date_from)
@@ -304,7 +309,8 @@ class AdminOrderService:
         )
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
-        orders = [_serialize_order_list(o) for o in page_obj.object_list]
+        orders = [_serialize_order_list(o, include_items=include_items)
+                  for o in page_obj.object_list]
 
         return ServiceResponse.success(data={
             'orders': orders,

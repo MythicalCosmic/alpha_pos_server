@@ -339,12 +339,24 @@ class TestShiftListExtras:
         assert row['payment_mix']['UZCARD'] == {'amount': '50.00', 'count': 1}
         assert row['items_sold'] == 5
         assert row['avg_prep_seconds'] == 150
-        assert row['peak_hour'] is not None and row['peak_hour']['orders'] == 2
+        # peak_hour is now an 'HH:00-HH:00' label string (item 11), not a dict.
+        import re
+        assert isinstance(row['peak_hour'], str) and re.match(r'^\d{2}:00-\d{2}:00$', row['peak_hour'])
         assert row['cancelled_orders_count'] == 1
         assert row['cancelled_orders_value'] == '30.00'
         assert row['expenses_total'] == '20.00'
         assert row['total_revenue'] == '150.00'        # live: two paid orders
         assert row['net_revenue'] == '100.00'          # 150 - 20 expenses - 30 cancelled
+        # item 11 FE-named fields:
+        assert row['gross_revenue'] == '150.00'
+        assert row['card_collected'] == '50.00'        # 150 total - 100 cash (UZCARD)
+        assert row['cancelled_count'] == 1
+        assert row['cancelled_amount'] == '30.00'
+        assert row['avg_ticket'] == '75.00'            # 150 / 2 paid orders
+        assert row['avg_prep_time'] == 150
+        assert row['items_sold'] == 5
+        assert row['variance'] is None and row['reported'] is None  # not reconciled
+        assert row['is_live_stats'] is True
 
     def test_empty_shift_returns_typed_defaults(self, cashier_user):
         s = self._active_shift(cashier_user)

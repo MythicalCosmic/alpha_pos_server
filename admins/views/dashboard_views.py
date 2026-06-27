@@ -25,3 +25,18 @@ def range_view(request):
 def sidebar_counts_view(request):
     """GET /sidebar-counts — {active_shifts, today_orders, today_revenue}."""
     return JsonResponse({'success': True, 'data': get_sidebar_counts()})
+
+
+@require_GET
+@admin_required
+def sales_view(request):
+    """GET /dashboard/sales?range=30d (or ?from=&to=) — the Sales dashboard page:
+    revenue/expense series, last-period comparison, hour-of-week heatmap, channel
+    mix. Business-day windowed (item 8)."""
+    from admins.services.sales_dashboard_service import sales_dashboard
+    data = sales_dashboard(
+        range_token=request.GET.get('range'),
+        date_from=request.GET.get('from'),
+        date_to=request.GET.get('to'),
+    )
+    return JsonResponse({'success': True, 'data': data})
