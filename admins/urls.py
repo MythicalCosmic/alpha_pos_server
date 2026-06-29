@@ -110,6 +110,7 @@ urlpatterns = [
 
     path('dashboard/today', dashboard_views.today_view, name='dashboard_today'),
     path('dashboard/sales', dashboard_views.sales_view, name='dashboard_sales'),
+    path('dashboard/operations', dashboard_views.operations_view, name='dashboard_operations'),
     path('dashboard', dashboard_views.range_view, name='dashboard_range'),
     path('sidebar-counts', dashboard_views.sidebar_counts_view, name='sidebar_counts'),
 

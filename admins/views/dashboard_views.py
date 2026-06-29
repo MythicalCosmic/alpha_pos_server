@@ -29,6 +29,16 @@ def sidebar_counts_view(request):
 
 @require_GET
 @admin_required
+def operations_view(request):
+    """GET /dashboard/operations — Operations tab: live table grid, order funnel,
+    prep-by-category, orders-by-hour. Defaults to today's business day."""
+    from admins.services.operations_dashboard_service import operations_dashboard
+    data = operations_dashboard(request.GET.get('from'), request.GET.get('to'))
+    return JsonResponse({'success': True, 'data': data})
+
+
+@require_GET
+@admin_required
 def sales_view(request):
     """GET /dashboard/sales?range=30d (or ?from=&to=) — the Sales dashboard page:
     revenue/expense series, last-period comparison, hour-of-week heatmap, channel

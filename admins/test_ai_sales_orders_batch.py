@@ -196,3 +196,49 @@ class TestOrderNumber:
         Order.objects.filter(pk=o.pk).update(order_number=7)
         res, _ = AdminOrderService.get_all_orders(include_items=False)
         assert res['data']['orders'][0]['order_number'] == 7
+
+
+# ── Operations dashboard (item 17) ──
+
+class TestOperationsDashboard:
+    def test_shape(self):
+        from admins.services.operations_dashboard_service import operations_dashboard
+        data = operations_dashboard()
+        assert set(data) >= {'tableGrid', 'funnel', 'prepByCategory', 'ordersByHour'}
+        assert len(data['ordersByHour']) == 14
+        assert data['ordersByHour'][0]['hour'] == '09' and data['ordersByHour'][-1]['hour'] == '22'
+        assert [f['status'] for f in data['funnel']] == \
+            ['OPEN', 'PREPARING', 'READY', 'COMPLETED', 'CANCELED']
+
+    def test_table_grid_and_funnel_live(self):
+        from base.models import Order, Place, Table, User
+        from admins.services.operations_dashboard_service import operations_dashboard
+        u = User.objects.create(email=f'op{secrets.token_hex(4)}@x.local', first_name='a',
+                                last_name='b', role='CASHIER', status='ACTIVE', password='!')
+        place = Place.objects.create(name='Hall')
+        t = Table.objects.create(place=place, number='5')
+        Order.objects.create(user=u, cashier=u, table=t, status='READY', is_paid=False,
+                             display_id=1, subtotal=Decimal('0'), total_amount=Decimal('0'))
+        data = operations_dashboard()                       # created_at = now -> today's window
+        grid = {g['id']: g for g in data['tableGrid']}
+        assert grid[t.id]['status'] == 'ready' and grid[t.id]['orders'] == 1
+        assert {f['status']: f['count'] for f in data['funnel']}['READY'] >= 1
+
+
+# ── AI page-context preamble (item: page-context injection) ──
+
+class TestContextPreamble:
+    def test_builds_current_view(self):
+        from stock.services.ai_assistant_service import AIStockAssistant
+        p = AIStockAssistant._context_preamble({
+            'route': '/dashboard', 'range_from': '2026-06-14', 'range_to': '2026-06-28',
+            'filters': {'category': 'Pizza'}, 'visible_data_keys': ['monthRevenue', 'heatMatrix']})
+        assert p.startswith('CURRENT VIEW:')
+        assert '/dashboard' in p and '2026-06-14' in p and 'Pizza' in p and 'monthRevenue' in p
+        assert p.endswith('\n\n')
+
+    def test_empty_context_returns_blank(self):
+        from stock.services.ai_assistant_service import AIStockAssistant
+        assert AIStockAssistant._context_preamble(None) == ''
+        assert AIStockAssistant._context_preamble({}) == ''
+        assert AIStockAssistant._context_preamble({'unknown': 'x'}) == ''
