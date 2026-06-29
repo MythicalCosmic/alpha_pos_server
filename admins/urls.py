@@ -3,7 +3,7 @@ from admins.views import auth_views, category_views, product_views, order_views
 from admins.views import place_views, app_settings_views, shift_views, user_views, inkassa_views
 from admins.views import (
     audit_views, export_views, dashboard_views, forecast_views,
-    analytics_views, role_views, treasury_views,
+    analytics_views, role_views, treasury_views, ai_ops_views,
 )
 
 urlpatterns = [
@@ -134,4 +134,12 @@ urlpatterns = [
 
     # Staff dashboard (item 10) — ?range=30d (or ?from=&to=).
     path('staff/performance', analytics_views.staff_performance_view, name='staff_performance'),
+
+    # AI ops: Morning Briefing, context-prompt chips, Anomaly Watch (/api/admins/ai/*).
+    path('ai/briefing', ai_ops_views.briefing, name='ai_briefing'),
+    path('ai/briefing/dismiss', ai_ops_views.briefing_dismiss, name='ai_briefing_dismiss'),
+    path('ai/context-prompts', ai_ops_views.context_prompts, name='ai_context_prompts'),
+    path('ai/anomalies/settings', ai_ops_views.anomaly_settings, name='ai_anomaly_settings'),
+    path('ai/anomalies/<int:anomaly_id>/ack', ai_ops_views.anomaly_ack, name='ai_anomaly_ack'),
+    path('ai/anomalies', ai_ops_views.anomalies, name='ai_anomalies'),
 ]
