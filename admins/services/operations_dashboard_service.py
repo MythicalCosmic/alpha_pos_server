@@ -87,13 +87,20 @@ def operations_dashboard(date_from=None, date_to=None):
         if oid not in seen:
             seen[oid] = ((ready - created).total_seconds()
                          if ready and created and ready >= created else None)
+    PREP_TARGET_MINS = 15.0  # kitchen SLA placeholder (no config field exists yet)
     prep_by_category = []
     for cat, count in sorted(cat_count.items(), key=lambda kv: -kv[1]):
         preps = [p for p in cat_order_prep.get(cat, {}).values() if p is not None]
+        avg_secs = (sum(preps) / len(preps)) if preps else None
         prep_by_category.append({
             'category': cat,
             'count': count,
-            'avg_prep_seconds': int(round(sum(preps) / len(preps))) if preps else None,
+            'avg_prep_seconds': int(round(avg_secs)) if avg_secs is not None else None,
+            # FE reads `mins` (avg prep, float minutes); 0 when no order in this
+            # category has ready_at yet (matches the FE's undefined->0 fallback).
+            # `target` is a placeholder SLA until an AppSettings field exists.
+            'mins': round(avg_secs / 60.0, 1) if avg_secs is not None else 0,
+            'target': PREP_TARGET_MINS,
         })
 
     # ── orders by hour (09..22), localtime hour (matches the sales heatmap) ──

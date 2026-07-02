@@ -993,6 +993,21 @@ class AdminOrderService:
         except Exception:
             payment_breakdown = {'CASH': '0', 'CARD': '0', 'DIGITAL': '0'}
 
+        # Per-status + payment-status breakdowns over the SAME windowed/filtered
+        # aggregate (all keys always present, zero-filled). PAID/UNPAID reuse the
+        # existing paid/unpaid semantics so they match paid_orders/unpaid_orders.
+        status_counts = {
+            'OPEN': stats.get('open', 0),
+            'PREPARING': stats['preparing'],
+            'READY': stats['ready'],
+            'COMPLETED': stats['completed'],
+            'CANCELED': stats['cancelled'],
+        }
+        payment_counts = {
+            'PAID': stats['paid'],
+            'UNPAID': stats['unpaid'],
+        }
+
         return ServiceResponse.success(data={
             'total_orders': stats['total'],
             'preparing_orders': stats['preparing'],
@@ -1004,6 +1019,8 @@ class AdminOrderService:
             'total_revenue': str(stats['total_revenue']),
             'avg_order_value': str(stats['avg_order_value']),
             'payment_breakdown': payment_breakdown,
+            'status_counts': status_counts,
+            'payment_counts': payment_counts,
             'average_preparation_time_seconds': avg_prep,
             'average_preparation_time_formatted': _format_duration(avg_prep) if avg_prep else None,
         })

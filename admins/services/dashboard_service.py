@@ -350,6 +350,14 @@ def get_range(date_from=None, date_to=None):
     top = list(items.annotate(lt=line_total).values('product_id', 'product__name')
                .annotate(quantity=Sum('quantity'), revenue=Sum('lt'))
                .order_by('-quantity')[:5])
+    # Category breakdown over the SAME range window (mirrors _today_category_stats).
+    # Alias the count as `units`, NOT `quantity`: Sum(line_total) references
+    # F('quantity'), so a `quantity` aggregate alias triggers an "is an aggregate"
+    # FieldError on Postgres and silently empties the category stats.
+    cat_rows = list(
+        items.values('product__category_id', 'product__category__name')
+        .annotate(units=Sum('quantity'), revenue=Sum(line_total))
+        .order_by('-revenue'))
     return {
         'range': {'from': d_from.isoformat(), 'to': d_to.isoformat()},
         'revenue': _uzs(rev['total']),
@@ -362,6 +370,14 @@ def get_range(date_from=None, date_to=None):
             'product_id': r['product_id'], 'product_name': r['product__name'],
             'quantity': int(r['quantity'] or 0), 'revenue': _uzs(r['revenue']),
         } for r in top],
+        # Executive-tab category stats for the selected range (same shape as
+        # /dashboard/today's category_stats_today).
+        'category_stats': [{
+            'category_id': r['product__category_id'],
+            'category': r['product__category__name'],
+            'quantity': int(r['units'] or 0),
+            'revenue': _uzs(r['revenue']),
+        } for r in cat_rows],
     }
 
 

@@ -1,3 +1,5 @@
+from django.db.models import Count, Q
+
 from base.repositories import CategoryRepository
 from base.helpers.response import ServiceResponse
 
@@ -19,6 +21,9 @@ def _serialize_category(cat):
         'status': cat.status,
         'sort_order': cat.sort_order,
         'is_deleted': cat.is_deleted,
+        # Live (non-soft-deleted) product count; getattr default 0 because
+        # get_category_by_id serializes a non-annotated single instance.
+        'product_count': getattr(cat, 'product_count', 0),
         'created_at': cat.created_at.isoformat() if cat.created_at else None,
         'updated_at': cat.updated_at.isoformat() if cat.updated_at else None,
     }
@@ -55,6 +60,13 @@ class AdminCategoryService:
         if order_by not in ALLOWED_ORDER_FIELDS:
             order_by = 'sort_order'
         queryset = queryset.order_by(order_by)
+
+        # product_count per category — count only live (non-soft-deleted) products.
+        # SyncManager does NOT auto-filter is_deleted, so the filter is explicit.
+        # Annotated on the queryset (single query) to avoid an N+1 in the loop.
+        queryset = queryset.annotate(
+            product_count=Count('products', filter=Q(products__is_deleted=False))
+        )
 
         page_obj, paginator = CategoryRepository.paginate(queryset, page, per_page)
 

@@ -236,5 +236,5 @@ def _serialize_user(user):
         'status': user.status,
         'permissions': user.permissions or [],
         'last_login_at': user.last_login_at.isoformat() if user.last_login_at else None,
-        'created_at': user.created_at.isoformat() if hasattr(user, 'created_at') and user.created_at else None,
+        'created_at': user.created_at.isoformat() if user.created_at else None,
     }
