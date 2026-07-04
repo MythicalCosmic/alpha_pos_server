@@ -72,6 +72,17 @@ class TestBriefing:
         assert resp.status_code == 200
         assert 'bullets' in resp.json()['data']
 
+    def test_fallback_bullets_are_trilingual(self):
+        from stock.services.ai_briefing_service import AIBriefingService
+        bullets = AIBriefingService._fallback(
+            {'sales': {'today': {'total_revenue_uzs': 500000, 'count': 12}}})
+        assert bullets
+        b = bullets[0]
+        assert set(b['title_i18n']) == {'uz', 'ru', 'en'}
+        assert set(b['body_i18n']) == {'uz', 'ru', 'en'}
+        assert b['title'] == b['title_i18n']['en']        # flat == English fallback
+        assert all(b['title_i18n'][k] for k in ('uz', 'ru', 'en'))
+
 
 # ── Anomaly Watch ──
 
@@ -119,3 +130,20 @@ class TestAnomaly:
                             HTTP_AUTHORIZATION=f'Bearer {admin_session}')
         assert resp.status_code == 200
         assert 'anomalies' in resp.json()['data']
+
+    def test_anomaly_message_is_trilingual(self):
+        from stock.services.anomaly_service import AnomalyScanner, AnomalyService
+        from stock.models import Anomaly
+        c = _cashier()
+        for _ in range(5):
+            _order(c, status='CANCELED', total='0')
+        AnomalyScanner.scan()
+        a = Anomaly.objects.filter(detector='CashierVoidBurst').first()
+        assert a and set(a.message_i18n) == {'uz', 'ru', 'en'} and a.message == a.message_i18n['en']
+        data = AnomalyService.list_anomalies()
+        m = data['anomalies'][0]['message']
+        assert isinstance(m, dict) and set(m) == {'uz', 'ru', 'en'} and m['en']
+        # old-style row (no i18n) still serializes to a 3-key dict via fallback
+        Anomaly.objects.create(detector='X', idempotency_key='k-old', message='hi')
+        got = next(x for x in AnomalyService.list_anomalies()['anomalies'] if x['detector'] == 'X')
+        assert got['message'] == {'uz': 'hi', 'ru': 'hi', 'en': 'hi'}
