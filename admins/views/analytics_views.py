@@ -8,6 +8,7 @@ from django.views.decorators.http import require_GET
 from admins.services.analytics_service import (
     menu_engineering, shift_performance, staff_performance,
 )
+from admins.services.comparison_service import compare_periods
 from admins.services.product_analytics_service import (
     products_affinity, products_categories, products_overview, products_pareto,
     products_trends,
@@ -233,3 +234,42 @@ def products_affinity_view(request):
         return err
     limit = _int_or_none(request.GET.get('limit')) or 10
     return JsonResponse({'success': True, 'data': products_affinity(df, dt, limit=limit)})
+
+
+@require_GET
+@manager_required
+def comparison_view(request):
+    """GET /analytics/comparison — Compare-Periods page. Two ranges (A primary,
+    B baseline) with every sales metric side by side + deltas.
+
+    ?a_start=&a_end=&b_start=&b_end= (YYYY-MM-DD, all required)
+    &granularity=day|week|month  &branch_id=<optional>  &tz=Asia/Tashkent
+    """
+    parts = {}
+    for name in ('a_start', 'a_end', 'b_start', 'b_end'):
+        raw = request.GET.get(name)
+        d = parse_date(raw) if raw else None
+        if d is None:
+            return JsonResponse(
+                {'success': False,
+                 'message': f'{name} is required (YYYY-MM-DD)'}, status=422)
+        parts[name] = d
+    if parts['a_start'] > parts['a_end'] or parts['b_start'] > parts['b_end']:
+        return JsonResponse(
+            {'success': False, 'message': 'each range start must be on or before its end'},
+            status=422)
+
+    granularity = (request.GET.get('granularity') or 'day').strip().lower()
+    if granularity not in ('day', 'week', 'month'):
+        return JsonResponse(
+            {'success': False, 'message': 'granularity must be day, week or month'},
+            status=422)
+
+    branch_id = (request.GET.get('branch_id') or '').strip() or None
+    tz_name = (request.GET.get('tz') or 'Asia/Tashkent').strip()
+
+    data = compare_periods(
+        parts['a_start'], parts['a_end'], parts['b_start'], parts['b_end'],
+        granularity=granularity, branch_id=branch_id, tz_name=tz_name,
+    )
+    return JsonResponse({'success': True, 'data': data})

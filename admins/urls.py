@@ -118,6 +118,10 @@ urlpatterns = [
 
     path('analytics/shifts/<int:shift_id>', analytics_views.shift_perf_view, name='analytics_shift'),
     path('analytics/menu-engineering', analytics_views.menu_engineering_view, name='analytics_menu_eng'),
+    # Compare-Periods page — FE calls it with a trailing slash; register both
+    # spellings so it works whether or not APPEND_SLASH redirects are in play.
+    path('analytics/comparison/', analytics_views.comparison_view, name='analytics_comparison'),
+    path('analytics/comparison', analytics_views.comparison_view),
     # Deep shift analytics (cashier + kitchen). `<int:shift_id>` above only
     # matches integers, so these string paths don't collide with it.
     path('analytics/shifts/cashiers', analytics_views.cashier_shift_analytics_view, name='analytics_shifts_cashiers'),
