@@ -203,7 +203,11 @@ def _cashier_shift_row(shift, att_map):
     )
     revenue = money['revenue'] or Decimal('0')
     paid_count = money['paid_count'] or 0
-    card = (money['uzcard'] or 0) + (money['humo'] or 0) + (money['payme'] or 0)
+    # Card = Uzcard + Humo only. Payme is its OWN tender everywhere else (drawer
+    # settlement, dashboard, payment_mix below), so folding it into `card` here
+    # made this the one screen that double-classified it. Keep Payme standalone.
+    card = (money['uzcard'] or 0) + (money['humo'] or 0)
+    payme = money['payme'] or 0
     total = vol['total'] or 0
 
     return {
@@ -229,7 +233,8 @@ def _cashier_shift_row(shift, att_map):
         'money': {
             'revenue': _money(revenue),
             'cash': _money(money['cash']),
-            'card': _money(card),
+            'card': _money(card),          # Uzcard + Humo
+            'payme': _money(payme),        # own tender (was silently folded into card)
             'avg_order_value': _money(revenue / paid_count) if paid_count else _money(0),
             'payment_mix': {
                 'CASH': _money(money['cash']),
