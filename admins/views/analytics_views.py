@@ -86,10 +86,12 @@ def menu_engineering_view(request):
 def _parse_range(request):
     """(date_from, date_to, error_response). Defaults `to` = `from` for a
     single-day query; both default to today when omitted."""
-    from django.utils import timezone
+    from base.services.business_day import business_date
     df_str = request.GET.get('from')
     dt_str = request.GET.get('to')
-    today = timezone.localdate()
+    # Default "today" = current BUSINESS day (03:00 cutover), matching
+    # _parse_range_token and every business-day report, not the calendar date.
+    today = business_date()
     df = parse_date(df_str) if df_str else today
     dt = parse_date(dt_str) if dt_str else (df or today)
     if df is None or dt is None:
