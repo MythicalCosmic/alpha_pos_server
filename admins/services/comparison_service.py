@@ -74,11 +74,14 @@ def _kpi(a, b, is_up_good, money=True):
             'delta_pct': _pct(a, b), 'is_up_good': is_up_good}
 
 
-def _window(start_date, end_date, tz):
-    """Half-open [start 00:00, (end+1) 00:00) in tz, so the whole end day is in."""
-    lo = datetime.combine(start_date, time.min, tzinfo=tz)
-    hi = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=tz)
-    return lo, hi
+def _window(start_date, end_date, tz=None):
+    """Business-day window [start@cutover, (end+1)@cutover) — the 03:00-cutover
+    operating day shared with the dashboard, so a Compare period reconciles with
+    the dashboard totals for the same dates instead of using a plain calendar day.
+    `tz` is ignored (business_day uses the configured TIME_ZONE); it stays in the
+    signature for call-site compatibility."""
+    from base.services.business_day import range_window
+    return range_window(start_date, end_date)
 
 
 def _local_date(dt, tz):
