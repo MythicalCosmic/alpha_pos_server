@@ -94,7 +94,7 @@ def _top_products_today(limit=5):
     )
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False,
+            order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=start, order__created_at__lt=end,
         )
         # Cancelled orders never sold — keep them out of "top products today".
@@ -151,7 +151,7 @@ def _today_category_stats():
     )
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False,
+            order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=start, order__created_at__lt=end,
         )
         .exclude(order__status='CANCELED')

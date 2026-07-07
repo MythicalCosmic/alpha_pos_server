@@ -374,13 +374,14 @@ def _cashier_leaderboard(rows):
     for r in rows:
         a = agg.setdefault(r['user_id'], {
             'user_id': r['user_id'], 'user_name': r['user_name'],
-            'shifts': 0, 'orders': 0, 'revenue': Decimal('0'),
+            'shifts': 0, 'orders': 0, 'paid': 0, 'revenue': Decimal('0'),
             'cash': Decimal('0'), 'cancelled': 0,
             'late_shifts': 0, 'late_minutes_total': 0, 'cash_variance': Decimal('0'),
             '_prep': [],
         })
         a['shifts'] += 1
         a['orders'] += r['orders']['total']
+        a['paid'] += r['orders']['paid']
         a['revenue'] += Decimal(r['money']['revenue'])
         a['cash'] += Decimal(r['money']['cash'])
         a['cancelled'] += r['orders']['cancelled']
@@ -402,7 +403,9 @@ def _cashier_leaderboard(rows):
             'orders': a['orders'],
             'revenue': _money(a['revenue']),
             'cash': _money(a['cash']),
-            'avg_order_value': _money(a['revenue'] / a['orders']) if a['orders'] else _money(0),
+            # AOV = paid revenue / PAID order count (not total orders — that
+            # denominator included unpaid/cancelled tickets and read low).
+            'avg_order_value': _money(a['revenue'] / a['paid']) if a['paid'] else _money(0),
             'cancelled': a['cancelled'],
             'cancel_rate_pct': _pct(a['cancelled'], a['orders']),
             'late_shifts': a['late_shifts'],
