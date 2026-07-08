@@ -6,7 +6,13 @@ courier confirms how the customer paid at the door and the payment lands
 ``PAID`` immediately — recording cash, card-on-terminal or QR the same way. We
 update the POS Order's rolled-up paid fields (so the cloud shift/AI reports see
 it) but deliberately do NOT write a synced ``base.OrderPayment`` row — those
-carry a sync write-denylist that would land blank on the tills.
+carry no such hazard: the old claim that the OrderPayment sync write-denylist
+"would land blank on the tills" is FALSE -- SyncMixin._strip_sync_denied(creating=True)
+keeps denied fields that are NOT NULL with no default, and ``amount``/``method`` both
+qualify, so a CREATE syncs intact. The real reason is that courier cash is collected at
+the door and never enters a till drawer, so it must not appear in
+``cashbox.drawer.expected_payment_totals``. Reports attribute a courier sale from
+``CourierPayment`` via ``base.services.tender`` (PROVIDER_TO_METHOD), never as 100% cash.
 
 ``apply_webhook`` is the seam for a future online gateway: it confirms/reverses
 a payment server-side (never from the client) and fires the same WS events. It

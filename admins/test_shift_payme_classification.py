@@ -61,12 +61,14 @@ def test_payme_is_own_tender_not_folded_into_card():
     assert money['payme'] == '30000.00', money
     assert money['cash'] == '20000.00'
     assert money['revenue'] == '200000.00'
-    # payment_mix keeps every tender broken out and reconciles to revenue
+    # payment_mix is the CANONICAL tender set — no MIXED bucket, uzcard+humo -> card.
     mix = money['payment_mix']
-    assert mix == {'CASH': '20000.00', 'UZCARD': '100000.00', 'HUMO': '50000.00',
-                   'PAYME': '30000.00', 'MIXED': '0.00'}
+    assert mix == {'cash': '20000.00', 'card': '150000.00', 'payme': '30000.00'}
     mix_sum = sum(Decimal(v) for v in mix.values())
     assert mix_sum == Decimal(money['revenue'])
-    # card + cash + payme (+mixed) == revenue — no tender double-counted or dropped
+    # cash + card + payme == revenue — no tender double-counted or dropped
     assert (Decimal(money['cash']) + Decimal(money['card'])
-            + Decimal(money['payme']) + Decimal(mix['MIXED'])) == Decimal(money['revenue'])
+            + Decimal(money['payme'])) == Decimal(money['revenue'])
+    # acquirer detail survives for bank reconciliation
+    assert money['card_detail']['UZCARD'] == '100000.00'
+    assert money['card_detail']['HUMO'] == '50000.00'

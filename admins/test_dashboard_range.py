@@ -35,8 +35,10 @@ def test_get_range_today_revenue_and_payment():
     assert data['orders'] == 3
     assert data['paid_orders'] == 2                # cancelled excluded
     assert Decimal(data['revenue']) == 150
-    assert Decimal(data['payment_breakdown']['CASH']) == 100
-    assert Decimal(data['payment_breakdown']['UZCARD']) == 50
+    # Canonical tenders: UZCARD folds into `card`; no MIXED bucket.
+    assert Decimal(data['payment_breakdown']['cash']) == 100
+    assert Decimal(data['payment_breakdown']['card']) == 50
+    assert Decimal(data['payment_breakdown']['card_detail']['UZCARD']) == 50
 
 
 def test_get_range_window_excludes_other_days():
@@ -63,11 +65,13 @@ def test_sidebar_counts():
 def test_order_stats_payment_breakdown():
     from admins.services.order_service import AdminOrderService
     _order('CASH', '100')
-    _order('HUMO', '40')                            # -> CARD
-    _order('PAYME', '25')                           # -> DIGITAL
+    _order('HUMO', '40')                            # -> card
+    _order('PAYME', '25')                           # -> payme (own tender)
     body, st = AdminOrderService.get_order_stats()
     assert st == 200
     pb = body['data']['payment_breakdown']
-    assert Decimal(pb['CASH']) == 100
-    assert Decimal(pb['CARD']) == 40
-    assert Decimal(pb['DIGITAL']) == 25
+    assert Decimal(pb['cash']) == 100
+    assert Decimal(pb['card']) == 40
+    assert Decimal(pb['payme']) == 25
+    # buckets reconcile exactly to revenue
+    assert Decimal(pb['cash']) + Decimal(pb['card']) + Decimal(pb['payme']) == 165

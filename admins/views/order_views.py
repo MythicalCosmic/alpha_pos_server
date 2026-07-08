@@ -192,13 +192,21 @@ def update_status(request, order_id):
 @permission_required('order.update')
 @idempotent('orders.pay')
 def pay_order(request, order_id):
-    payment_method = 'CASH'
+    """POST /orders/<id>/pay  {payment_method} | {payments:[{method,amount},...]}
+
+    Either a single tender, or an explicit split (which is how a MIXED sale is
+    recorded — MIXED is never a valid bare `payment_method`). Both write the
+    OrderPayment tender lines, so the sale is visible to shift settlement.
+    """
+    payment_method, payments = 'CASH', None
     if request.body:
         from base.helpers.request import parse_json_body
         body, _ = parse_json_body(request)
         if body:
             payment_method = body.get('payment_method', 'CASH')
-    result, status_code = AdminOrderService.mark_as_paid(order_id, payment_method=payment_method)
+            payments = body.get('payments')
+    result, status_code = AdminOrderService.mark_as_paid(
+        order_id, payment_method=payment_method, payments=payments)
     return JsonResponse(result, status=status_code)
 
 

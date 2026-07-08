@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 
 def _payment_method_label(method):
+    # Accounting document: keep the STORED tender (acquirer detail is wanted here,
+    # unlike the reporting layer which folds Uzcard/Humo/Card into one `card`).
     return {
         'CASH': 'Наличные',
         'UZCARD': 'Uzcard',
         'HUMO': 'Humo',
+        'CARD': 'Карта',
         'PAYME': 'Payme',
+        'MIXED': 'Смешанная',
     }.get(method, method or '')
 
 

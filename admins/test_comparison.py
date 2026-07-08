@@ -156,9 +156,10 @@ def test_timeseries_hour_weekday_matrix(dataset):
 
 def test_payment_and_order_types(dataset):
     d = _run()
+    # Canonical tenders: UZCARD folds into `card`; there is never a MIXED bucket.
     pay_a = {p['method']: p for p in d['payment_methods']['a']}
-    assert pay_a['CASH']['value'] == 100000 and pay_a['UZCARD']['value'] == 50000
-    assert round(pay_a['CASH']['share'] + pay_a['UZCARD']['share'], 4) == 1.0
+    assert pay_a['cash']['value'] == 100000 and pay_a['card']['value'] == 50000
+    assert round(pay_a['cash']['share'] + pay_a['card']['share'], 4) == 1.0
     ot_a = {o['type']: o['value'] for o in d['order_types']['a']}
     assert ot_a['HALL'] == 100000 and ot_a['DELIVERY'] == 50000
 

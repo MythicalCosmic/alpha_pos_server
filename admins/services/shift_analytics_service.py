@@ -192,22 +192,19 @@ def _cashier_shift_row(shift, att_map):
     money = paid.aggregate(
         revenue=Coalesce(Sum('total_amount'), Decimal('0'), output_field=_DEC),
         paid_count=Count('id'),
-        cash=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)), Decimal('0'), output_field=_DEC),
-        uzcard=Coalesce(Sum('total_amount', filter=Q(payment_method='UZCARD')), Decimal('0'), output_field=_DEC),
-        humo=Coalesce(Sum('total_amount', filter=Q(payment_method='HUMO')), Decimal('0'), output_field=_DEC),
-        payme=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')), Decimal('0'), output_field=_DEC),
-        mixed=Coalesce(Sum('total_amount', filter=Q(payment_method='MIXED')), Decimal('0'), output_field=_DEC),
         discount_total=Coalesce(Sum('discount_amount'), Decimal('0'), output_field=_DEC),
         discounted_orders=Count('id', filter=Q(discount_amount__gt=0) | Q(discount_percent__gt=0)),
         avg_discount_pct=Avg('discount_percent', filter=Q(discount_percent__gt=0)),
     )
     revenue = money['revenue'] or Decimal('0')
     paid_count = money['paid_count'] or 0
-    # Card = Uzcard + Humo only. Payme is its OWN tender everywhere else (drawer
-    # settlement, dashboard, payment_mix below), so folding it into `card` here
-    # made this the one screen that double-classified it. Keep Payme standalone.
-    card = (money['uzcard'] or 0) + (money['humo'] or 0)
-    payme = money['payme'] or 0
+    # Tender split comes from base.services.tender, not from Order.payment_method:
+    # a MIXED order used to contribute NOTHING to cash or card (its whole total sat
+    # in a `MIXED` bucket), so cash+card never reconciled to revenue for any shift
+    # containing a split payment. cash is derived (bill portion, not tendered).
+    from base.services.tender import breakdown_for_orders
+    _split, _detail = breakdown_for_orders(paid)
+    cash, card, payme = _split['cash'], _split['card'], _split['payme']
     total = vol['total'] or 0
 
     return {
@@ -232,17 +229,18 @@ def _cashier_shift_row(shift, att_map):
         'items': {'units_sold': items['units'] or 0, 'line_items': items['lines'] or 0},
         'money': {
             'revenue': _money(revenue),
-            'cash': _money(money['cash']),
-            'card': _money(card),          # Uzcard + Humo
-            'payme': _money(payme),        # own tender (was silently folded into card)
+            'cash': _money(cash),
+            'card': _money(card),          # Uzcard + Humo + Card
+            'payme': _money(payme),        # own tender
             'avg_order_value': _money(revenue / paid_count) if paid_count else _money(0),
+            # Canonical tenders. MIXED is never a bucket; cash+card+payme == revenue.
             'payment_mix': {
-                'CASH': _money(money['cash']),
-                'UZCARD': _money(money['uzcard']),
-                'HUMO': _money(money['humo']),
-                'PAYME': _money(money['payme']),
-                'MIXED': _money(money['mixed']),
+                'cash': _money(cash),
+                'card': _money(card),
+                'payme': _money(payme),
+                **({'unknown': _money(_split['unknown'])} if _split['unknown'] else {}),
             },
+            'card_detail': {k: _money(v) for k, v in _detail.items()},
         },
         'discounts': {
             'total_given': _money(money['discount_total']),
@@ -449,7 +447,7 @@ def cashier_shift_analytics(date_from, date_to, user_id=None):
     n = len(rows)
     status_counts = {'ACTIVE': 0, 'ENDED': 0, 'COMPLETED': 0, 'ABANDONED': 0}
     revenue = cash = card = discount_total = Decimal('0')
-    mix = {k: Decimal('0') for k in ('CASH', 'UZCARD', 'HUMO', 'PAYME', 'MIXED')}
+    mix = {k: Decimal('0') for k in ('cash', 'card', 'payme')}
     orders = cancelled = paid = units = discounted = duration_total = 0
     prep_vals, late_list = [], []
     on_time = late = reconciled = shorts = overs = 0

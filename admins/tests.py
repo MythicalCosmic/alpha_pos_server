@@ -282,12 +282,12 @@ class TestTodayDashboard:
 
 class TestShiftListExtras:
     """GET /api/admins/shifts list serializer: the batched per-shift metrics the
-    manager dashboard cards need (payment_mix w/ counts, items_sold, avg_prep,
+    manager dashboard cards need (canonical payment_mix, paid_orders, items_sold, avg_prep,
     peak_hour, expenses_total, cancelled_*, net_revenue) — computed in O(1)
     queries for the whole page, not per row."""
 
     LIST_KEYS = ('net_revenue', 'expenses_total', 'cancelled_orders_count',
-                 'cancelled_orders_value', 'payment_mix', 'items_sold',
+                 'cancelled_orders_value', 'payment_mix', 'paid_orders', 'items_sold',
                  'avg_prep_seconds', 'peak_hour')
 
     def _list_rows(self, cashier_user, **kw):
@@ -335,8 +335,11 @@ class TestShiftListExtras:
         row = self._list_rows(cashier_user)[s.id]
         for k in self.LIST_KEYS:
             assert k in row, f'missing list field {k}'
-        assert row['payment_mix']['CASH'] == {'amount': '100.00', 'count': 1}
-        assert row['payment_mix']['UZCARD'] == {'amount': '50.00', 'count': 1}
+        # Canonical tenders: {tender: amount}. UZCARD folds into `card`; an order can
+        # contribute to two tenders, so the paid-order count is its own field.
+        assert row['payment_mix']['cash'] == '100.00'
+        assert row['payment_mix']['card'] == '50.00'
+        assert row['paid_orders'] == 2
         assert row['items_sold'] == 5
         assert row['avg_prep_seconds'] == 150
         # peak_hour is now an 'HH:00-HH:00' label string (item 11), not a dict.
@@ -379,8 +382,9 @@ class TestShiftListExtras:
             is_paid=True, payment_method=None, display_id=1,
             subtotal='40.00', total_amount='40.00', paid_at=timezone.now())
         row = self._list_rows(cashier_user)[s.id]
-        assert row['payment_mix'].get('CASH') == {'amount': '40.00', 'count': 1}
-        assert 'UZCARD' not in row['payment_mix']
+        assert row['payment_mix']['cash'] == '40.00'
+        assert row['payment_mix']['card'] == '0.00'
+        assert row['paid_orders'] == 1
 
     def test_active_shift_is_live_and_counts_now(self, cashier_user, regular_user):
         from django.utils import timezone
@@ -392,7 +396,7 @@ class TestShiftListExtras:
             subtotal='70.00', total_amount='70.00', paid_at=timezone.now())
         row = self._list_rows(cashier_user)[s.id]
         assert row['is_live_stats'] is True
-        assert row['payment_mix']['HUMO'] == {'amount': '70.00', 'count': 1}
+        assert row['payment_mix']['card'] == '70.00'   # HUMO folds into card
         assert row['total_revenue'] == '70.00'
 
     def test_two_shifts_same_cashier_no_double_count(self, cashier_user, regular_user):
@@ -424,8 +428,8 @@ class TestShiftListExtras:
         mkorder(3, t1)                            # boundary -> s2 (latest start wins)
 
         rows = self._list_rows(cashier_user)
-        c1 = rows[s1.id]['payment_mix']['CASH']['count']
-        c2 = rows[s2.id]['payment_mix']['CASH']['count']
+        c1 = rows[s1.id]['paid_orders']
+        c2 = rows[s2.id]['paid_orders']
         assert c1 == 1, f's1 should own only its interior order, got {c1}'
         assert c2 == 2, f's2 should own its order + the boundary one, got {c2}'
         assert c1 + c2 == 3                       # exactly 3 orders, no duplication

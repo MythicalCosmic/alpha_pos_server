@@ -18,10 +18,26 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# Concrete tender types broken out on the "today" payment breakdown. Legacy
-# orders with a NULL payment_method are bundled into CASH (matches the shift
-# reconciliation convention).
-_PAYMENT_METHODS = ('CASH', 'UZCARD', 'HUMO', 'PAYME', 'MIXED')
+# Canonical PRESENTATION tenders. MIXED is never a bucket: a split sale is
+# attributed to its real tenders via base.services.tender. UZCARD/HUMO/CARD all
+# fold into `card`; the per-acquirer amounts ride along in `card_detail`.
+_TENDERS = ('cash', 'card', 'payme')
+
+
+def _tender_breakdown(paid_qs):
+    """Canonical {cash, card, payme} over a paid, non-cancelled Order queryset.
+
+    Adds `unknown` only when some revenue genuinely has no determinable tender
+    (alertable, never a display value) and `card_detail` with the acquirer split.
+    Always sums exactly to the queryset's revenue.
+    """
+    from base.services.tender import breakdown_for_orders
+    split, detail = breakdown_for_orders(paid_qs)
+    out = {t: _uzs(split[t]) for t in _TENDERS}
+    if split['unknown']:
+        out['unknown'] = _uzs(split['unknown'])
+    out['card_detail'] = {k: _uzs(v) for k, v in detail.items()}
+    return out
 
 
 def _safe(label, fn, default):
@@ -119,26 +135,14 @@ def _top_products_today(limit=5):
 
 
 def _today_payment_breakdown():
-    """Paid revenue today split by tender (NULL method counts as CASH)."""
+    """Paid revenue today by canonical tender (cash / card / payme)."""
     from base.models import Order
     start, end = _today_window()
     paid = Order.objects.filter(
         is_deleted=False, is_paid=True,
         created_at__gte=start, created_at__lt=end,
     ).exclude(status='CANCELED')
-    agg = paid.aggregate(
-        CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
-                      Decimal('0.00'), output_field=DecimalField()),
-        UZCARD=Coalesce(Sum('total_amount', filter=Q(payment_method='UZCARD')),
-                        Decimal('0.00'), output_field=DecimalField()),
-        HUMO=Coalesce(Sum('total_amount', filter=Q(payment_method='HUMO')),
-                      Decimal('0.00'), output_field=DecimalField()),
-        PAYME=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')),
-                       Decimal('0.00'), output_field=DecimalField()),
-        MIXED=Coalesce(Sum('total_amount', filter=Q(payment_method='MIXED')),
-                       Decimal('0.00'), output_field=DecimalField()),
-    )
-    return {m: _uzs(agg[m]) for m in _PAYMENT_METHODS}
+    return _tender_breakdown(paid)
 
 
 def _today_category_stats():
@@ -288,7 +292,7 @@ def get_today():
         },
         'payment_breakdown_today': _safe(
             'today payment breakdown', _today_payment_breakdown,
-            {m: '0' for m in _PAYMENT_METHODS}),
+            {t: '0' for t in _TENDERS}),
         'category_stats_today': _safe('today category stats', _today_category_stats, []),
         'top_products_today': _top_products_today(),
         'low_stock_count': _low_stock_count(),
@@ -332,18 +336,7 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
-    pay = paid.aggregate(
-        CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
-                      Decimal('0.00'), output_field=DecimalField()),
-        UZCARD=Coalesce(Sum('total_amount', filter=Q(payment_method='UZCARD')),
-                        Decimal('0.00'), output_field=DecimalField()),
-        HUMO=Coalesce(Sum('total_amount', filter=Q(payment_method='HUMO')),
-                      Decimal('0.00'), output_field=DecimalField()),
-        PAYME=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')),
-                       Decimal('0.00'), output_field=DecimalField()),
-        MIXED=Coalesce(Sum('total_amount', filter=Q(payment_method='MIXED')),
-                       Decimal('0.00'), output_field=DecimalField()),
-    )
+    pay = _tender_breakdown(paid)
     line_total = ExpressionWrapper(
         F('price') * F('quantity'),
         output_field=DecimalField(max_digits=18, decimal_places=2))
@@ -370,7 +363,7 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
         'orders': counts['total'] or 0,
         'cancelled': counts['cancelled'] or 0,
         'units_sold': int(units),
-        'payment_breakdown': {m: _uzs(pay[m]) for m in _PAYMENT_METHODS},
+        'payment_breakdown': pay,
         'top_products': [{
             'product_id': r['product_id'], 'product_name': r['product__name'],
             'quantity': int(r['quantity'] or 0), 'revenue': _uzs(r['revenue']),

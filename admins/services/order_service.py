@@ -32,6 +32,34 @@ def _format_duration(seconds):
     return f"{secs}s"
 
 
+def _payments_payload(order):
+    """Canonical tender split for ONE order: {cash, card, payme} (+ `unknown` only
+    when the tender genuinely cannot be determined), plus per-acquirer `card_detail`.
+
+    This is what replaces the opaque `MIXED` marker: a half-cash sale reports
+    {"cash": "35000.00", "card": "18000.00"} instead of just "MIXED". `cash` is the
+    BILL's cash portion — OrderPayment stores the tendered cash, which may include
+    the customer's change. Uses the prefetched `payments` relation (no extra query).
+    """
+    from base.services.tender import split_from_rows
+    lines = [p for p in order.payments.all() if not p.is_deleted]
+    split, detail = split_from_rows(
+        order.total_amount, order.payment_method,
+        [(p.method, p.amount) for p in lines], order_id=order.id,
+    )
+    data = {
+        'cash': str(split['cash']),
+        'card': str(split['card']),
+        'payme': str(split['payme']),
+    }
+    if split['unknown']:
+        data['unknown'] = str(split['unknown'])
+    if any(detail.values()):
+        # Storage keeps the acquirer so a bank statement still reconciles.
+        data['card_detail'] = {k: str(v) for k, v in detail.items() if v}
+    return data
+
+
 def _serialize_order_list(order, include_items=True):
     data = {
         'id': order.id,
@@ -61,6 +89,8 @@ def _serialize_order_list(order, include_items=True):
         'status': order.status,
         'is_paid': order.is_paid,
         'total_amount': str(order.total_amount or 0),
+        # Canonical tender split ({cash, card, payme}) instead of an opaque MIXED.
+        'payments': _payments_payload(order),
         # The list queryset is prefetched with `items__product__category`
         # (OrderRepository.get_with_relations) — iterate the cached items
         # instead of `.count()` (extra query) and `.values()` (fresh query
@@ -147,6 +177,8 @@ def _serialize_order_detail(order):
         'is_paid': order.is_paid,
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
         'total_amount': str(order.total_amount),
+        # Canonical tender split ({cash, card, payme}) instead of an opaque MIXED.
+        'payments': _payments_payload(order),
         'items': items,
         'items_ready_count': sum(1 for i in items if i['is_ready']),
         'items_total_count': len(items),
@@ -706,8 +738,19 @@ class AdminOrderService:
 
     @staticmethod
     @transaction.atomic
-    def mark_as_paid(order_id, payment_method='CASH'):
-        from base.models import Order
+    def mark_as_paid(order_id, payment_method='CASH', payments=None):
+        """Mark an order paid, WRITING the tender line(s). Mirrors the till path.
+
+        Two input shapes:
+          - single tender: payment_method='CASH'          -> one full-amount line
+          - split:         payments=[{method,amount}, ...] -> one line per component
+
+        Previously this set only is_paid/payment_method/paid_at and wrote no
+        OrderPayment row, so a cloud-paid sale carried no tender lines. MIXED stays an
+        OUTPUT-only roll-up: it cannot be a bare input method because a single method
+        carries no split to decompose -- send `payments` instead.
+        """
+        from base.models import Order, OrderPayment
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -718,21 +761,62 @@ class AdminOrderService:
         if order.is_paid:
             return ServiceResponse.error('Order already paid')
 
-        valid_methods = [c[0] for c in Order.PaymentMethod.choices]
-        if payment_method not in valid_methods:
-            return ServiceResponse.validation_error(
-                errors={'payment_method': f'Must be one of {valid_methods}'},
-            )
+        # Concrete tenders only: MIXED is the roll-up the system SETS, never an input.
+        valid_methods = [c[0] for c in Order.PaymentMethod.choices if c[0] != 'MIXED']
+        total = Decimal(order.total_amount or 0)
 
+        if payments:
+            lines = []
+            for p in payments:
+                method = str((p or {}).get('method', '')).upper()
+                if method not in valid_methods:
+                    return ServiceResponse.validation_error(
+                        errors={'payments': f'method must be one of {valid_methods}'})
+                try:
+                    amount = Decimal(str((p or {}).get('amount')))
+                except Exception:  # noqa: BLE001
+                    return ServiceResponse.validation_error(
+                        errors={'payments': 'amount must be a number'})
+                if amount <= 0:
+                    return ServiceResponse.validation_error(
+                        errors={'payments': 'amount must be > 0'})
+                lines.append((method, amount))
+        else:
+            if payment_method not in valid_methods:
+                return ServiceResponse.validation_error(
+                    errors={'payment_method': f'Must be one of {valid_methods}; '
+                                              f'MIXED requires a `payments` split'},
+                )
+            lines = [(payment_method, total)]
+
+        paid_sum = sum((a for _, a in lines), Decimal('0'))
+        noncash = sum((a for m, a in lines if m != 'CASH'), Decimal('0'))
+        if paid_sum < total:
+            return ServiceResponse.validation_error(
+                errors={'payments': 'Payments do not cover the total'},
+                message=f'Short by {total - paid_sum}')
+        # Only cash may over-tender (the customer's change); card/Payme never can.
+        if noncash > total:
+            return ServiceResponse.validation_error(
+                errors={'payments': 'Non-cash overpayment is not allowed'})
+
+        distinct = {m for m, _ in lines}
         order.is_paid = True
-        order.payment_method = payment_method
+        order.payment_method = (next(iter(distinct)) if len(distinct) == 1
+                                else Order.PaymentMethod.MIXED)
         order.paid_at = timezone.now()
         order.save(update_fields=['is_paid', 'payment_method', 'paid_at'])
 
-        # Cash drawer only tracks physical cash. Card/Payme settle externally
-        # and are reconciled against the gateway report, not the register.
-        if payment_method == 'CASH':
-            InkassaService.add_to_register(order.total_amount)
+        # The tender lines: what makes this sale visible to per-tender shift settlement
+        # (cashbox.drawer) and to base.services.tender.
+        for method, amount in lines:
+            OrderPayment.objects.create(order=order, method=method, amount=amount)
+
+        # The drawer only holds physical cash, net of change. Card/Payme settle
+        # externally and reconcile against the acquirer report, not the register.
+        cash_to_drawer = total - noncash
+        if cash_to_drawer > 0:
+            InkassaService.add_to_register(cash_to_drawer)
 
         try:
             from stock.services import OrderStatusHandler, StockSettingsService
@@ -788,15 +872,37 @@ class AdminOrderService:
         if not order.is_paid:
             return ServiceResponse.error('Order is not paid')
 
-        was_cash = order.payment_method == 'CASH' or order.payment_method is None
+        # Reverse exactly the cash that hit the drawer = bill total minus what settled
+        # externally, so a MIXED order reverses only its cash leg (mirrors the till's
+        # cancel path). Computed from the tender lines BEFORE they are removed.
+        from base.models import OrderPayment
+        _lines = list(OrderPayment.objects.filter(order=order, is_deleted=False)
+                      .values_list('method', 'amount'))
+        _total = Decimal(order.total_amount or 0)
+        if _lines:
+            _noncash = sum((Decimal(a) for m, a in _lines
+                            if (m or 'CASH').upper() != 'CASH'), Decimal('0'))
+            cash_in_drawer = _total - _noncash
+        elif order.payment_method in ('CASH', None):
+            cash_in_drawer = _total          # legacy order, no tender lines
+        else:
+            cash_in_drawer = Decimal('0')
+
         order.is_paid = False
         order.payment_method = None
         order.paid_at = None
         order.save(update_fields=['is_paid', 'payment_method', 'paid_at'])
 
-        # Only reverse the cash drawer if the original payment was cash.
-        if was_cash:
-            InkassaService.add_to_register(-order.total_amount)
+        # Drop the tender lines. Without this a pay -> unpay -> re-pay cycle leaves
+        # stale OrderPayment rows behind (the pay path appends, it does not dedupe),
+        # so Sum(non-cash lines) can exceed total_amount and the tender split is
+        # forced into the `unknown` bucket. Soft-delete so the tombstone syncs.
+        for _p in OrderPayment.objects.filter(order=order, is_deleted=False):
+            _p.delete()
+
+        # Only the cash leg ever entered the register.
+        if cash_in_drawer > 0:
+            InkassaService.add_to_register(-cash_in_drawer)
 
         # Reverse the stock deduction that mark_as_paid applied. Without
         # this, a pay -> unpay -> pay sequence double-deducts inventory
@@ -982,14 +1088,13 @@ class AdminOrderService:
             product_ids=product_ids_list, tod_from=tod_from_t, tod_to=tod_to_t)
         avg_prep = OrderRepository.get_avg_prep_time(date_from_dt, date_to_dt)
 
-        # Paid revenue split into the 3 buckets the admin FE shows, over the SAME
-        # date filter: CASH (incl. legacy NULL), CARD (UZCARD/HUMO/MIXED), DIGITAL
-        # (PAYME). Best-effort so a breakdown error never blanks the whole stats.
+        # Paid revenue split by CANONICAL tender over the SAME filters: cash / card
+        # (Uzcard+Humo+Card) / payme. Previously this bucketed by Order.payment_method
+        # and folded the WHOLE of a MIXED order (materially part cash) into CARD.
+        # Best-effort so a breakdown error never blanks the whole stats.
         try:
             from base.models import Order, OrderItem
-            from django.db.models import DecimalField, Q, Sum
-            from django.db.models.functions import Coalesce
-            from decimal import Decimal as _D
+            from base.services.tender import breakdown_for_orders
             pq = Order.objects.filter(is_deleted=False, is_paid=True).exclude(status='CANCELED')
             if date_from_dt:
                 pq = pq.filter(created_at__gte=date_from_dt)
@@ -1001,17 +1106,14 @@ class AdminOrderService:
                 pq = pq.filter(id__in=OrderItem.objects.filter(
                     is_deleted=False, product_id__in=product_ids_list).values('order_id'))
             pq = tod_filter(pq, tod_from_t, tod_to_t, field='created_at')
-            _p = pq.aggregate(
-                CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
-                              _D('0.00'), output_field=DecimalField()),
-                CARD=Coalesce(Sum('total_amount', filter=Q(payment_method__in=['UZCARD', 'HUMO', 'MIXED'])),
-                              _D('0.00'), output_field=DecimalField()),
-                DIGITAL=Coalesce(Sum('total_amount', filter=Q(payment_method='PAYME')),
-                                 _D('0.00'), output_field=DecimalField()),
-            )
-            payment_breakdown = {k: str(_p[k] or 0) for k in ('CASH', 'CARD', 'DIGITAL')}
+            _split, _detail = breakdown_for_orders(pq)
+            payment_breakdown = {k: str(_split[k]) for k in ('cash', 'card', 'payme')}
+            if _split['unknown']:
+                payment_breakdown['unknown'] = str(_split['unknown'])
+            payment_breakdown['card_detail'] = {k: str(v) for k, v in _detail.items()}
         except Exception:
-            payment_breakdown = {'CASH': '0', 'CARD': '0', 'DIGITAL': '0'}
+            logger.exception('order stats tender breakdown failed')
+            payment_breakdown = {'cash': '0', 'card': '0', 'payme': '0'}
 
         # Per-status + payment-status breakdowns over the SAME windowed/filtered
         # aggregate (all keys always present, zero-filled). PAID/UNPAID reuse the

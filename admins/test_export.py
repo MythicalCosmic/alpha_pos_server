@@ -96,8 +96,13 @@ class TestBuildExport:
         assert count == 0
 
     def test_excludes_outside_window(self, regular_user):
+        from datetime import datetime
         from django.utils import timezone as tz
-        _make_order(regular_user, created_at=tz.now() - timedelta(days=60))
+        # Pin the order BEFORE the fixed window start. Using `now() - 60 days` was a
+        # time bomb: once real time passed 2026-06-30 the order fell INSIDE the
+        # [2026-05-01, today] window and the test began failing on its own.
+        before = tz.make_aware(datetime(2026, 4, 1, 12, 0), tz.get_current_timezone())
+        _make_order(regular_user, created_at=before)
         _, count = build_export(date(2026, 5, 1), timezone.localdate())
         assert count == 0
 

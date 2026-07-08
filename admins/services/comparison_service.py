@@ -156,10 +156,13 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         hw[(r['wd'] - 1, r['h'])] = r['c']
 
     # -- payment methods / order types (revenue) ----------------------------
-    pay = {}
-    for r in orders.values('payment_method').annotate(v=Sum('total_amount')):
-        key = r['payment_method'] or 'CASH'           # null == cash, per dashboard
-        pay[key] = pay.get(key, 0) + _som(r['v'])
+    # Canonical tenders (cash / card / payme). A MIXED order is attributed to its
+    # real tenders instead of a `MIXED` bucket; cash is the bill portion.
+    from base.services.tender import breakdown_for_orders
+    _tsplit, _ = breakdown_for_orders(orders)
+    pay = {k: _som(_tsplit[k]) for k in ('cash', 'card', 'payme')}
+    if _tsplit['unknown']:
+        pay['unknown'] = _som(_tsplit['unknown'])
     otype = {}
     for r in orders.values('order_type').annotate(v=Sum('total_amount')):
         key = r['order_type'] or 'HALL'
