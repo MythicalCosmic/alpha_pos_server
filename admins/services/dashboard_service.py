@@ -318,12 +318,16 @@ def _range_window(date_from, date_to):
     return d_from, d_to, start, end
 
 
-def get_range(date_from=None, date_to=None):
+def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     """Date-range dashboard (GET /dashboard?from=&to=): the headline figures over
-    an arbitrary [from, to] window (defaults to today)."""
+    an arbitrary [from, to] window (defaults to today). Optional tod_from/tod_to
+    ("HH:MM") restrict to a working-hours window within each business day."""
     from base.models import Order, OrderItem
+    from base.services.business_day import tod_filter, parse_hhmm
     d_from, d_to, start, end = _range_window(date_from, date_to)
+    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
     sold = Order.objects.filter(is_deleted=False, created_at__gte=start, created_at__lt=end)
+    sold = tod_filter(sold, tf, tt, field='created_at')
     paid = sold.filter(is_paid=True).exclude(status='CANCELED')
     rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
@@ -346,6 +350,7 @@ def get_range(date_from=None, date_to=None):
     items = OrderItem.objects.filter(
         order__is_deleted=False, order__created_at__gte=start, order__created_at__lt=end,
     ).exclude(order__status='CANCELED')
+    items = tod_filter(items, tf, tt, field='order__created_at')
     units = items.aggregate(q=Sum('quantity'))['q'] or 0
     top = list(items.annotate(lt=line_total).values('product_id', 'product__name')
                .annotate(quantity=Sum('quantity'), revenue=Sum('lt'))

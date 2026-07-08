@@ -160,7 +160,7 @@ def products_overview_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_overview(df, dt)})
+    return JsonResponse({'success': True, 'data': products_overview(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
 
 
 @require_GET
@@ -169,7 +169,7 @@ def products_categories_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_categories(df, dt)})
+    return JsonResponse({'success': True, 'data': products_categories(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
 
 
 @require_GET
@@ -178,7 +178,7 @@ def products_pareto_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_pareto(df, dt)})
+    return JsonResponse({'success': True, 'data': products_pareto(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
 
 
 @require_GET
@@ -189,7 +189,7 @@ def products_trends_view(request):
         return err
     top_n = _int_or_none(request.GET.get('top_n')) or 5
     top_n = max(1, min(top_n, 20))
-    return JsonResponse({'success': True, 'data': products_trends(df, dt, top_n=top_n)})
+    return JsonResponse({'success': True, 'data': products_trends(df, dt, top_n=top_n, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
 
 
 def _parse_range_token(request):
@@ -223,7 +223,7 @@ def staff_performance_view(request):
     df, dt, err = _parse_range_token(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': staff_performance(df, dt)})
+    return JsonResponse({'success': True, 'data': staff_performance(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
 
 
 @require_GET

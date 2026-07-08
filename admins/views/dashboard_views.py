@@ -15,8 +15,11 @@ def today_view(request):
 @require_GET
 @admin_required
 def range_view(request):
-    """GET /dashboard?from=YYYY-MM-DD&to=YYYY-MM-DD — date-range headline figures."""
-    data = get_range(request.GET.get('from'), request.GET.get('to'))
+    """GET /dashboard?from=YYYY-MM-DD&to=YYYY-MM-DD — date-range headline figures.
+    Optional tod_from/tod_to ("HH:MM") = working-hours filter within each day."""
+    data = get_range(request.GET.get('from'), request.GET.get('to'),
+                     tod_from=request.GET.get('tod_from'),
+                     tod_to=request.GET.get('tod_to'))
     return JsonResponse({'success': True, 'data': data})
 
 
@@ -33,7 +36,9 @@ def operations_view(request):
     """GET /dashboard/operations — Operations tab: live table grid, order funnel,
     prep-by-category, orders-by-hour. Defaults to today's business day."""
     from admins.services.operations_dashboard_service import operations_dashboard
-    data = operations_dashboard(request.GET.get('from'), request.GET.get('to'))
+    data = operations_dashboard(request.GET.get('from'), request.GET.get('to'),
+                                tod_from=request.GET.get('tod_from'),
+                                tod_to=request.GET.get('tod_to'))
     return JsonResponse({'success': True, 'data': data})
 
 
@@ -48,5 +53,8 @@ def sales_view(request):
         range_token=request.GET.get('range'),
         date_from=request.GET.get('from'),
         date_to=request.GET.get('to'),
+        tod_from=request.GET.get('tod_from'),
+        tod_to=request.GET.get('tod_to'),
+        granularity=request.GET.get('granularity'),
     )
     return JsonResponse({'success': True, 'data': data})

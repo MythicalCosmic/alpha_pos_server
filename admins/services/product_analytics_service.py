@@ -31,23 +31,26 @@ def _window(date_from, date_to):
     return range_window(date_from, date_to)
 
 
-def _sold_items(date_from, date_to):
+def _sold_items(date_from, date_to, tod_from=None, tod_to=None):
     """OrderItem queryset for non-deleted, non-cancelled orders in the business
-    window [date_from, date_to]."""
+    window [date_from, date_to], optionally restricted to a working-hours (tod)
+    window within each day."""
     from base.models import OrderItem
+    from base.services.business_day import tod_filter
     lo, hi = _window(date_from, date_to)
-    return (
+    qs = (
         OrderItem.objects.filter(
             order__is_deleted=False,
             order__created_at__gte=lo, order__created_at__lt=hi,
         )
         .exclude(order__status='CANCELED')
     )
+    return tod_filter(qs, tod_from, tod_to, field='order__created_at')
 
 
-def products_overview(date_from, date_to):
+def products_overview(date_from, date_to, tod_from=None, tod_to=None):
     """Headline product KPIs over the window + top sellers / slow movers."""
-    items = _sold_items(date_from, date_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to)
     agg = items.aggregate(
         units=Sum('quantity'),
         revenue=Sum(_LINE_TOTAL),
@@ -89,10 +92,10 @@ def products_overview(date_from, date_to):
     }
 
 
-def products_categories(date_from, date_to):
+def products_categories(date_from, date_to, tod_from=None, tod_to=None):
     """Units + revenue per category over the window, with each category's share
     of total revenue."""
-    items = _sold_items(date_from, date_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to)
     rows = list(
         items.values('product__category_id', 'product__category__name')
         # `units` alias (not `quantity`) so the line-total F('quantity') isn't
@@ -118,11 +121,11 @@ def products_categories(date_from, date_to):
     }
 
 
-def products_pareto(date_from, date_to):
+def products_pareto(date_from, date_to, tod_from=None, tod_to=None):
     """Pareto (80/20) of products by revenue: rank descending with cumulative
     share, classifying the 'vital few' (A = up to 80% of revenue, B = next 15%,
     C = the long tail)."""
-    items = _sold_items(date_from, date_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to)
     rows = list(
         items.values('product_id', 'product__name')
         .annotate(qty=Sum('quantity'), revenue=Sum(_LINE_TOTAL))
@@ -172,11 +175,11 @@ def products_pareto(date_from, date_to):
     }
 
 
-def products_trends(date_from, date_to, top_n=5):
+def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None):
     """Daily sales trend (business-day buckets) for the window, plus a per-day
     series for the top-N products by revenue."""
     from base.services.business_day import business_day_start
-    items = _sold_items(date_from, date_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to)
 
     # Bucket by BUSINESS date: subtracting the cutover shifts pre-cutover sales
     # back a day, so date(created_at - start) == the business date.

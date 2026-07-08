@@ -47,13 +47,17 @@ def orders(request):
         # Default true (back-compat: item 5 inline items); ?include_items=false
         # drops items[] from the list payload for lighter list-view fetches (item 14).
         include_items = request.GET.get('include_items', 'true').lower() != 'false'
+        product_ids = request.GET.get('product_ids')
+        tod_from = request.GET.get('tod_from')
+        tod_to = request.GET.get('tod_to')
 
         result, status_code = AdminOrderService.get_all_orders(
             page=page, per_page=per_page, statuses=statuses,
             payment_status=payment_status, category_ids=category_ids,
-            user_id=user_id, cashier_id=cashier_id, order_type=order_type,
-            date_from=date_from, date_to=date_to, order_by=order_by,
-            include_deleted=include_deleted, include_items=include_items,
+            product_ids=product_ids, user_id=user_id, cashier_id=cashier_id,
+            order_type=order_type, date_from=date_from, date_to=date_to,
+            order_by=order_by, include_deleted=include_deleted,
+            include_items=include_items, tod_from=tod_from, tod_to=tod_to,
         )
         return JsonResponse(result, status=status_code)
 
@@ -269,7 +273,10 @@ def order_stats(request):
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
     cashier_id = request.GET.get('cashier_id')
-    result, status_code = AdminOrderService.get_order_stats(date_from, date_to, cashier_id)
+    result, status_code = AdminOrderService.get_order_stats(
+        date_from, date_to, cashier_id,
+        product_ids=request.GET.get('product_ids'),
+        tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))
     return JsonResponse(result, status=status_code)
 
 
@@ -281,7 +288,9 @@ def daily_stats(request):
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
     cashier_id = request.GET.get('cashier_id')
-    result, status_code = AdminOrderService.get_daily_stats(date_from, date_to, cashier_id)
+    result, status_code = AdminOrderService.get_daily_stats(
+        date_from, date_to, cashier_id,
+        tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))
     return JsonResponse(result, status=status_code)
 
 
@@ -380,7 +389,9 @@ def category_stats(request):
 def hourly_stats(request):
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
-    result, status_code = AdminOrderService.get_hourly_stats(date_from, date_to)
+    result, status_code = AdminOrderService.get_hourly_stats(
+        date_from, date_to,
+        tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))
     return JsonResponse(result, status=status_code)
 
 
@@ -391,5 +402,7 @@ def hourly_stats(request):
 def dashboard_stats(request):
     date_from = request.GET.get('date_from')
     date_to = request.GET.get('date_to')
-    result, status_code = AdminOrderService.get_dashboard_stats(date_from, date_to)
+    result, status_code = AdminOrderService.get_dashboard_stats(
+        date_from, date_to,
+        tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))
     return JsonResponse(result, status=status_code)

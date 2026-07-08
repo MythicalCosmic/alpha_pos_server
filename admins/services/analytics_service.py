@@ -196,21 +196,21 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     }
 
 
-def staff_performance(date_from, date_to):
+def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     """Per-staff KPIs over the BUSINESS-day window [date_from, date_to]: order
     volume, completion/cancellation, paid revenue, units sold, and shifts/hours
     worked. Powers the admin-panel Staff dashboard (GET /staff/performance?range=).
     """
     from base.models import Order, OrderItem, Shift
-    from base.services.business_day import range_window
+    from base.services.business_day import range_window, tod_filter, parse_hhmm
 
     lo, hi = range_window(date_from, date_to)
+    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
     order_rows = (
-        Order.objects.filter(
+        tod_filter(Order.objects.filter(
             is_deleted=False, cashier__isnull=False,
-            created_at__gte=lo, created_at__lt=hi,
-        )
+            created_at__gte=lo, created_at__lt=hi), tf, tt)
         .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
         .annotate(
             orders_total=Count('id'),
@@ -225,10 +225,10 @@ def staff_performance(date_from, date_to):
     units_map = {
         r['order__cashier_id']: int(r['u'] or 0)
         for r in (
-            OrderItem.objects.filter(
+            tod_filter(OrderItem.objects.filter(
                 order__is_deleted=False,
-                order__created_at__gte=lo, order__created_at__lt=hi,
-            )
+                order__created_at__gte=lo, order__created_at__lt=hi),
+                tf, tt, field='order__created_at')
             .exclude(order__status='CANCELED')
             .values('order__cashier_id')
             .annotate(u=Sum('quantity'))

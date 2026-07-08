@@ -36,6 +36,16 @@ class AppSettingsService:
                 settings.business_day_start.strftime('%H:%M')
                 if settings.business_day_start else '03:00'
             ),
+            # Working hours the venue trades — the FE's "Working hours" preset for
+            # the tod_from/tod_to dashboard filter.
+            'business_open': (
+                settings.business_open.strftime('%H:%M')
+                if settings.business_open else '09:00'
+            ),
+            'business_close': (
+                settings.business_close.strftime('%H:%M')
+                if settings.business_close else '23:00'
+            ),
         }
 
         try:
@@ -66,6 +76,16 @@ class AppSettingsService:
                     message='Invalid business_day_start',
                 )
             settings.business_day_start = parsed
+
+        for _hh in ('business_open', 'business_close'):
+            if _hh in kwargs:
+                parsed = AppSettingsService._parse_time(kwargs[_hh])
+                if parsed is None:
+                    return ServiceResponse.validation_error(
+                        errors={_hh: 'Must be a time string "HH:MM" or "HH:MM:SS"'},
+                        message=f'Invalid {_hh}',
+                    )
+                setattr(settings, _hh, parsed)
 
         settings.save()
 

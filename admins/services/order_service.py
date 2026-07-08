@@ -288,11 +288,15 @@ class AdminOrderService:
                        category_ids=None, user_id=None, cashier_id=None,
                        order_type=None, date_from=None, date_to=None,
                        order_by='-created_at', include_deleted=False,
-                       include_items=True):
+                       include_items=True, product_ids=None,
+                       tod_from=None, tod_to=None):
+        from base.services.business_day import parse_hhmm
         statuses_list = _parse_statuses(statuses)
         category_ids_list = _parse_int_list(category_ids)
+        product_ids_list = _parse_int_list(product_ids)
         date_from_dt = _parse_date(date_from)
         date_to_dt = _parse_date_to(date_to)
+        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
         if order_by not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
@@ -301,6 +305,7 @@ class AdminOrderService:
             statuses=statuses_list,
             payment_status=payment_status,
             category_ids=category_ids_list,
+            product_ids=product_ids_list,
             user_id=user_id,
             cashier_id=cashier_id,
             order_type=order_type,
@@ -308,6 +313,8 @@ class AdminOrderService:
             date_to=date_to_dt,
             order_by=order_by,
             include_deleted=include_deleted,
+            tod_from=tod_from_t,
+            tod_to=tod_to_t,
         )
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
@@ -319,10 +326,13 @@ class AdminOrderService:
             'filters': {
                 'statuses': statuses_list,
                 'category_ids': category_ids_list,
+                'product_ids': product_ids_list,
                 'payment_status': payment_status,
                 'order_type': order_type,
                 'date_from': date_from,
                 'date_to': date_to,
+                'tod_from': tod_from,
+                'tod_to': tod_to,
             },
             'pagination': {
                 'current_page': page_obj.number,
@@ -959,18 +969,24 @@ class AdminOrderService:
         )
 
     @staticmethod
-    def get_order_stats(date_from=None, date_to=None, cashier_id=None):
+    def get_order_stats(date_from=None, date_to=None, cashier_id=None,
+                        product_ids=None, tod_from=None, tod_to=None):
+        from base.services.business_day import parse_hhmm, tod_filter
         date_from_dt = _parse_date(date_from)
         date_to_dt = _parse_date_to(date_to)
+        product_ids_list = _parse_int_list(product_ids)
+        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
-        stats = OrderRepository.get_stats_aggregate(date_from_dt, date_to_dt, cashier_id)
+        stats = OrderRepository.get_stats_aggregate(
+            date_from_dt, date_to_dt, cashier_id,
+            product_ids=product_ids_list, tod_from=tod_from_t, tod_to=tod_to_t)
         avg_prep = OrderRepository.get_avg_prep_time(date_from_dt, date_to_dt)
 
         # Paid revenue split into the 3 buckets the admin FE shows, over the SAME
         # date filter: CASH (incl. legacy NULL), CARD (UZCARD/HUMO/MIXED), DIGITAL
         # (PAYME). Best-effort so a breakdown error never blanks the whole stats.
         try:
-            from base.models import Order
+            from base.models import Order, OrderItem
             from django.db.models import DecimalField, Q, Sum
             from django.db.models.functions import Coalesce
             from decimal import Decimal as _D
@@ -981,6 +997,10 @@ class AdminOrderService:
                 pq = pq.filter(created_at__lte=date_to_dt)
             if cashier_id:
                 pq = pq.filter(cashier_id=cashier_id)
+            if product_ids_list:
+                pq = pq.filter(id__in=OrderItem.objects.filter(
+                    is_deleted=False, product_id__in=product_ids_list).values('order_id'))
+            pq = tod_filter(pq, tod_from_t, tod_to_t, field='created_at')
             _p = pq.aggregate(
                 CASH=Coalesce(Sum('total_amount', filter=Q(payment_method='CASH') | Q(payment_method__isnull=True)),
                               _D('0.00'), output_field=DecimalField()),
@@ -1026,16 +1046,20 @@ class AdminOrderService:
         })
 
     @staticmethod
-    def get_daily_stats(date_from=None, date_to=None, cashier_id=None):
+    def get_daily_stats(date_from=None, date_to=None, cashier_id=None,
+                        tod_from=None, tod_to=None):
+        from base.services.business_day import parse_hhmm
         date_from_dt = _parse_date(date_from)
         date_to_dt = _parse_date_to(date_to)
+        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
         if not date_from_dt:
             date_from_dt = timezone.now() - timedelta(days=30)
         if not date_to_dt:
             date_to_dt = timezone.now()
 
-        daily = OrderRepository.get_daily_stats(date_from_dt, date_to_dt, cashier_id)
+        daily = OrderRepository.get_daily_stats(
+            date_from_dt, date_to_dt, cashier_id, tod_from=tod_from_t, tod_to=tod_to_t)
 
         return ServiceResponse.success(data={
             'daily_stats': [{
@@ -1188,11 +1212,14 @@ class AdminOrderService:
         })
 
     @staticmethod
-    def get_hourly_stats(date_from=None, date_to=None):
+    def get_hourly_stats(date_from=None, date_to=None, tod_from=None, tod_to=None):
+        from base.services.business_day import parse_hhmm
         date_from_dt = _parse_date(date_from)
         date_to_dt = _parse_date_to(date_to)
+        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
-        hourly = OrderRepository.get_hourly_distribution(date_from_dt, date_to_dt)
+        hourly = OrderRepository.get_hourly_distribution(
+            date_from_dt, date_to_dt, tod_from=tod_from_t, tod_to=tod_to_t)
 
         return ServiceResponse.success(data={
             'hourly_stats': [{
@@ -1203,16 +1230,19 @@ class AdminOrderService:
         })
 
     @staticmethod
-    def get_dashboard_stats(date_from=None, date_to=None):
+    def get_dashboard_stats(date_from=None, date_to=None, tod_from=None, tod_to=None):
+        from base.services.business_day import parse_hhmm
         date_from_dt = _parse_date(date_from)
         date_to_dt = _parse_date_to(date_to)
+        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
+        _tk = {'tod_from': tod_from_t, 'tod_to': tod_to_t}
 
         today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = today.replace(day=1)
 
-        today_stats = OrderRepository.get_stats_aggregate(today, None)
-        month_stats = OrderRepository.get_stats_aggregate(month_start, None)
-        overall_stats = OrderRepository.get_stats_aggregate(date_from_dt, date_to_dt)
+        today_stats = OrderRepository.get_stats_aggregate(today, None, **_tk)
+        month_stats = OrderRepository.get_stats_aggregate(month_start, None, **_tk)
+        overall_stats = OrderRepository.get_stats_aggregate(date_from_dt, date_to_dt, **_tk)
         avg_prep = OrderRepository.get_avg_prep_time(today, None)
 
         top = OrderItemRepository.get_top_products(date_from_dt, date_to_dt, 5)

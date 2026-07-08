@@ -25,17 +25,25 @@ def _window(date_from, date_to):
     return day_window(business_date())
 
 
-def operations_dashboard(date_from=None, date_to=None):
+def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=None):
     from base.models import Order, OrderItem, Table
+    from base.services.business_day import tod_filter, parse_hhmm
     lo, hi = _window(date_from, date_to)
+    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
+    # Base querysets for the window, restricted to the working-hours (tod) window
+    # per day when tod_from/tod_to are given — every operations block derives from these.
+    _o = tod_filter(
+        Order.objects.filter(is_deleted=False, created_at__gte=lo, created_at__lt=hi),
+        tf, tt, field='created_at')
+    _oi = tod_filter(
+        OrderItem.objects.filter(order__is_deleted=False,
+                                 order__created_at__gte=lo, order__created_at__lt=hi),
+        tf, tt, field='order__created_at')
 
     # ── table grid: status DERIVED from this table's live orders in the window
     #    (ready if any READY, occupied if any OPEN/PREPARING, else free) ──
     rows = (
-        Order.objects.filter(
-            is_deleted=False, table__isnull=False, status__in=_ACTIVE,
-            created_at__gte=lo, created_at__lt=hi,
-        )
+        _o.filter(table__isnull=False, status__in=_ACTIVE)
         .values('table_id')
         .annotate(
             total=Count('id'),
@@ -65,19 +73,14 @@ def operations_dashboard(date_from=None, date_to=None):
 
     # ── funnel: order pipeline counts in the window ──
     counts = {row['status']: row['c'] for row in (
-        Order.objects.filter(is_deleted=False, created_at__gte=lo, created_at__lt=hi)
-        .values('status').annotate(c=Count('id'))
+        _o.values('status').annotate(c=Count('id'))
     )}
     funnel = [{'status': s, 'count': counts.get(s, 0)} for s in _FUNNEL]
 
     # ── prep by category: # order-items per category + avg prep of their orders ──
     cat_count, cat_order_prep = {}, {}
     for cat, oid, created, ready in (
-        OrderItem.objects.filter(
-            order__is_deleted=False,
-            order__created_at__gte=lo, order__created_at__lt=hi,
-        )
-        .exclude(order__status='CANCELED')
+        _oi.exclude(order__status='CANCELED')
         .values_list('product__category__name', 'order_id',
                      'order__created_at', 'order__ready_at')
     ):
@@ -106,8 +109,7 @@ def operations_dashboard(date_from=None, date_to=None):
     # ── orders by hour (09..22), localtime hour (matches the sales heatmap) ──
     hour_counts = {h: 0 for h in range(9, 23)}
     for (created,) in (
-        Order.objects.filter(is_deleted=False, created_at__gte=lo, created_at__lt=hi)
-        .exclude(status='CANCELED').values_list('created_at')
+        _o.exclude(status='CANCELED').values_list('created_at')
     ):
         h = timezone.localtime(created).hour
         if 9 <= h <= 22:
