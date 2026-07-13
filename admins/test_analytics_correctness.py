@@ -77,3 +77,46 @@ def test_top_products_excludes_unpaid_and_cancelled():
     cola = next(r for r in rows if r['product_id'] == p.id)
     assert cola['total_qty'] == 2, cola          # only the 2 paid units
     assert cola['total_revenue'] == Decimal('20000.00'), cola
+
+
+def test_products_overview_excludes_unpaid_and_soft_deleted_lines():
+    from base.models import Category, Product
+    from admins.services.product_analytics_service import products_overview
+
+    cat = Category.objects.create(name='Food', slug='food')
+    product = Product.objects.create(name='Burger', price=Decimal('10000'), category=cat)
+    cashier = _cashier()
+    now = timezone.now()
+
+    paid = _order(cashier, 20000, now, is_paid=True)
+    _item(paid, product, 2, 10000)
+    unpaid = _order(cashier, 50000, now, is_paid=False, status='OPEN')
+    _item(unpaid, product, 5, 10000)
+    removed = _order(cashier, 30000, now, is_paid=True)
+    _item(removed, product, 3, 10000)
+    removed.items.first().delete()
+
+    day = timezone.localdate()
+    data = products_overview(day, day)
+    assert data['total_units'] == 2, data
+    assert data['total_revenue'] == '20000', data
+
+
+def test_products_overview_allocates_order_discount():
+    from base.models import Category, Product
+    from admins.services.product_analytics_service import products_overview
+
+    cat = Category.objects.create(name='Discounted', slug='discounted')
+    product = Product.objects.create(name='Combo', price=Decimal('10000'), category=cat)
+    cashier = _cashier()
+    now = timezone.now()
+    order = _order(cashier, 8000, now, is_paid=True)
+    order.subtotal = Decimal('10000')
+    order.discount_amount = Decimal('2000')
+    order.save(update_fields=['subtotal', 'discount_amount'])
+    _item(order, product, 1, 10000)
+
+    day = timezone.localdate()
+    data = products_overview(day, day)
+    assert data['total_revenue'] == '8000', data
+    assert data['top_products'][0]['revenue'] == '8000', data

@@ -187,6 +187,7 @@ class TestDispatch:
         from base.models import Order
         o = Order.objects.get(id=r.json()['data']['pos_order_id'])
         assert o.subtotal == Decimal('39000.00')         # food
+        assert o.discount_amount == Decimal('5000.00')   # allocated to product analytics
         assert o.total_amount == Decimal('46000.00')     # food + delivery - loyalty discount
 
 

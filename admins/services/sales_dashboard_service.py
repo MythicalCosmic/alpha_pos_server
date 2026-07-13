@@ -8,17 +8,11 @@ Order / OrderItem / CashboxExpense; no new models.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum
 from django.utils import timezone
 
 # Margin proxy: most products have no recipe/cost link, so true COGS is unknown.
 # grossMargin is reported as 1 - this fraction until per-product costs are wired.
 DEFAULT_COGS_FRACTION = Decimal('0.35')
-
-_LINE_TOTAL = ExpressionWrapper(
-    F('price') * F('quantity'),
-    output_field=DecimalField(max_digits=18, decimal_places=2),
-)
 
 HM_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 HM_HOURS = ['09', '10', '11', '12', '13', '14', '15', '16',

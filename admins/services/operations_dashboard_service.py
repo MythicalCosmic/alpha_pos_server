@@ -36,7 +36,7 @@ def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=Non
         Order.objects.filter(is_deleted=False, created_at__gte=lo, created_at__lt=hi),
         tf, tt, field='created_at')
     _oi = tod_filter(
-        OrderItem.objects.filter(order__is_deleted=False,
+        OrderItem.objects.filter(is_deleted=False, order__is_deleted=False,
                                  order__created_at__gte=lo, order__created_at__lt=hi),
         tf, tt, field='order__created_at')
 

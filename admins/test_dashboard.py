@@ -92,6 +92,23 @@ class TestGetTodayService:
         assert top[0]['product_name'] == 'Pizza'
         assert top[0]['quantity'] == 2
 
+    def test_units_sold_excludes_unpaid_and_soft_deleted_items(self, regular_user):
+        paid = _make_paid_order(regular_user, total='20000')
+        _add_item(paid, 'Paid', '10000', 2, slug='paid')
+
+        unpaid = _make_paid_order(regular_user, total='50000')
+        unpaid.is_paid = False
+        unpaid.payment_method = None
+        unpaid.save(update_fields=['is_paid', 'payment_method'])
+        _add_item(unpaid, 'Unpaid', '10000', 5, slug='unpaid')
+
+        removed_order = _make_paid_order(regular_user, total='30000')
+        _add_item(removed_order, 'Removed', '10000', 3, slug='removed')
+        removed_order.items.first().delete()
+
+        data = get_today()
+        assert data['today']['units_sold'] == 2
+
     def test_clocked_in_lists_active_shifts(self, cashier_user):
         from base.models import Shift
         Shift.objects.create(

@@ -8,14 +8,12 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import (
-    Count, DateTimeField, DecimalField, ExpressionWrapper, F, Q, Sum,
+    Count, DateTimeField, ExpressionWrapper, F, Sum,
 )
 from django.db.models.functions import TruncDate
+from base.services.revenue import net_line_revenue
 
-_LINE_TOTAL = ExpressionWrapper(
-    F('price') * F('quantity'),
-    output_field=DecimalField(max_digits=18, decimal_places=2),
-)
+_LINE_TOTAL = net_line_revenue()
 
 
 def _uzs(value):
@@ -40,7 +38,7 @@ def _sold_items(date_from, date_to, tod_from=None, tod_to=None):
     lo, hi = _window(date_from, date_to)
     qs = (
         OrderItem.objects.filter(
-            order__is_deleted=False,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=lo, order__created_at__lt=hi,
         )
         .exclude(order__status='CANCELED')
@@ -254,7 +252,7 @@ def products_affinity(date_from, date_to, limit=10):
     # (order_id, product_id) for PAID, non-cancelled, non-deleted orders in the window.
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False, order__is_paid=True,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=lo, order__created_at__lt=hi,
         )
         .exclude(order__status='CANCELED')

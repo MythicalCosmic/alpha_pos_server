@@ -1,47 +1,98 @@
 import logging
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
-from django.db.models import Sum, Count, F
+from django.db.models import Sum, Count
 from django.utils import timezone
 
 from base.models import CashRegister, Inkassa, Order, OrderItem
 from base.helpers.response import ServiceResponse
+from base.repositories import CashRegisterRepository
+from base.services.revenue import net_line_revenue
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_register(branch_id=None, *, for_update=False):
+    """Resolve a single operational branch register.
+
+    Local editions always use their configured branch. On the cloud an explicit
+    branch wins; for backward compatibility a sole non-cloud branch is selected
+    automatically. Multiple operational branches are intentionally ambiguous
+    and require ``branch_id`` instead of silently collecting the wrong drawer.
+    """
+    requested = str(branch_id or '').strip()
+    node_branch = str(getattr(settings, 'BRANCH_ID', '') or '').strip()
+    mode = getattr(settings, 'DEPLOYMENT_MODE', 'local')
+
+    if not requested and mode != 'cloud':
+        requested = node_branch
+    if not requested:
+        active = CashRegister.objects.filter(is_deleted=False)
+        operational = active.exclude(branch_id=node_branch) if node_branch else active
+        branch_ids = list(
+            operational.order_by().values_list('branch_id', flat=True).distinct()[:2]
+        )
+        if len(branch_ids) == 1:
+            requested = branch_ids[0]
+        else:
+            all_ids = list(
+                active.order_by().values_list('branch_id', flat=True).distinct()[:2]
+            )
+            if len(all_ids) == 1:
+                requested = all_ids[0]
+            elif len(branch_ids) > 1 or len(all_ids) > 1:
+                return None, ServiceResponse.validation_error(
+                    errors={'branch_id': 'Required when more than one branch has a register'},
+                    message='Choose a branch register',
+                )
+            else:
+                requested = node_branch or 'cloud'
+
+    register = CashRegisterRepository.get_or_create_current(
+        requested, for_update=for_update,
+    )
+    return register, None
 
 
 class AdminInkassaService:
 
     @staticmethod
-    def get_balance():
-        register, _ = CashRegister.objects.get_or_create(
-            is_deleted=False, defaults={'current_balance': 0}
-        )
+    def get_balance(branch_id=None):
+        register, error = _resolve_register(branch_id)
+        if error:
+            return error
         return ServiceResponse.success(data={
+            'branch_id': register.branch_id,
             'balance': str(register.current_balance),
             'last_updated': register.last_updated.isoformat(),
         })
 
     @staticmethod
-    def get_stats():
-        now = timezone.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    def get_stats(branch_id=None):
+        # Match every other money surface: "today" is the configured business
+        # day (03:00 by default), not calendar midnight.
+        from base.services.business_day import today_window
+        today_start, today_end = today_window()
 
         # Exclude cancelled orders. Cancelling a paid order reverses its cash
         # from the register (add_to_register(-total)) but leaves is_paid /
         # paid_at set, so without this exclusion the reported revenue counts
         # money the drawer no longer holds — overstating expected cash.
         today_orders = Order.objects.filter(
-            is_deleted=False, paid_at__gte=today_start,
+            is_deleted=False, is_paid=True,
+            created_at__gte=today_start, created_at__lt=today_end,
         ).exclude(status='CANCELED')
+        if branch_id:
+            today_orders = today_orders.filter(branch_id=branch_id)
         today_agg = today_orders.aggregate(
             total_revenue=Sum('total_amount'),
             order_count=Count('id'),
         )
 
         cashier_perf = (
-            Order.objects.filter(is_deleted=False, paid_at__gte=today_start)
+            today_orders
             .exclude(status='CANCELED')
             .values('cashier__id', 'cashier__first_name', 'cashier__last_name')
             .annotate(
@@ -51,17 +102,22 @@ class AdminInkassaService:
             .order_by('-total_revenue')
         )
 
+        product_items = OrderItem.objects.filter(
+            order__is_deleted=False,
+            order__is_paid=True,
+            order__created_at__gte=today_start,
+            order__created_at__lt=today_end,
+            is_deleted=False,
+        )
+        if branch_id:
+            product_items = product_items.filter(order__branch_id=branch_id)
         top_products = (
-            OrderItem.objects.filter(
-                order__is_deleted=False,
-                order__paid_at__gte=today_start,
-                is_deleted=False,
-            )
+            product_items
             .exclude(order__status='CANCELED')
             .values('product__id', 'product__name')
             .annotate(
                 total_quantity=Sum('quantity'),
-                total_revenue=Sum(F('price') * F('quantity')),
+                total_revenue=Sum(net_line_revenue()),
             )
             .order_by('-total_quantity')[:10]
         )
@@ -94,8 +150,10 @@ class AdminInkassaService:
         })
 
     @staticmethod
-    def get_history(page=1, per_page=20):
+    def get_history(page=1, per_page=20, branch_id=None):
         qs = Inkassa.objects.filter(is_deleted=False).select_related('cashier').order_by('-created_at')
+        if branch_id:
+            qs = qs.filter(branch_id=branch_id)
         total = qs.count()
         total_pages = (total + per_page - 1) // per_page
         items = qs[(page - 1) * per_page: page * per_page]
@@ -124,10 +182,11 @@ class AdminInkassaService:
 
     @staticmethod
     @transaction.atomic
-    def perform(user, amounts):
-        register = CashRegister.objects.select_for_update().filter(is_deleted=False).first()
-        if not register:
-            register = CashRegister.objects.create(current_balance=0)
+    def perform(user, amounts, branch_id=None):
+        requested_branch = branch_id or amounts.get('branch_id')
+        register, error = _resolve_register(requested_branch, for_update=True)
+        if error:
+            return error
 
         balance_before = register.current_balance
 
@@ -170,9 +229,12 @@ class AdminInkassaService:
             )
 
         now = timezone.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        from base.services.business_day import day_window, business_date
+        today_start, _ = day_window(business_date(now))
 
-        last_inkassa = Inkassa.objects.filter(is_deleted=False).order_by('-created_at').first()
+        last_inkassa = Inkassa.objects.filter(
+            is_deleted=False, branch_id=register.branch_id,
+        ).order_by('-created_at').first()
         # Chain the period to the previous inkassa's end. Previously period_end
         # was never set on creation, so this always fell back to today_start and
         # every partial inkassa re-counted the WHOLE day's revenue/orders —
@@ -181,7 +243,8 @@ class AdminInkassaService:
         period_start = last_inkassa.period_end if (last_inkassa and last_inkassa.period_end) else today_start
 
         period_orders = Order.objects.filter(
-            is_deleted=False, paid_at__gte=period_start, paid_at__lte=now,
+            is_deleted=False, is_paid=True, branch_id=register.branch_id,
+            paid_at__gte=period_start, paid_at__lte=now,
         ).exclude(status='CANCELED')
         today_agg = period_orders.aggregate(
             total_revenue=Sum('total_amount'),
@@ -196,6 +259,7 @@ class AdminInkassaService:
             if method == 'CASH':
                 running_balance = running_balance - amount
             inkassa = Inkassa.objects.create(
+                branch_id=register.branch_id,
                 cashier=user,
                 amount=amount,
                 inkass_type=method,
@@ -232,6 +296,7 @@ class AdminInkassaService:
                 'card_to_bank': str(card_amount),
                 'balance_before': str(balance_before),
                 'balance_after': str(register.current_balance),
+                'branch_id': register.branch_id,
                 'inkassas': [_serialize_inkassa(i) for i in created_inkassas],
             },
             message='Inkassa performed successfully',
@@ -241,6 +306,7 @@ class AdminInkassaService:
 def _serialize_inkassa(i):
     return {
         'id': i.id,
+        'branch_id': i.branch_id,
         'amount': str(i.amount),
         'inkass_type': i.inkass_type,
         'balance_before': str(i.balance_before),

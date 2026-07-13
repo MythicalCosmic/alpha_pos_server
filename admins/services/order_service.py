@@ -698,13 +698,11 @@ class AdminOrderService:
         # otherwise the register over-reports balance permanently while
         # stock is reverse-deducted. Only cash reverses through the drawer;
         # card/Payme settle externally.
-        if (
-            status == 'CANCELED'
-            and order.is_paid
-            and order.total_amount
-            and (order.payment_method == 'CASH' or order.payment_method is None)
-        ):
-            InkassaService.add_to_register(-order.total_amount)
+        if status == 'CANCELED' and order.is_paid:
+            from base.services.tender import order_tender_split
+            split, _ = order_tender_split(order)
+            if split['cash'] > 0:
+                InkassaService.add_to_register(-split['cash'], order.branch_id)
 
         try:
             from stock.services import OrderStatusHandler, StockSettingsService
@@ -816,7 +814,7 @@ class AdminOrderService:
         # externally and reconcile against the acquirer report, not the register.
         cash_to_drawer = total - noncash
         if cash_to_drawer > 0:
-            InkassaService.add_to_register(cash_to_drawer)
+            InkassaService.add_to_register(cash_to_drawer, order.branch_id)
 
         try:
             from stock.services import OrderStatusHandler, StockSettingsService
@@ -876,17 +874,9 @@ class AdminOrderService:
         # externally, so a MIXED order reverses only its cash leg (mirrors the till's
         # cancel path). Computed from the tender lines BEFORE they are removed.
         from base.models import OrderPayment
-        _lines = list(OrderPayment.objects.filter(order=order, is_deleted=False)
-                      .values_list('method', 'amount'))
-        _total = Decimal(order.total_amount or 0)
-        if _lines:
-            _noncash = sum((Decimal(a) for m, a in _lines
-                            if (m or 'CASH').upper() != 'CASH'), Decimal('0'))
-            cash_in_drawer = _total - _noncash
-        elif order.payment_method in ('CASH', None):
-            cash_in_drawer = _total          # legacy order, no tender lines
-        else:
-            cash_in_drawer = Decimal('0')
+        from base.services.tender import order_tender_split
+        split, _ = order_tender_split(order)
+        cash_in_drawer = split['cash']
 
         order.is_paid = False
         order.payment_method = None
@@ -902,7 +892,7 @@ class AdminOrderService:
 
         # Only the cash leg ever entered the register.
         if cash_in_drawer > 0:
-            InkassaService.add_to_register(-cash_in_drawer)
+            InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
 
         # Reverse the stock deduction that mark_as_paid applied. Without
         # this, a pay -> unpay -> pay sequence double-deducts inventory

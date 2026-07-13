@@ -8,7 +8,7 @@ import logging
 from decimal import Decimal
 
 from django.db.models import (
-    Count, DecimalField, ExpressionWrapper, F, Q, Sum,
+    Count, ExpressionWrapper, F, Q, Sum,
 )
 from django.utils import timezone
 
@@ -104,16 +104,16 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     test what-ifs.
     """
     from base.models import OrderItem
+    from base.services.business_day import range_window
+    from base.services.revenue import net_line_revenue
 
-    line_total = ExpressionWrapper(
-        F('price') * F('quantity'),
-        output_field=DecimalField(max_digits=18, decimal_places=2),
-    )
+    lo, hi = range_window(date_from, date_to)
+
+    line_total = net_line_revenue()
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False,
-            order__created_at__date__gte=date_from,
-            order__created_at__date__lte=date_to,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
+            order__created_at__gte=lo, order__created_at__lt=hi,
         )
         # Exclude cancelled orders — they never sold, so they must not skew
         # menu-engineering quadrants (qty sold / revenue).
@@ -131,9 +131,16 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
         price = r['product__price'] or Decimal('0')
         qty = int(r['qty_sold'] or 0)
         revenue = r['revenue'] or Decimal('0')
-        margin_per_unit = (price * (Decimal('1') - cogs_fraction)).quantize(Decimal('0.01'))
-        margin_pct = (margin_per_unit / price * 100).quantize(Decimal('0.1')) if price else Decimal('0')
-        profit = (margin_per_unit * qty).quantize(Decimal('0.01'))
+        # Discounts reduce realized margin. COGS remains based on the frozen
+        # selling price, while net revenue is the canonical proportional
+        # allocation from the order header.
+        net_unit_revenue = (revenue / qty) if qty else Decimal('0')
+        unit_cogs = price * cogs_fraction
+        margin_per_unit = (net_unit_revenue - unit_cogs).quantize(Decimal('0.01'))
+        margin_pct = (
+            margin_per_unit / net_unit_revenue * 100
+        ).quantize(Decimal('0.1')) if net_unit_revenue else Decimal('0')
+        profit = (revenue - unit_cogs * qty).quantize(Decimal('0.01'))
         items.append({
             'product_id': r['product_id'],
             'product_name': r['product__name'],
@@ -226,7 +233,7 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
         r['order__cashier_id']: int(r['u'] or 0)
         for r in (
             tod_filter(OrderItem.objects.filter(
-                order__is_deleted=False,
+                is_deleted=False, order__is_deleted=False, order__is_paid=True,
                 order__created_at__gte=lo, order__created_at__lt=hi),
                 tf, tt, field='order__created_at')
             .exclude(order__status='CANCELED')

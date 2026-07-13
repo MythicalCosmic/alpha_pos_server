@@ -141,6 +141,29 @@ class TestMenuEngineering:
         m2 = Decimal(d2['items'][0]['margin_per_unit'])
         assert m1 > m2  # smaller cogs fraction → bigger margin
 
+    def test_excludes_unpaid_and_soft_deleted_lines(self, regular_user, cashier_user):
+        from base.models import Category, Product
+        cat, _ = Category.objects.get_or_create(name='food', slug='food')
+        p = Product.objects.create(name='Burger', price=Decimal('10000'), category=cat)
+        paid = _make_order(regular_user, cashier_user, total='20000')
+        paid.discount_amount = Decimal('5000')
+        paid.total_amount = Decimal('15000')
+        paid.save(update_fields=['discount_amount', 'total_amount'])
+        _add_item_at_price(paid, p, 2)
+        unpaid = _make_order(
+            regular_user, cashier_user, status='OPEN', is_paid=False, total='50000')
+        _add_item_at_price(unpaid, p, 5)
+        removed = _make_order(regular_user, cashier_user, total='30000')
+        _add_item_at_price(removed, p, 3)
+        removed.items.first().delete()
+
+        today = timezone.localdate()
+        data = menu_engineering(today, today)
+        burger = next(i for i in data['items'] if i['product_id'] == p.id)
+        assert burger['qty_sold'] == 2, burger
+        assert Decimal(burger['revenue']) == Decimal('15000'), burger
+        assert Decimal(burger['profit']) == Decimal('8000.00'), burger
+
 
 def _add_item_at_price(order, product, qty):
     from base.models import OrderItem

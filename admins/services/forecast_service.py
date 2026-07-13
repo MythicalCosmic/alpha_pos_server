@@ -46,7 +46,7 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
     # bounded and focuses Gemini on the products that actually drive prep.
     top = (
         OrderItem.objects.filter(
-            order__is_deleted=False,
+            is_deleted=False, order__is_deleted=False,
             order__created_at__gte=cutoff,
         )
         # Cancelled orders never actually sold — counting them biases the prep
@@ -65,7 +65,7 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
     breakdown_rows = (
         OrderItem.objects.filter(
             product_id__in=top_ids,
-            order__is_deleted=False,
+            is_deleted=False, order__is_deleted=False,
             order__created_at__gte=cutoff,
         )
         .exclude(order__status='CANCELED')

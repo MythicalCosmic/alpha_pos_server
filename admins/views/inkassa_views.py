@@ -16,7 +16,9 @@ from admins.services.inkassa_service import AdminInkassaService
 @require_GET
 @login_required
 def inkassa_balance(request):
-    result, status_code = AdminInkassaService.get_balance()
+    result, status_code = AdminInkassaService.get_balance(
+        branch_id=(request.GET.get('branch_id') or '').strip() or None,
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -24,7 +26,9 @@ def inkassa_balance(request):
 @require_GET
 @login_required
 def inkassa_stats(request):
-    result, status_code = AdminInkassaService.get_stats()
+    result, status_code = AdminInkassaService.get_stats(
+        branch_id=(request.GET.get('branch_id') or '').strip() or None,
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -33,7 +37,10 @@ def inkassa_stats(request):
 @manager_required
 def inkassa_history(request):
     page, per_page = validate_pagination(request)
-    result, status_code = AdminInkassaService.get_history(page=page, per_page=per_page)
+    result, status_code = AdminInkassaService.get_history(
+        page=page, per_page=per_page,
+        branch_id=(request.GET.get('branch_id') or '').strip() or None,
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -54,7 +61,9 @@ def inkassa_perform(request):
     if error:
         return json_response(error)
 
-    result, status_code = AdminInkassaService.perform(request.user, data)
+    result, status_code = AdminInkassaService.perform(
+        request.user, data, branch_id=(data.get('branch_id') or '').strip() or None,
+    )
     if result.get('success'):
         payload = result.get('data', {})
         audit(
@@ -65,6 +74,7 @@ def inkassa_perform(request):
                 'amount_removed': payload.get('amount_removed'),
                 'balance_before': payload.get('balance_before'),
                 'balance_after': payload.get('balance_after'),
+                'branch_id': payload.get('branch_id'),
                 'inkassa_ids': [i.get('id') for i in payload.get('inkassas', [])],
             },
         )

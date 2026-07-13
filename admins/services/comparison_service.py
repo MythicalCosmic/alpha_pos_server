@@ -13,7 +13,8 @@ Conventions (matching the rest of admins/services):
 - Order revenue = Sum(total_amount) (the canonical figure used everywhere else).
   gross_revenue = net + discounts (== Sum(subtotal)) is derived from total_amount +
   discount_amount so it never depends on `subtotal` being back-filled on old rows.
-- Line-item revenue = price * quantity (same _LINE_TOTAL the product analytics use).
+- Line-item revenue proportionally allocates Order.discount_amount, matching the
+  product analytics and reconciling discounted orders.
 - refunds / gross_profit / margin are OMITTED: the schema has no refund record and no
   product-cost/COGS field, so per the FE spec we drop KPIs we have no real data for.
 - Every aggregation happens in the DB (annotate/aggregate + Trunc/Extract), two
@@ -23,19 +24,17 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import (
     ExtractHour, ExtractIsoWeekDay, TruncDay, TruncMonth, TruncWeek,
 )
 from django.utils import timezone as djtz
 
 from base.models import Order, OrderItem
+from base.services.revenue import net_line_revenue
 
 # price * quantity for a line; 18 digits so a wide window can't overflow the sum.
-_LINE_TOTAL = ExpressionWrapper(
-    F('price') * F('quantity'),
-    output_field=DecimalField(max_digits=18, decimal_places=2),
-)
+_LINE_TOTAL = net_line_revenue()
 
 # A "sale" everywhere below: not deleted, paid, not canceled.
 _SALES = Q(is_deleted=False, is_paid=True) & ~Q(status='CANCELED')
@@ -101,7 +100,7 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         orders = orders.filter(branch_id=branch_id)
 
     items = OrderItem.objects.filter(
-        order__is_deleted=False, order__is_paid=True,
+        is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__created_at__gte=lo, order__created_at__lt=hi,
     ).exclude(order__status='CANCELED')
     if branch_id:

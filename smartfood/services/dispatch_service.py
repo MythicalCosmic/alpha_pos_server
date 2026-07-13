@@ -152,6 +152,10 @@ class DispatchService:
             status='PREPARING',
             is_paid=False,
             subtotal=food_total,
+            # Loyalty is a product discount. Persist it on the canonical order
+            # so product/category analytics can allocate it across food lines;
+            # delivery and tips remain non-product revenue in total_amount.
+            discount_amount=bot_order.discount,
             total_amount=bot_order.total,             # what the customer pays (nets discount + delivery + tip)
         )
 

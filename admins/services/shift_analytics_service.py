@@ -611,10 +611,11 @@ def shift_handover_report(shift):
         })
 
     # What sold: per-product quantity, how many orders it appeared in, revenue.
-    line_total = ExpressionWrapper(F('price') * F('quantity'), output_field=_DEC)
+    from base.services.revenue import net_line_revenue
+    line_total = net_line_revenue()
     product_rows = (
         OrderItem.objects.filter(
-            is_deleted=False, order__in=base_qs,
+            is_deleted=False, order__in=base_qs, order__is_paid=True,
         ).exclude(order__status='CANCELED')
         .values('product_id', 'product__name')
         .annotate(

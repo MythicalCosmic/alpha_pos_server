@@ -2,6 +2,10 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+from pathlib import Path
+
+# Prefer the pinned core submodule over any stale site-packages installation.
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'alpha_pos_core'))
 
 
 def main():

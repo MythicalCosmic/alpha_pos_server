@@ -103,14 +103,12 @@ def _today_orders_breakdown():
 
 def _top_products_today(limit=5):
     from base.models import OrderItem
+    from base.services.revenue import net_line_revenue
     start, end = _today_window()
-    line_total = ExpressionWrapper(
-        F('price') * F('quantity'),
-        output_field=DecimalField(max_digits=18, decimal_places=2),
-    )
+    line_total = net_line_revenue()
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False, order__is_paid=True,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=start, order__created_at__lt=end,
         )
         # Cancelled orders never sold — keep them out of "top products today".
@@ -148,14 +146,12 @@ def _today_payment_breakdown():
 def _today_category_stats():
     """Units + revenue today grouped by product category."""
     from base.models import OrderItem
+    from base.services.revenue import net_line_revenue
     start, end = _today_window()
-    line_total = ExpressionWrapper(
-        F('price') * F('quantity'),
-        output_field=DecimalField(max_digits=18, decimal_places=2),
-    )
+    line_total = net_line_revenue()
     rows = (
         OrderItem.objects.filter(
-            order__is_deleted=False, order__is_paid=True,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__created_at__gte=start, order__created_at__lt=end,
         )
         .exclude(order__status='CANCELED')
@@ -183,7 +179,7 @@ def _today_units_sold():
     from base.models import OrderItem
     start, end = _today_window()
     agg = OrderItem.objects.filter(
-        order__is_deleted=False,
+        is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__created_at__gte=start, order__created_at__lt=end,
     ).exclude(order__status='CANCELED').aggregate(q=Sum('quantity'))
     return int(agg['q'] or 0)
@@ -328,6 +324,7 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     ("HH:MM") restrict to a working-hours window within each business day."""
     from base.models import Order, OrderItem
     from base.services.business_day import tod_filter, parse_hhmm
+    from base.services.revenue import net_line_revenue
     d_from, d_to, start, end = _range_window(date_from, date_to)
     tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
     sold = Order.objects.filter(is_deleted=False, created_at__gte=start, created_at__lt=end)
@@ -337,11 +334,10 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
     pay = _tender_breakdown(paid)
-    line_total = ExpressionWrapper(
-        F('price') * F('quantity'),
-        output_field=DecimalField(max_digits=18, decimal_places=2))
+    line_total = net_line_revenue()
     items = OrderItem.objects.filter(
-        order__is_deleted=False, order__created_at__gte=start, order__created_at__lt=end,
+        is_deleted=False, order__is_deleted=False, order__is_paid=True,
+        order__created_at__gte=start, order__created_at__lt=end,
     ).exclude(order__status='CANCELED')
     items = tod_filter(items, tf, tt, field='order__created_at')
     units = items.aggregate(q=Sum('quantity'))['q'] or 0
