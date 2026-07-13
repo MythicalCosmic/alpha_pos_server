@@ -34,8 +34,10 @@ def _make_order(user, cashier, status='COMPLETED', is_paid=True, total='100',
         display_id=Order.objects.count() + 1,
     )
     from base.models import Order as O
+    created_at = timezone.now() - created_offset
     O.objects.filter(pk=o.pk).update(
-        created_at=timezone.now() - created_offset,
+        created_at=created_at,
+        paid_at=created_at if is_paid else None,
     )
     o.refresh_from_db()
     if ready_offset is not None and status in ('READY', 'COMPLETED'):

@@ -34,7 +34,10 @@ def _order(cashier, when_utc, total, pm='CASH', otype='HALL',
         is_paid=is_paid, payment_method=pm if is_paid else None,
         total_amount=Decimal(total), subtotal=Decimal(total),
         display_id=Order.objects.count() + 1)
-    Order.objects.filter(pk=o.pk).update(created_at=when_utc)
+    Order.objects.filter(pk=o.pk).update(
+        created_at=when_utc,
+        paid_at=when_utc if is_paid else None,
+    )
     o.refresh_from_db()
     return o
 
@@ -97,7 +100,9 @@ def test_kpis(dataset):
     assert k['net_revenue']['delta_pct'] == 87.5
     assert k['net_revenue']['is_up_good'] is True
     assert k['gross_revenue']['a'] == 150000            # no discounts -> == net
-    assert k['orders']['a'] == 2 and k['orders']['b'] == 1     # canceled/unpaid excluded
+    # Operational volume includes open/unpaid demand but excludes canceled
+    # tickets; settlement KPIs below still use only paid orders.
+    assert k['orders']['a'] == 3 and k['orders']['b'] == 1
     assert k['items_sold']['a'] == 4 and k['items_sold']['b'] == 2
     assert k['aov']['a'] == 75000 and k['aov']['b'] == 80000
     assert k['discounts']['a'] == 0 and k['discounts']['delta_pct'] == 0.0
@@ -139,15 +144,15 @@ def test_timeseries_hour_weekday_matrix(dataset):
     assert ts['a'][0]['date'] == '2026-06-10' and ts['a'][0]['value'] == 0
     assert ts['a'][1]['value'] == 100000 and ts['a'][2]['value'] == 50000
 
-    # by_hour marginals (Tashkent): 14:00 and 11:00 each have one order in A.
+    # Demand heat includes the open order at 14:00, but not the canceled order.
     hours_a = {row['hour']: row['value'] for row in d['by_hour']['a']}
-    assert hours_a[14] == 1 and hours_a[11] == 1
-    assert sum(hours_a.values()) == 2
+    assert hours_a[14] == 2 and hours_a[11] == 1
+    assert sum(hours_a.values()) == 3
 
     # 7x24 matrix, sums to the order count of the period.
     hw = d['hour_weekday']['a']
     assert len(hw) == 7 and all(len(r) == 24 for r in hw)
-    assert sum(sum(r) for r in hw) == 2
+    assert sum(sum(r) for r in hw) == 3
     # weekday marginal equals the matrix row sums
     wd_a = {row['weekday']: row['value'] for row in d['by_weekday']['a']}
     for w in range(7):

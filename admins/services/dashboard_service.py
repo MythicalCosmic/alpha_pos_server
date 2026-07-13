@@ -73,7 +73,7 @@ def _today_revenue():
     start, end = _today_window()
     agg = Order.objects.filter(
         is_deleted=False, is_paid=True,
-        created_at__gte=start, created_at__lt=end,
+        paid_at__gte=start, paid_at__lt=end,
     ).exclude(status='CANCELED').aggregate(
         total=Sum('total_amount'),
         orders=Count('id'),
@@ -109,7 +109,7 @@ def _top_products_today(limit=5):
     rows = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__created_at__gte=start, order__created_at__lt=end,
+            order__paid_at__gte=start, order__paid_at__lt=end,
         )
         # Cancelled orders never sold — keep them out of "top products today".
         .exclude(order__status='CANCELED')
@@ -138,7 +138,7 @@ def _today_payment_breakdown():
     start, end = _today_window()
     paid = Order.objects.filter(
         is_deleted=False, is_paid=True,
-        created_at__gte=start, created_at__lt=end,
+        paid_at__gte=start, paid_at__lt=end,
     ).exclude(status='CANCELED')
     return _tender_breakdown(paid)
 
@@ -152,7 +152,7 @@ def _today_category_stats():
     rows = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__created_at__gte=start, order__created_at__lt=end,
+            order__paid_at__gte=start, order__paid_at__lt=end,
         )
         .exclude(order__status='CANCELED')
         .values('product__category_id', 'product__category__name')
@@ -180,7 +180,7 @@ def _today_units_sold():
     start, end = _today_window()
     agg = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
-        order__created_at__gte=start, order__created_at__lt=end,
+        order__paid_at__gte=start, order__paid_at__lt=end,
     ).exclude(order__status='CANCELED').aggregate(q=Sum('quantity'))
     return int(agg['q'] or 0)
 
@@ -327,9 +327,14 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     from base.services.revenue import net_line_revenue
     d_from, d_to, start, end = _range_window(date_from, date_to)
     tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
-    sold = Order.objects.filter(is_deleted=False, created_at__gte=start, created_at__lt=end)
+    sold = Order.objects.filter(
+        is_deleted=False, created_at__gte=start, created_at__lt=end,
+    )
     sold = tod_filter(sold, tf, tt, field='created_at')
-    paid = sold.filter(is_paid=True).exclude(status='CANCELED')
+    paid = Order.objects.filter(
+        is_deleted=False, is_paid=True, paid_at__gte=start, paid_at__lt=end,
+    ).exclude(status='CANCELED')
+    paid = tod_filter(paid, tf, tt, field='paid_at')
     rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
@@ -337,9 +342,9 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     line_total = net_line_revenue()
     items = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
-        order__created_at__gte=start, order__created_at__lt=end,
+        order__paid_at__gte=start, order__paid_at__lt=end,
     ).exclude(order__status='CANCELED')
-    items = tod_filter(items, tf, tt, field='order__created_at')
+    items = tod_filter(items, tf, tt, field='order__paid_at')
     units = items.aggregate(q=Sum('quantity'))['q'] or 0
     top = list(items.annotate(lt=line_total).values('product_id', 'product__name')
                .annotate(quantity=Sum('quantity'), revenue=Sum('lt'))
@@ -382,15 +387,27 @@ def get_sidebar_counts():
     start, end = _today_window()
     active = _safe('sidebar active_shifts',
                    lambda: Shift.objects.filter(is_deleted=False, status='ACTIVE').count(), 0)
-    today = _safe('sidebar today', lambda: Order.objects.filter(
-        is_deleted=False, created_at__gte=start, created_at__lt=end).aggregate(
-            orders=Count('id'),
+    today_orders = _safe(
+        'sidebar today orders',
+        lambda: Order.objects.filter(
+            is_deleted=False, created_at__gte=start, created_at__lt=end,
+        ).count(),
+        0,
+    )
+    today_revenue = _safe(
+        'sidebar today revenue',
+        lambda: Order.objects.filter(
+            is_deleted=False, is_paid=True,
+            paid_at__gte=start, paid_at__lt=end,
+        ).exclude(status='CANCELED').aggregate(
             revenue=Coalesce(
-                Sum('total_amount', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
-                Decimal('0.00'), output_field=DecimalField()),
-        ), {'orders': 0, 'revenue': Decimal('0')})
+                Sum('total_amount'), Decimal('0.00'), output_field=DecimalField(),
+            ),
+        )['revenue'],
+        Decimal('0'),
+    )
     return {
         'active_shifts': active,
-        'today_orders': today['orders'] or 0,
-        'today_revenue': _uzs(today['revenue']),
+        'today_orders': today_orders,
+        'today_revenue': _uzs(today_revenue),
     }

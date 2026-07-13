@@ -82,7 +82,7 @@ class AdminInkassaService:
         # money the drawer no longer holds — overstating expected cash.
         today_orders = Order.objects.filter(
             is_deleted=False, is_paid=True,
-            created_at__gte=today_start, created_at__lt=today_end,
+            paid_at__gte=today_start, paid_at__lt=today_end,
         ).exclude(status='CANCELED')
         if branch_id:
             today_orders = today_orders.filter(branch_id=branch_id)
@@ -105,8 +105,8 @@ class AdminInkassaService:
         product_items = OrderItem.objects.filter(
             order__is_deleted=False,
             order__is_paid=True,
-            order__created_at__gte=today_start,
-            order__created_at__lt=today_end,
+            order__paid_at__gte=today_start,
+            order__paid_at__lt=today_end,
             is_deleted=False,
         )
         if branch_id:

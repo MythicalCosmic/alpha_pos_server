@@ -4,13 +4,9 @@ Pure derivations over Order / OrderItem — no new models. Every window is bound
 on the BUSINESS day (AppSettings.business_day_start, default 03:00) so a 01:00 sale
 counts toward the night before, consistent with the dashboard and order stats.
 """
-from datetime import timedelta
 from decimal import Decimal
 
-from django.db.models import (
-    Count, DateTimeField, ExpressionWrapper, F, Sum,
-)
-from django.db.models.functions import TruncDate
+from django.db.models import Count, Sum
 from base.services.revenue import net_line_revenue
 
 _LINE_TOTAL = net_line_revenue()
@@ -39,11 +35,11 @@ def _sold_items(date_from, date_to, tod_from=None, tod_to=None):
     qs = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__created_at__gte=lo, order__created_at__lt=hi,
+            order__paid_at__gte=lo, order__paid_at__lt=hi,
         )
         .exclude(order__status='CANCELED')
     )
-    return tod_filter(qs, tod_from, tod_to, field='order__created_at')
+    return tod_filter(qs, tod_from, tod_to, field='order__paid_at')
 
 
 def products_overview(date_from, date_to, tod_from=None, tod_to=None):
@@ -176,16 +172,12 @@ def products_pareto(date_from, date_to, tod_from=None, tod_to=None):
 def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None):
     """Daily sales trend (business-day buckets) for the window, plus a per-day
     series for the top-N products by revenue."""
-    from base.services.business_day import business_day_start
+    from base.services.business_day import business_day_date_expr
     items = _sold_items(date_from, date_to, tod_from, tod_to)
 
-    # Bucket by BUSINESS date: subtracting the cutover shifts pre-cutover sales
-    # back a day, so date(created_at - start) == the business date.
-    start = business_day_start()
-    offset = timedelta(hours=start.hour, minutes=start.minute, seconds=start.second)
-    bday = TruncDate(
-        ExpressionWrapper(F('order__created_at') - offset, output_field=DateTimeField())
-    )
+    # Completed product sales follow settlement, not ticket creation. The
+    # business-date expression also moves a pre-cutover paid_at back one day.
+    bday = business_day_date_expr('order__paid_at')
 
     daily = list(
         items.annotate(bday=bday)
@@ -253,7 +245,7 @@ def products_affinity(date_from, date_to, limit=10):
     rows = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__created_at__gte=lo, order__created_at__lt=hi,
+            order__paid_at__gte=lo, order__paid_at__lt=hi,
         )
         .exclude(order__status='CANCELED')
         .values_list('order_id', 'product_id')

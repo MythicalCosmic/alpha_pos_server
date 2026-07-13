@@ -30,23 +30,31 @@ def shift_performance(shift):
     duration = end - start
     duration_minutes = max(int(duration.total_seconds() / 60), 0)
 
-    qs = Order.objects.filter(
+    operational = Order.objects.filter(
         is_deleted=False,
         cashier_id=shift.user_id,
         created_at__gte=start, created_at__lte=end,
     )
-    counts = qs.aggregate(
+    counts = operational.aggregate(
         total=Count('id'),
         completed=Count('id', filter=Q(status='COMPLETED')),
         cancelled=Count('id', filter=Q(status='CANCELED')),
-        paid=Count('id', filter=Q(is_paid=True)),
-        revenue=Sum('total_amount', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
+    )
+    settled = (
+        Order.objects.filter(
+            is_deleted=False,
+            cashier_id=shift.user_id,
+            is_paid=True,
+            paid_at__gte=start, paid_at__lte=end,
+        )
+        .exclude(status='CANCELED')
+        .aggregate(paid=Count('id'), revenue=Sum('total_amount'))
     )
 
     # Avg prep = (ready_at - created_at) over ready/completed orders, in SQL
     # instead of materialising every order row just to compute a mean.
     from django.db.models import Avg, DurationField, ExpressionWrapper, F
-    prep_avg = qs.filter(
+    prep_avg = operational.filter(
         ready_at__isnull=False, status__in=['READY', 'COMPLETED'],
     ).aggregate(
         avg=Avg(ExpressionWrapper(
@@ -59,7 +67,7 @@ def shift_performance(shift):
     total = counts['total'] or 0
     cancelled = counts['cancelled'] or 0
     cancel_rate = round(cancelled / total * 100, 2) if total else 0.0
-    revenue = counts['revenue'] or Decimal('0')
+    revenue = settled['revenue'] or Decimal('0')
 
     hours = duration.total_seconds() / 3600 if duration_minutes else 0
     orders_per_hour = round(total / hours, 2) if hours else 0.0
@@ -79,7 +87,7 @@ def shift_performance(shift):
         'orders_total': total,
         'orders_completed': counts['completed'] or 0,
         'orders_cancelled': cancelled,
-        'orders_paid': counts['paid'] or 0,
+        'orders_paid': settled['paid'] or 0,
         'cancel_rate_pct': cancel_rate,
         'revenue': str(int(revenue)),   # integer so'm (UZS), backend-independent
         'avg_prep_seconds': avg_prep_seconds,
@@ -113,7 +121,7 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     rows = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__created_at__gte=lo, order__created_at__lt=hi,
+            order__paid_at__gte=lo, order__paid_at__lt=hi,
         )
         # Exclude cancelled orders — they never sold, so they must not skew
         # menu-engineering quadrants (qty sold / revenue).
@@ -214,7 +222,7 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     lo, hi = range_window(date_from, date_to)
     tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
 
-    order_rows = (
+    operational_rows = list(
         tod_filter(Order.objects.filter(
             is_deleted=False, cashier__isnull=False,
             created_at__gte=lo, created_at__lt=hi), tf, tt)
@@ -223,10 +231,28 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
             orders_total=Count('id'),
             completed=Count('id', filter=Q(status='COMPLETED')),
             cancelled=Count('id', filter=Q(status='CANCELED')),
-            paid=Count('id', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
-            revenue=Sum('total_amount', filter=Q(is_paid=True) & ~Q(status='CANCELED')),
         )
-        .order_by('-revenue')
+    )
+
+    # Settlement metrics have their own event clock. Keeping them on the
+    # created-at queryset silently assigns a late payment to the day the ticket
+    # was opened, which breaks revenue, AOV and tender reconciliation around the
+    # business-day cutover.
+    paid_rows = list(
+        tod_filter(
+            Order.objects.filter(
+                is_deleted=False,
+                cashier__isnull=False,
+                is_paid=True,
+                paid_at__gte=lo,
+                paid_at__lt=hi,
+            ).exclude(status='CANCELED'),
+            tf,
+            tt,
+            field='paid_at',
+        )
+        .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
+        .annotate(paid=Count('id'), revenue=Sum('total_amount'))
     )
 
     units_map = {
@@ -234,8 +260,8 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
         for r in (
             tod_filter(OrderItem.objects.filter(
                 is_deleted=False, order__is_deleted=False, order__is_paid=True,
-                order__created_at__gte=lo, order__created_at__lt=hi),
-                tf, tt, field='order__created_at')
+                order__paid_at__gte=lo, order__paid_at__lt=hi),
+                tf, tt, field='order__paid_at')
             .exclude(order__status='CANCELED')
             .values('order__cashier_id')
             .annotate(u=Sum('quantity'))
@@ -253,21 +279,28 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
         agg['shifts'] += 1
         agg['seconds'] += secs
 
+    operational_map = {r['cashier_id']: r for r in operational_rows}
+    paid_map = {r['cashier_id']: r for r in paid_rows}
     staff = []
-    for r in order_rows:
-        cid = r['cashier_id']
-        orders_total = r['orders_total'] or 0
-        cancelled = r['cancelled'] or 0
-        paid = r['paid'] or 0
-        revenue = r['revenue'] or Decimal('0')
+    for cid in set(operational_map) | set(paid_map):
+        operational_row = operational_map.get(cid, {})
+        paid_row = paid_map.get(cid, {})
+        identity = operational_row or paid_row
+        orders_total = operational_row.get('orders_total') or 0
+        cancelled = operational_row.get('cancelled') or 0
+        paid = paid_row.get('paid') or 0
+        revenue = paid_row.get('revenue') or Decimal('0')
         sm = shift_map.get(cid, {'shifts': 0, 'seconds': 0.0})
         avg_order = (revenue / paid).quantize(Decimal('0.01')) if paid else Decimal('0')
         staff.append({
             'user_id': cid,
-            'name': f"{r['cashier__first_name'] or ''} {r['cashier__last_name'] or ''}".strip(),
-            'role': r['cashier__role'],
+            'name': (
+                f"{identity.get('cashier__first_name') or ''} "
+                f"{identity.get('cashier__last_name') or ''}"
+            ).strip(),
+            'role': identity.get('cashier__role'),
             'orders_total': orders_total,
-            'orders_completed': r['completed'] or 0,
+            'orders_completed': operational_row.get('completed') or 0,
             'orders_cancelled': cancelled,
             'orders_paid': paid,
             'cancel_rate_pct': round(cancelled / orders_total * 100, 2) if orders_total else 0.0,
@@ -277,6 +310,14 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
             'shifts_worked': sm['shifts'],
             'hours_worked': round(sm['seconds'] / 3600, 2),
         })
+
+    staff.sort(
+        key=lambda row: (
+            -Decimal(row['revenue']),
+            -row['orders_total'],
+            row['user_id'],
+        )
+    )
 
     total_revenue = sum((Decimal(s['revenue']) for s in staff), Decimal('0'))
     total_orders = sum(s['orders_total'] for s in staff)

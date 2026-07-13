@@ -178,8 +178,12 @@ def _cashier_shift_row(shift, att_map):
     avg_prep_seconds = int(prep.total_seconds()) if prep else None
 
     items = OrderItem.objects.filter(
-        is_deleted=False, order__is_deleted=False, order__cashier_id=shift.user_id,
-        order__created_at__gte=start, order__created_at__lte=end,
+        is_deleted=False,
+        order__is_deleted=False,
+        order__cashier_id=shift.user_id,
+        order__is_paid=True,
+        order__paid_at__gte=start,
+        order__paid_at__lte=end,
     ).exclude(order__status='CANCELED').aggregate(
         units=Coalesce(Sum('quantity'), 0),
         lines=Count('id'),
@@ -245,7 +249,10 @@ def _cashier_shift_row(shift, att_map):
         'discounts': {
             'total_given': _money(money['discount_total']),
             'discounted_orders': money['discounted_orders'] or 0,
-            'discount_rate_pct': _pct(money['discounted_orders'] or 0, total),
+            'discount_rate_pct': _pct(
+                money['discounted_orders'] or 0,
+                paid_count,
+            ),
             'avg_discount_pct': round(float(money['avg_discount_pct']), 2) if money['avg_discount_pct'] else 0.0,
         },
         'speed': {
@@ -325,8 +332,11 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds):
 # ───────────────────── distribution / leaderboard ─────────────────────
 
 def _hourly_daily(shifts):
-    """Orders + revenue distributed by hour-of-day and by calendar date,
-    across every shift in the set. Answers 'when are we busy?'."""
+    """Operational orders by created_at; realized revenue by paid_at.
+
+    Keeping two event streams is essential around shift/cutoff boundaries: a
+    ticket contributes demand when it was opened and money when it settled.
+    """
     from base.models import Order
     if not shifts:
         return {'by_hour': [], 'by_date': [], 'peak_hour': None}
@@ -335,21 +345,38 @@ def _hourly_daily(shifts):
     window_start = min(s.start_time for s in shifts)
     window_end = max((s.end_time or timezone.now()) for s in shifts)
 
-    rows = Order.objects.filter(
+    operational_rows = Order.objects.filter(
         is_deleted=False, cashier_id__in=list(user_ids),
         created_at__gte=window_start, created_at__lte=window_end,
-    ).exclude(status='CANCELED').values_list('created_at', 'total_amount', 'is_paid')
+    ).exclude(status='CANCELED').values_list('created_at', flat=True)
+    settled_rows = (
+        Order.objects.filter(
+            is_deleted=False,
+            cashier_id__in=list(user_ids),
+            is_paid=True,
+            paid_at__gte=window_start,
+            paid_at__lte=window_end,
+        )
+        .exclude(status='CANCELED')
+        .values_list('paid_at', 'total_amount')
+    )
 
     by_hour = {h: {'orders': 0, 'revenue': Decimal('0')} for h in range(24)}
     by_date = {}
-    for created_at, total_amount, is_paid in rows:
+    for created_at in operational_rows:
         local = timezone.localtime(created_at)
         h = local.hour
         by_hour[h]['orders'] += 1
         d = local.date().isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         slot['orders'] += 1
-        if is_paid and total_amount:
+
+    for paid_at, total_amount in settled_rows:
+        local = timezone.localtime(paid_at)
+        h = local.hour
+        d = local.date().isoformat()
+        slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
+        if total_amount:
             by_hour[h]['revenue'] += total_amount
             slot['revenue'] += total_amount
 
@@ -522,7 +549,7 @@ def cashier_shift_analytics(date_from, date_to, user_id=None):
         'discounts': {
             'total_given': _money(discount_total),
             'discounted_orders': discounted,
-            'discount_rate_pct': _pct(discounted, orders),
+            'discount_rate_pct': _pct(discounted, paid),
         },
         'speed': {
             'avg_prep_seconds': int(sum(prep_vals) / len(prep_vals)) if prep_vals else None,
@@ -585,13 +612,30 @@ def shift_handover_report(shift):
         is_deleted=False, cashier_id=shift.user_id,
         created_at__gte=start, created_at__lte=end,
     )
+    paid_qs = (
+        Order.objects.filter(
+            is_deleted=False,
+            cashier_id=shift.user_id,
+            is_paid=True,
+            paid_at__gte=start,
+            paid_at__lte=end,
+        )
+        .exclude(status='CANCELED')
+    )
 
     # Every receipt taken during the shift.
     receipts = []
     for o in (
         base_qs.annotate(
-            line_items=Count('items', distinct=True),
-            units=Coalesce(Sum('items__quantity'), 0),
+            line_items=Count(
+                'items',
+                filter=Q(items__is_deleted=False),
+                distinct=True,
+            ),
+            units=Coalesce(
+                Sum('items__quantity', filter=Q(items__is_deleted=False)),
+                0,
+            ),
         ).order_by('created_at')
     ):
         receipts.append({
@@ -615,8 +659,9 @@ def shift_handover_report(shift):
     line_total = net_line_revenue()
     product_rows = (
         OrderItem.objects.filter(
-            is_deleted=False, order__in=base_qs, order__is_paid=True,
-        ).exclude(order__status='CANCELED')
+            is_deleted=False,
+            order__in=paid_qs,
+        )
         .values('product_id', 'product__name')
         .annotate(
             units_sold=Coalesce(Sum('quantity'), 0),

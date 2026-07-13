@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone as _tz
 from xml.etree import ElementTree as ET
 
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 
 from base.models import Order
@@ -44,14 +45,16 @@ def _decimal(value):
 
 
 def _date(dt):
-    return dt.strftime('%Y-%m-%d')
+    if timezone.is_aware(dt):
+        dt = timezone.localtime(dt)
+    return dt.date().isoformat()
 
 
-def _serialize_order(parent, order):
+def _serialize_order(parent, order, document_at=None):
     doc = ET.SubElement(parent, 'Документ')
     ET.SubElement(doc, 'Ид').text = str(order.id)
     ET.SubElement(doc, 'Номер').text = str(order.display_id)
-    ET.SubElement(doc, 'Дата').text = _date(order.created_at)
+    ET.SubElement(doc, 'Дата').text = _date(document_at or order.created_at)
     ET.SubElement(doc, 'ХозОперация').text = 'Заказ товара'
     ET.SubElement(doc, 'Роль').text = 'Продавец'
     ET.SubElement(doc, 'Валюта').text = 'UZS'
@@ -98,19 +101,28 @@ def build_export(date_from, date_to, include_unpaid=False):
     from django.db.models import Prefetch
     from base.models import OrderItem
     qs = (
-        Order.objects.filter(
-            status='COMPLETED', is_deleted=False,
-            created_at__date__gte=date_from,
-            created_at__date__lte=date_to,
-        )
+        Order.objects.filter(status='COMPLETED', is_deleted=False)
         .select_related('user', 'cashier', 'customer')
         .prefetch_related(
             Prefetch('items', queryset=OrderItem.objects.select_related('product')),
         )
-        .order_by('created_at')
     )
-    if not include_unpaid:
-        qs = qs.filter(is_paid=True)
+    if include_unpaid:
+        # A mixed operational export can include tickets with no settlement
+        # event, so its window and document date remain creation-based.
+        qs = qs.filter(
+            created_at__date__gte=date_from,
+            created_at__date__lte=date_to,
+        ).order_by('created_at')
+    else:
+        # The default export is realized accounting data. Both selection and
+        # document ordering follow settlement, preventing a cross-midnight sale
+        # from landing in the wrong 1C period.
+        qs = qs.filter(
+            is_paid=True,
+            paid_at__date__gte=date_from,
+            paid_at__date__lte=date_to,
+        ).order_by('paid_at')
 
     root = ET.Element('КоммерческаяИнформация', {
         'ВерсияСхемы': '2.05',
@@ -122,7 +134,8 @@ def build_export(date_from, date_to, include_unpaid=False):
     # a year-wide export on a busy venue would otherwise hold every Order +
     # every OrderItem + every Product in memory.
     for order in qs.iterator(chunk_size=200):
-        _serialize_order(root, order)
+        document_at = order.created_at if include_unpaid else order.paid_at
+        _serialize_order(root, order, document_at=document_at)
         count += 1
 
     xml = ET.tostring(root, encoding='utf-8', xml_declaration=True)

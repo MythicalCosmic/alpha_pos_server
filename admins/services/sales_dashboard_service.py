@@ -76,13 +76,11 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
     heat = [[0] * len(HM_HOURS) for _ in HM_DAYS]
     _chan = {'HALL': 'hall', 'DELIVERY': 'delivery', 'PICKUP': 'pickup'}
 
-    # Orders: revenue (paid, non-cancelled) by business day; channel mix + heatmap
-    # over ALL non-cancelled orders by placement time.
+    # Operational channel/heat activity is placed by created_at.
     _oqs = tod_filter(Order.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
-    for created_at, total, method, otype, is_paid, status in (
-        _oqs.values_list('created_at', 'total_amount', 'payment_method',
-                         'order_type', 'is_paid', 'status')
+    for created_at, otype, status in (
+        _oqs.values_list('created_at', 'order_type', 'status')
     ):
         local = timezone.localtime(created_at)
         bday = (local - offset).date()
@@ -90,8 +88,6 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
         if i is None:
             continue
         cancelled = status == 'CANCELED'
-        if is_paid and not cancelled:
-            revenue[i] += (total or Decimal('0'))
         if not cancelled:
             ch = _chan.get(otype)
             if ch:
@@ -100,6 +96,18 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
             hcol = _HOUR_INDEX.get(local.hour)
             if hcol is not None:
                 heat[local.weekday()][hcol] += 1
+
+    # Revenue is a settlement event. A ticket opened before the cutover but
+    # paid afterwards belongs to the later money bucket, not its placement day.
+    _pqs = tod_filter(Order.objects.filter(
+        is_deleted=False, is_paid=True,
+        paid_at__gte=lo, paid_at__lt=hi,
+    ).exclude(status='CANCELED'), tod_from, tod_to, field='paid_at')
+    for paid_at, total in _pqs.values_list('paid_at', 'total_amount'):
+        bday = (timezone.localtime(paid_at) - offset).date()
+        i = idx.get(bday)
+        if i is not None:
+            revenue[i] += (total or Decimal('0'))
 
     _eqs = tod_filter(CashboxExpense.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
@@ -136,15 +144,13 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
 
     _oqs = tod_filter(Order.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
-    for created_at, total, otype, is_paid, status in _oqs.values_list(
-            'created_at', 'total_amount', 'order_type', 'is_paid', 'status'):
+    for created_at, otype, status in _oqs.values_list(
+            'created_at', 'order_type', 'status'):
         local = timezone.localtime(created_at)
         i = hpos.get(local.hour)
         if i is None:
             continue
         cancelled = status == 'CANCELED'
-        if is_paid and not cancelled:
-            revenue[i] += (total or Decimal('0'))
         if not cancelled:
             ch = _chan.get(otype)
             if ch:
@@ -152,6 +158,15 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
             hcol = _HOUR_INDEX.get(local.hour)
             if hcol is not None:
                 heat[local.weekday()][hcol] += 1
+
+    _pqs = tod_filter(Order.objects.filter(
+        is_deleted=False, is_paid=True,
+        paid_at__gte=lo, paid_at__lt=hi,
+    ).exclude(status='CANCELED'), tod_from, tod_to, field='paid_at')
+    for paid_at, total in _pqs.values_list('paid_at', 'total_amount'):
+        i = hpos.get(timezone.localtime(paid_at).hour)
+        if i is not None:
+            revenue[i] += (total or Decimal('0'))
 
     _eqs = tod_filter(CashboxExpense.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)

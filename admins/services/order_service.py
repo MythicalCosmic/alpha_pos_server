@@ -572,13 +572,11 @@ class AdminOrderService:
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
         if existing and not is_instant:
-            # F-expression so the increment happens in SQL — read-modify-write
-            # in Python would lose increments under concurrent calls even with
-            # the row lock above (different OrderItem rows would race).
-            from django.db.models import F
-            OrderItemRepository.model.objects.filter(pk=existing.pk).update(
-                quantity=F('quantity') + quantity,
-            )
+            # The parent Order lock serializes every add for this ticket. Save
+            # through SyncMixin so this cloud-originated change enters /changes;
+            # QuerySet.update() bypassed the sync bookkeeping entirely.
+            existing.quantity += quantity
+            existing.save(update_fields=['quantity'])
         else:
             # Instant items are born ready and never need the kitchen.
             OrderItemRepository.create(
@@ -1087,15 +1085,15 @@ class AdminOrderService:
             from base.services.tender import breakdown_for_orders
             pq = Order.objects.filter(is_deleted=False, is_paid=True).exclude(status='CANCELED')
             if date_from_dt:
-                pq = pq.filter(created_at__gte=date_from_dt)
+                pq = pq.filter(paid_at__gte=date_from_dt)
             if date_to_dt:
-                pq = pq.filter(created_at__lte=date_to_dt)
+                pq = pq.filter(paid_at__lte=date_to_dt)
             if cashier_id:
                 pq = pq.filter(cashier_id=cashier_id)
             if product_ids_list:
                 pq = pq.filter(id__in=OrderItem.objects.filter(
                     is_deleted=False, product_id__in=product_ids_list).values('order_id'))
-            pq = tod_filter(pq, tod_from_t, tod_to_t, field='created_at')
+            pq = tod_filter(pq, tod_from_t, tod_to_t, field='paid_at')
             _split, _detail = breakdown_for_orders(pq)
             payment_breakdown = {k: str(_split[k]) for k in ('cash', 'card', 'payme')}
             if _split['unknown']:

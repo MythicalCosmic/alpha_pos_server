@@ -8,8 +8,9 @@ payment-method and order-type splits, and optional per-branch / per-cashier spli
 
 Conventions (matching the rest of admins/services):
 - Money is INTEGER so'm — UZS has no minor unit. Values are ints, not strings.
-- "Sales" = paid, non-canceled, non-deleted orders, attributed to created_at in the
-  caller's timezone (default Asia/Tashkent).
+- Realized sales, revenue, tenders and product units are attributed to paid_at.
+  Operational demand heatmaps remain attributed to created_at in the caller's
+  timezone (default Asia/Tashkent).
 - Order revenue = Sum(total_amount) (the canonical figure used everywhere else).
   gross_revenue = net + discounts (== Sum(subtotal)) is derived from total_amount +
   discount_amount so it never depends on `subtotal` being back-filled on old rows.
@@ -24,7 +25,9 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from django.db.models import Count, Q, Sum
+from django.db.models import (
+    Count, DateTimeField, ExpressionWrapper, F, Q, Sum,
+)
 from django.db.models.functions import (
     ExtractHour, ExtractIsoWeekDay, TruncDay, TruncMonth, TruncWeek,
 )
@@ -95,30 +98,55 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
     period. Keeps every query DB-side; ~12 small aggregations."""
     lo, hi = _window(start_date, end_date, tz)
 
-    orders = Order.objects.filter(_SALES, created_at__gte=lo, created_at__lt=hi)
+    settled_orders = Order.objects.filter(
+        _SALES,
+        paid_at__gte=lo,
+        paid_at__lt=hi,
+    )
+    operational_orders = Order.objects.filter(
+        is_deleted=False,
+        created_at__gte=lo,
+        created_at__lt=hi,
+    ).exclude(status='CANCELED')
     if branch_id:
-        orders = orders.filter(branch_id=branch_id)
+        settled_orders = settled_orders.filter(branch_id=branch_id)
+        operational_orders = operational_orders.filter(branch_id=branch_id)
 
     items = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
-        order__created_at__gte=lo, order__created_at__lt=hi,
+        order__paid_at__gte=lo, order__paid_at__lt=hi,
     ).exclude(order__status='CANCELED')
     if branch_id:
         items = items.filter(order__branch_id=branch_id)
 
     # -- headline scalars ---------------------------------------------------
-    k = orders.aggregate(net=Sum('total_amount'), discounts=Sum('discount_amount'),
-                         orders=Count('id'))
+    k = settled_orders.aggregate(
+        net=Sum('total_amount'),
+        discounts=Sum('discount_amount'),
+        orders=Count('id'),
+    )
     net = _som(k['net'])
     discounts = _som(k['discounts'])
-    n_orders = k['orders'] or 0
+    settled_count = k['orders'] or 0
+    operational_count = operational_orders.count()
     gross = net + discounts                       # == Sum(subtotal), COGS-free
     n_items = int(items.aggregate(q=Sum('quantity'))['q'] or 0)
 
     # -- revenue timeseries (bucket -> so'm) --------------------------------
     trunc = _TRUNC.get(granularity, TruncDay)
+    from base.services.business_day import business_day_start
+    cutover = business_day_start()
+    offset = timedelta(
+        hours=cutover.hour,
+        minutes=cutover.minute,
+        seconds=cutover.second,
+    )
+    settlement_clock = ExpressionWrapper(
+        F('paid_at') - offset,
+        output_field=DateTimeField(),
+    )
     ts = {}
-    for r in (orders.annotate(bucket=trunc('created_at', tzinfo=tz))
+    for r in (settled_orders.annotate(bucket=trunc(settlement_clock, tzinfo=tz))
                     .values('bucket').annotate(v=Sum('total_amount'))):
         d = _local_date(r['bucket'], tz)
         if d is not None:
@@ -142,37 +170,39 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
 
     # -- hour / weekday / hour×weekday (order counts) -----------------------
     by_hour = {r['h']: r['c'] for r in
-               orders.annotate(h=ExtractHour('created_at', tzinfo=tz))
-                     .values('h').annotate(c=Count('id'))}
+               operational_orders.annotate(h=ExtractHour('created_at', tzinfo=tz))
+                                 .values('h').annotate(c=Count('id'))}
     # ISO weekday is 1=Mon..7=Sun -> shift to 0=Mon..6=Sun.
     by_wd = {r['wd'] - 1: r['c'] for r in
-             orders.annotate(wd=ExtractIsoWeekDay('created_at', tzinfo=tz))
-                   .values('wd').annotate(c=Count('id'))}
+             operational_orders.annotate(wd=ExtractIsoWeekDay('created_at', tzinfo=tz))
+                               .values('wd').annotate(c=Count('id'))}
     hw = {}
-    for r in (orders.annotate(h=ExtractHour('created_at', tzinfo=tz),
-                             wd=ExtractIsoWeekDay('created_at', tzinfo=tz))
-                    .values('h', 'wd').annotate(c=Count('id'))):
+    for r in (operational_orders.annotate(
+            h=ExtractHour('created_at', tzinfo=tz),
+            wd=ExtractIsoWeekDay('created_at', tzinfo=tz),
+        ).values('h', 'wd').annotate(c=Count('id'))):
         hw[(r['wd'] - 1, r['h'])] = r['c']
 
     # -- payment methods / order types (revenue) ----------------------------
     # Canonical tenders (cash / card / payme). A MIXED order is attributed to its
     # real tenders instead of a `MIXED` bucket; cash is the bill portion.
     from base.services.tender import breakdown_for_orders
-    _tsplit, _ = breakdown_for_orders(orders)
+    _tsplit, _ = breakdown_for_orders(settled_orders)
     pay = {k: _som(_tsplit[k]) for k in ('cash', 'card', 'payme')}
     if _tsplit['unknown']:
         pay['unknown'] = _som(_tsplit['unknown'])
     otype = {}
-    for r in orders.values('order_type').annotate(v=Sum('total_amount')):
+    for r in settled_orders.values('order_type').annotate(v=Sum('total_amount')):
         key = r['order_type'] or 'HALL'
         otype[key] = otype.get(key, 0) + _som(r['v'])
 
     # -- branch / cashier ---------------------------------------------------
     branch = {r['branch_id']: _som(r['v']) for r in
-              orders.values('branch_id').annotate(v=Sum('total_amount'))}
+              settled_orders.values('branch_id').annotate(v=Sum('total_amount'))}
     cashier = {}
-    for r in (orders.values('cashier_id', 'cashier__first_name', 'cashier__last_name')
-                    .annotate(v=Sum('total_amount'))):
+    for r in (settled_orders.values(
+            'cashier_id', 'cashier__first_name', 'cashier__last_name',
+        ).annotate(v=Sum('total_amount'))):
         cid = r['cashier_id']
         if cid is None:
             continue
@@ -181,9 +211,9 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
 
     return {
         'net': net, 'gross': gross, 'discounts': discounts,
-        'orders': n_orders, 'items': n_items,
-        'aov': (net / n_orders) if n_orders else 0,
-        'aipo': (n_items / n_orders) if n_orders else 0,
+        'orders': operational_count, 'items': n_items,
+        'aov': (net / settled_count) if settled_count else 0,
+        'aipo': (n_items / settled_count) if settled_count else 0,
         'ts': ts, 'cat': cat, 'prod': prod,
         'by_hour': by_hour, 'by_wd': by_wd, 'hw': hw,
         'pay': pay, 'otype': otype, 'branch': branch, 'cashier': cashier,

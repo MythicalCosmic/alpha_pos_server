@@ -24,6 +24,7 @@ def _make_order(user, total='100000', status='COMPLETED', is_paid=True,
         status=status, is_paid=is_paid, payment_method=payment_method,
         total_amount=Decimal(total), subtotal=Decimal(total),
         display_id=display_id or (Order.objects.count() + 1),
+        paid_at=((created_at or timezone.now()) if is_paid else None),
     )
     if created_at:
         from base.models import Order as O
