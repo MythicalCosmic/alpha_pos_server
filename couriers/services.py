@@ -296,6 +296,24 @@ def shift_distance_km(courier):
 # --------------------------------------------------------------------------- #
 # money: reconciliation + settlement (the courier's cash/payout ledger)
 # --------------------------------------------------------------------------- #
+def courier_refund_events(courier, *, start=None, end=None):
+    """Immutable provider refunds belonging to one courier, event-windowed."""
+    from base.models import OrderRefund
+    payment_keys = CourierPayment.objects.filter(
+        courier=courier,
+    ).values_list('external_id', flat=True)
+    qs = OrderRefund.objects.filter(
+        is_deleted=False,
+        source=OrderRefund.Source.COURIER_PAYMENT,
+        source_id__in=payment_keys,
+    )
+    if start is not None:
+        qs = qs.filter(refunded_at__gte=start)
+    if end is not None:
+        qs = qs.filter(refunded_at__lt=end)
+    return qs
+
+
 def unsettled_start(courier):
     """Start of the courier's current (unsettled) accounting window.
 
@@ -360,6 +378,28 @@ def reconciliation_snapshot(courier, *, start=None, end=None, bonuses=0, tips=0)
         else:
             qr_collected += amt
             qr_orders.add(p.order_id)
+
+    refund_rows = list(courier_refund_events(
+        courier, start=start, end=end,
+    ).values('source_id', 'order_id', 'cash_amount', 'card_amount', 'payme_amount'))
+    refund_keys = [row['source_id'] for row in refund_rows]
+    providers = {
+        external_id: provider
+        for external_id, provider in CourierPayment.objects.filter(
+            courier=courier, external_id__in=refund_keys,
+        ).values_list('external_id', 'provider')
+    }
+    for refund in refund_rows:
+        amount = int(
+            (refund['cash_amount'] or 0)
+            + (refund['card_amount'] or 0)
+            + (refund['payme_amount'] or 0)
+        )
+        if providers.get(refund['source_id']) == CourierPayment.Provider.CASH:
+            cash_collected -= amount
+            held.append({'order': refund['order_id'], 'amount': -amount})
+        else:
+            qr_collected -= amount
 
     bonuses = int(bonuses or 0)
     tips = int(tips or 0)

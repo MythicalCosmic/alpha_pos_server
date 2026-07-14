@@ -41,14 +41,15 @@ def cfg(db):
 def cashier(db):
     from base.models import User
     return User.objects.create(first_name='Cash', last_name='Ier', email='cashier@x.local',
-                               role='CASHIER', status='ACTIVE', password='!')
+                               role='CASHIER', status='ACTIVE', password='!',
+                               branch_id='cloud')
 
 
 @pytest.fixture
 def active_shift(db, cashier):
     from base.models import Shift
     return Shift.objects.create(user=cashier, start_time=timezone.now() - timedelta(hours=1),
-                                status='ACTIVE')
+                                status='ACTIVE', branch_id='branch-a')
 
 
 @pytest.fixture

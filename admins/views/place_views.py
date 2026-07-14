@@ -22,6 +22,7 @@ def places(request):
         result, status_code = PlaceService.list(
             page=page, per_page=per_page,
             place_type=place_type, is_active=is_active,
+            branch_id=request.GET.get('branch_id'),
         )
         return JsonResponse(result, status=status_code)
 
@@ -34,6 +35,7 @@ def places(request):
         name=data.get('name'),
         place_type=data.get('place_type', 'HALL'),
         capacity=data.get('capacity', 0),
+        branch_id=data.get('branch_id'),
     )
     return JsonResponse(result, status=status_code)
 
@@ -43,7 +45,7 @@ def places(request):
 @admin_required
 def place_detail(request, place_id):
     if request.method == "GET":
-        result, status_code = PlaceService.get(place_id)
+        result, status_code = PlaceService.get(place_id, request.GET.get('branch_id'))
         return JsonResponse(result, status=status_code)
 
     if request.method == "PUT":
@@ -52,10 +54,12 @@ def place_detail(request, place_id):
             result, status_code = error
             return JsonResponse(result, status=status_code)
 
-        result, status_code = PlaceService.update(place_id, **data)
+        result, status_code = PlaceService.update(
+            place_id, branch_id=data.pop('branch_id', None), **data,
+        )
         return JsonResponse(result, status=status_code)
 
-    result, status_code = PlaceService.delete(place_id)
+    result, status_code = PlaceService.delete(place_id, request.GET.get('branch_id'))
     return JsonResponse(result, status=status_code)
 
 
@@ -75,6 +79,7 @@ def tables(request):
         result, status_code = TableService.list(
             page=page, per_page=per_page,
             place_id=place_id, status=status,
+            branch_id=request.GET.get('branch_id'),
         )
         return JsonResponse(result, status=status_code)
 
@@ -87,6 +92,7 @@ def tables(request):
         place_id=data.get('place_id'),
         number=data.get('number'),
         capacity=data.get('capacity', 4),
+        branch_id=data.get('branch_id'),
     )
     return JsonResponse(result, status=status_code)
 
@@ -96,7 +102,7 @@ def tables(request):
 @admin_required
 def table_detail(request, table_id):
     if request.method == "GET":
-        result, status_code = TableService.get(table_id)
+        result, status_code = TableService.get(table_id, request.GET.get('branch_id'))
         return JsonResponse(result, status=status_code)
 
     if request.method == "PUT":
@@ -105,10 +111,12 @@ def table_detail(request, table_id):
             result, status_code = error
             return JsonResponse(result, status=status_code)
 
-        result, status_code = TableService.update(table_id, **data)
+        result, status_code = TableService.update(
+            table_id, branch_id=data.pop('branch_id', None), **data,
+        )
         return JsonResponse(result, status=status_code)
 
-    result, status_code = TableService.delete(table_id)
+    result, status_code = TableService.delete(table_id, request.GET.get('branch_id'))
     return JsonResponse(result, status=status_code)
 
 
@@ -128,7 +136,9 @@ def table_status(request, table_id):
             status=400,
         )
 
-    result, status_code = TableService.update_status(table_id, status)
+    result, status_code = TableService.update_status(
+        table_id, status, data.get('branch_id'),
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -136,5 +146,7 @@ def table_status(request, table_id):
 @require_http_methods(["GET"])
 @admin_required
 def tables_by_place(request, place_id):
-    result, status_code = TableService.get_for_place(place_id)
+    result, status_code = TableService.get_for_place(
+        place_id, request.GET.get('branch_id'),
+    )
     return JsonResponse(result, status=status_code)

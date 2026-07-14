@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta, datetime
-from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository, DeliveryPersonRepository
+from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository
 from base.services.inkassa_service import InkassaService
 from base.helpers.response import ServiceResponse
 
@@ -11,6 +11,36 @@ logger = logging.getLogger(__name__)
 
 
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED', 'COMPLETED']
+
+
+def _schedule_loyalty_accrual(order_id):
+    """Evaluate loyalty only after the sale/status transaction commits."""
+    def accrue():
+        try:
+            from base.models import Order
+            from notifications.services import loyalty_service
+            order = Order.objects.filter(pk=order_id, is_deleted=False).first()
+            if order:
+                loyalty_service.maybe_accrue(order)
+        except Exception:
+            logger.exception('loyalty accrual failed for order %s', order_id)
+
+    transaction.on_commit(accrue, robust=True)
+
+
+def _schedule_fiscalization(order_id):
+    """Fiscal provider calls must never escape an uncommitted sale."""
+    def fiscalize():
+        try:
+            from fiscalization.services import FiscalizationService
+            FiscalizationService.fiscalize_on_payment(order_id)
+        except Exception:
+            logger.exception(
+                'non-critical fiscalization error in pay flow (order=%s)',
+                order_id,
+            )
+
+    transaction.on_commit(fiscalize, robust=True)
 
 ALLOWED_ORDER_FIELDS = {
     'created_at', '-created_at', 'updated_at', '-updated_at',
@@ -30,6 +60,11 @@ def _format_duration(seconds):
     elif minutes > 0:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def _live_items(order):
+    """Return live lines while reusing OrderRepository's prefetch cache."""
+    return [item for item in order.items.all() if not item.is_deleted]
 
 
 def _payments_payload(order):
@@ -61,6 +96,7 @@ def _payments_payload(order):
 
 
 def _serialize_order_list(order, include_items=True):
+    live_items = _live_items(order)
     data = {
         'id': order.id,
         'display_id': order.display_id,
@@ -95,7 +131,7 @@ def _serialize_order_list(order, include_items=True):
         # (OrderRepository.get_with_relations) — iterate the cached items
         # instead of `.count()` (extra query) and `.values()` (fresh query
         # that bypasses the prefetch).
-        'items_count': len(order.items.all()),
+        'items_count': len(live_items),
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
         'ready_at': order.ready_at.isoformat() if order.ready_at else None,
         'created_at': order.created_at.isoformat(),
@@ -118,14 +154,14 @@ def _serialize_order_list(order, include_items=True):
                 'price': i.price,
                 'ready_at': i.ready_at,
             }
-            for i in order.items.all()
+            for i in live_items
         ]
     return data
 
 
 def _serialize_order_detail(order):
     items = []
-    for item in order.items.all():
+    for item in _live_items(order):
         prep_time = (item.ready_at - order.created_at).total_seconds() if item.ready_at else None
         items.append({
             'id': item.id,
@@ -267,12 +303,16 @@ def _recalculate_total(order):
     # under-credited (mark_as_paid would settle the wrong cash, or drive
     # total_amount negative and *remove* real cash via add_to_register). The
     # OrderDiscount rows are the source of truth — refresh them, then sum.
-    order_items = list(order.items.select_related('product__category').all())
+    order_items = list(order.items.filter(is_deleted=False).select_related(
+        'product__category',
+    ))
     applied = Decimal('0')
     for od in OrderDiscountRepository.get_for_order(order.id).select_related(
         'discount__discount_type'
-    ):
-        new_amount = DiscountService.calculate_discount(od.discount, order_items)
+    ).order_by('created_at', 'pk'):
+        new_amount = DiscountService.calculate_discount(
+            od.discount, order_items, already_applied_discount=applied,
+        )
         if new_amount != od.discount_amount:
             od.discount_amount = new_amount
             od.save(update_fields=['discount_amount'])
@@ -287,21 +327,69 @@ def _adjust_order_stock(order, product_id, quantity_delta):
     # change. adjust_for_item_change self-gates to a no-op unless the order had
     # prior deductions, so this is safe regardless of stock config.
     if quantity_delta == 0:
-        return
+        return None
     try:
         from stock.services import OrderStockService, StockSettingsService
         location_id = StockSettingsService.get_default_location_id()
-        if location_id:
-            OrderStockService.adjust_for_item_change(
-                order.id, product_id, quantity_delta, location_id, order.cashier_id,
+        result, status = OrderStockService.adjust_for_item_change(
+            order.id, product_id, quantity_delta, location_id,
+            order.cashier_id or order.user_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock adjustment rejected for order=%s product=%s: %s',
+                order.id, product_id, result,
             )
+            return result, status
+        return None
     except Exception:
-        logger.exception('non-critical stock-adjust error in admin order edit flow')
+        logger.exception('stock adjustment failed in admin order edit flow')
+        return ServiceResponse.error(
+            'Stock adjustment failed; the order change was not applied. Please retry.'
+        )
+
+
+def _apply_order_stock_transition(order_id, old_status, new_status,
+                                  stock_items, performed_by_id):
+    try:
+        from stock.services import OrderStatusHandler, StockSettingsService
+        stock_settings = StockSettingsService.load()
+        if (not stock_settings.stock_enabled
+                or not getattr(stock_settings, 'auto_deduct_on_sale', True)):
+            return None
+        location_id = StockSettingsService.get_default_location_id()
+        needs_location = (
+            (stock_settings.reserve_on_order_create and old_status is None)
+            or new_status == stock_settings.deduct_on_order_status
+        )
+        if needs_location and not location_id:
+            return ServiceResponse.error(
+                'Stock is enabled but no default stock location is configured.'
+            )
+        result, status = OrderStatusHandler.on_status_change(
+            order_id, old_status, new_status, stock_items,
+            location_id, performed_by_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock transition rejected for order=%s %s->%s: %s',
+                order_id, old_status, new_status, result,
+            )
+            return result, status
+        return None
+    except Exception:
+        logger.exception(
+            'stock transition failed for order=%s %s->%s',
+            order_id, old_status, new_status,
+        )
+        return ServiceResponse.error(
+            'Stock processing failed; the order change was not applied. Please retry.'
+        )
 
 
 def _check_and_update_ready(order):
-    total = order.items.count()
-    ready = order.items.filter(ready_at__isnull=False).count()
+    total = order.items.filter(is_deleted=False).count()
+    ready = order.items.filter(is_deleted=False, ready_at__isnull=False).count()
     all_ready = total > 0 and total == ready
 
     if all_ready and order.status != 'READY':
@@ -403,6 +491,15 @@ class AdminOrderService:
         if cashier_id and not UserRepository.exists(id=cashier_id, role='CASHIER'):
             return ServiceResponse.error('Invalid cashier')
 
+        from base.services.order_refund import (
+            SettlementInvariantError, lock_active_cashier_shift,
+        )
+        try:
+            owner_shift = lock_active_cashier_shift(cashier_id)
+        except SettlementInvariantError as exc:
+            return ServiceResponse.error(str(exc))
+        target_branch = str(owner_shift.branch_id or '').strip()
+
         if not items:
             return ServiceResponse.validation_error(
                 errors={'items': 'At least one item is required'},
@@ -417,13 +514,32 @@ class AdminOrderService:
 
         delivery_person = None
         if delivery_person_id:
-            delivery_person = DeliveryPersonRepository.get_by_id(delivery_person_id)
+            # DeliveryPerson is branch-scoped sync data. A branch-owned Order
+            # must never reference a cloud/foreign courier UUID because that FK
+            # parent is absent from the terminal's change feed and the Order is
+            # then deferred forever. Lock it with the shift ownership check so
+            # it cannot be re-owned while this order is being created.
+            from base.models import DeliveryPerson
+            delivery_person = (
+                DeliveryPerson.objects.select_for_update()
+                .filter(
+                    pk=delivery_person_id,
+                    branch_id=target_branch,
+                    is_deleted=False,
+                    is_active=True,
+                )
+                .first()
+            )
             if not delivery_person:
-                return ServiceResponse.not_found('Delivery person not found')
+                return ServiceResponse.error(
+                    'Delivery person is inactive or belongs to a different branch'
+                )
 
-        display_id = OrderRepository.next_display_id()
-        chef_queue_number = OrderRepository.next_chef_queue_number()
-        order_number = OrderRepository.next_order_number()
+        display_id = OrderRepository.next_display_id(scope=target_branch)
+        chef_queue_number = OrderRepository.next_chef_queue_number(
+            scope=target_branch,
+        )
+        order_number = OrderRepository.next_order_number(scope=target_branch)
 
         product_ids = [item.get('product_id') for item in items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
@@ -467,6 +583,7 @@ class AdminOrderService:
             subtotal=total_amount,
             total_amount=total_amount,
             delivery_person=delivery_person,
+            branch_id=target_branch,
         )
 
         from base.models import OrderItem
@@ -487,12 +604,16 @@ class AdminOrderService:
                 quantity=d['quantity'],
                 price=d['price'],
                 ready_at=now if instant else None,
+                branch_id=target_branch,
             ))
         OrderItem.objects.bulk_create(new_items)
-        # bulk_create bypasses SyncMixin.save(), so synced_at stays NULL and the
-        # /changes feed (synced_at__gt) never ships these lines to branches (orders
-        # arrive as empty shells). Stamp them so cloud-created items actually sync.
-        OrderItem.objects.filter(order=order, synced_at__isnull=True).update(synced_at=now)
+        # bulk_create bypasses SyncMixin.save(). Keep the rows in the NULL
+        # safety lane until this transaction commits, then publish each exact
+        # version. Stamping synced_at *inside* the transaction lets /changes
+        # advance its cutoff while the uncommitted rows are invisible, losing
+        # the order lines forever.
+        for item in new_items:
+            item._publish_synced_at_after_commit(using=item._state.db)
 
         # An order made up entirely of instant items has nothing to cook —
         # it's ready the moment it's placed.
@@ -501,19 +622,16 @@ class AdminOrderService:
             order.ready_at = now
             order.save(update_fields=['status', 'ready_at'])
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': d['product'].id, 'quantity': d['quantity']}
-                    for d in order_items_data
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, None, 'PREPARING', stock_items, location_id, user_id,
-                )
-        except Exception:
-            logger.exception('stock handler failed during order create (order=%s)', order.id)
+        stock_items = [
+            {'product_id': d['product'].id, 'quantity': d['quantity']}
+            for d in order_items_data
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, None, 'PREPARING', stock_items, user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         return ServiceResponse.created(
             data={'order_id': order.id, 'display_id': order.display_id},
@@ -582,6 +700,7 @@ class AdminOrderService:
             OrderItemRepository.create(
                 order=order, product=product, quantity=quantity, price=product.price,
                 ready_at=timezone.now() if is_instant else None,
+                branch_id=order.branch_id,
             )
 
         # Only adding a real (non-instant) item reopens a ready order for the
@@ -592,7 +711,10 @@ class AdminOrderService:
             order.save(update_fields=['ready_at', 'status'])
 
         _recalculate_total(order)
-        _adjust_order_stock(order, product_id, quantity)
+        stock_error = _adjust_order_stock(order, product_id, quantity)
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
         return ServiceResponse.success(message='Item added to order successfully')
 
     @staticmethod
@@ -626,7 +748,10 @@ class AdminOrderService:
         item.quantity = quantity
         item.save(update_fields=['quantity'])
         _recalculate_total(order)
-        _adjust_order_stock(order, product_id, quantity - old_quantity)
+        stock_error = _adjust_order_stock(order, product_id, quantity - old_quantity)
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         return ServiceResponse.success(message='Order item updated successfully')
 
@@ -652,15 +777,20 @@ class AdminOrderService:
 
         product_id = item.product_id
         removed_quantity = item.quantity
-        item.delete(hard_delete=True)
+        # Cloud hard deletes have no durable change-feed record. Preserve the
+        # line as a synchronized soft-delete tombstone so branch totals drop it
+        # as well.
+        item.delete()
 
         # Return ingredient stock for the removed line *before* any order
-        # deletion: Order FK on StockTransaction is SET_NULL, so hard-deleting
-        # the order first would strand the deductions with no way to reverse.
-        _adjust_order_stock(order, product_id, -removed_quantity)
+        # deletion so the deduction can still be located and reversed.
+        stock_error = _adjust_order_stock(order, product_id, -removed_quantity)
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        if not order.items.exists():
-            order.delete(hard_delete=True)
+        if not order.items.filter(is_deleted=False).exists():
+            order.delete()
             return ServiceResponse.success(message='Order deleted (no items remaining)')
 
         _check_and_update_ready(order)
@@ -669,7 +799,7 @@ class AdminOrderService:
 
     @staticmethod
     @transaction.atomic
-    def update_order_status(order_id, status):
+    def update_order_status(order_id, status, cashier_id=None, reason=''):
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -684,57 +814,57 @@ class AdminOrderService:
         update_fields = ['status']
         order.status = status
 
+        refund = None
+        if status == 'CANCELED' and order.is_paid:
+            from base.services.order_refund import (
+                SettlementInvariantError, record_paid_order_refund,
+            )
+            try:
+                refund, _ = record_paid_order_refund(
+                    order.id, cashier_id, reason=reason,
+                )
+            except SettlementInvariantError as exc:
+                return ServiceResponse.error(str(exc))
+
         if status == 'READY':
             now = timezone.now()
             order.ready_at = now
-            order.items.filter(ready_at__isnull=True).update(ready_at=now)
+            for item in order.items.select_for_update().filter(
+                is_deleted=False, ready_at__isnull=True,
+            ):
+                item.ready_at = now
+                item.save(update_fields=['ready_at'])
             update_fields.append('ready_at')
 
         order.save(update_fields=update_fields)
 
-        # Cancelling a paid order must reverse the cash-register entry,
-        # otherwise the register over-reports balance permanently while
-        # stock is reverse-deducted. Only cash reverses through the drawer;
-        # card/Payme settle externally.
-        if status == 'CANCELED' and order.is_paid:
-            from base.services.tender import order_tender_split
-            split, _ = order_tender_split(order)
-            if split['cash'] > 0:
-                InkassaService.add_to_register(-split['cash'], order.branch_id)
-
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': i.product_id, 'quantity': i.quantity}
-                    for i in order.items.all()
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, old_status, status, stock_items, location_id, order.user_id,
-                )
-        except Exception:
-            logger.exception(
-                'stock handler failed during status change (order=%s status=%s)',
-                order.id, status,
-            )
+        stock_items = [
+            {'product_id': i.product_id, 'quantity': i.quantity}
+            for i in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, old_status, status, stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         # Loyalty accrual — silent no-op for non-eligible transitions
         # (not COMPLETED, unpaid, no phone, already credited). Idempotent.
-        try:
-            from notifications.services import loyalty_service
-            loyalty_service.maybe_accrue(order)
-        except Exception:
-            logger.exception('loyalty accrual failed for order %s', order.id)
+        _schedule_loyalty_accrual(order.id)
 
         return ServiceResponse.success(
-            data={'status': status},
+            data={
+                'status': status,
+                'refund_id': refund.id if refund else None,
+            },
             message=f'Order status updated to {status}',
         )
 
     @staticmethod
     @transaction.atomic
-    def mark_as_paid(order_id, payment_method='CASH', payments=None):
+    def mark_as_paid(order_id, payment_method='CASH', payments=None,
+                     cashier_id=None):
         """Mark an order paid, WRITING the tender line(s). Mirrors the till path.
 
         Two input shapes:
@@ -757,6 +887,20 @@ class AdminOrderService:
         if order.is_paid:
             return ServiceResponse.error('Order already paid')
 
+        from base.services.order_refund import (
+            SettlementInvariantError, lock_active_cashier_shift,
+        )
+        # Service callers historically omit cashier_id for an order that is
+        # already assigned to a cashier.  The assigned cashier is the monetary
+        # owner; keep explicit cashier_id as the override used by the endpoint.
+        cashier_id = cashier_id or order.cashier_id
+        try:
+            settlement_shift = lock_active_cashier_shift(
+                cashier_id, branch_id=order.branch_id,
+            )
+        except SettlementInvariantError as exc:
+            return ServiceResponse.error(str(exc))
+
         # Concrete tenders only: MIXED is the roll-up the system SETS, never an input.
         valid_methods = [c[0] for c in Order.PaymentMethod.choices if c[0] != 'MIXED']
         total = Decimal(order.total_amount or 0)
@@ -778,12 +922,20 @@ class AdminOrderService:
                         errors={'payments': 'amount must be > 0'})
                 lines.append((method, amount))
         else:
+            payment_method = str(payment_method or '').upper()
             if payment_method not in valid_methods:
                 return ServiceResponse.validation_error(
                     errors={'payment_method': f'Must be one of {valid_methods}; '
                                               f'MIXED requires a `payments` split'},
                 )
             lines = [(payment_method, total)]
+
+        from django.conf import settings as django_settings
+        if (getattr(django_settings, 'DEPLOYMENT_MODE', 'local') == 'cloud'
+                and any(method == Order.PaymentMethod.CASH for method, _ in lines)):
+            return ServiceResponse.error(
+                'Physical cash payment must be settled on the owning branch desktop.'
+            )
 
         paid_sum = sum((a for _, a in lines), Decimal('0'))
         noncash = sum((a for m, a in lines if m != 'CASH'), Decimal('0'))
@@ -801,12 +953,24 @@ class AdminOrderService:
         order.payment_method = (next(iter(distinct)) if len(distinct) == 1
                                 else Order.PaymentMethod.MIXED)
         order.paid_at = timezone.now()
-        order.save(update_fields=['is_paid', 'payment_method', 'paid_at'])
+        order.cashier_id = settlement_shift.user_id
+        payment_update_fields = [
+            'is_paid', 'payment_method', 'paid_at', 'cashier',
+        ]
+        if not order.branch_id:
+            order.branch_id = settlement_shift.branch_id
+            payment_update_fields.append('branch_id')
+        order.save(update_fields=payment_update_fields)
 
         # The tender lines: what makes this sale visible to per-tender shift settlement
         # (cashbox.drawer) and to base.services.tender.
         for method, amount in lines:
-            OrderPayment.objects.create(order=order, method=method, amount=amount)
+            OrderPayment.objects.create(
+                order=order,
+                method=method,
+                amount=amount,
+                branch_id=order.branch_id,
+            )
 
         # The drawer only holds physical cash, net of change. Card/Payme settle
         # externally and reconcile against the acquirer report, not the register.
@@ -814,38 +978,25 @@ class AdminOrderService:
         if cash_to_drawer > 0:
             InkassaService.add_to_register(cash_to_drawer, order.branch_id)
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            settings = StockSettingsService.load()
-            if settings.stock_enabled and settings.deduct_on_order_status == 'PAID':
-                location_id = StockSettingsService.get_default_location_id()
-                if location_id:
-                    stock_items = [
-                        {'product_id': i.product_id, 'quantity': i.quantity}
-                        for i in order.items.all()
-                    ]
-                    OrderStatusHandler.on_status_change(
-                        order.id, order.status, 'PAID', stock_items, location_id, order.user_id,
-                    )
-        except Exception:
-            logger.exception('stock handler failed during pay (order=%s)', order.id)
+        stock_items = [
+            {'product_id': i.product_id, 'quantity': i.quantity}
+            for i in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, order.status, 'PAID', stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         # Pay completes the second half of the COMPLETED + paid eligibility
         # check for loyalty. No-op if order isn't COMPLETED yet — the next
         # update_order_status call will pick it up.
-        try:
-            from notifications.services import loyalty_service
-            loyalty_service.maybe_accrue(order)
-        except Exception:
-            logger.exception('loyalty accrual failed for order %s', order.id)
+        _schedule_loyalty_accrual(order.id)
 
         # Fiscalize the sale (Soliq). No-op unless enabled; serve-now policy
         # means a provider failure never blocks the sale (queued for retry).
-        try:
-            from fiscalization.services import FiscalizationService
-            FiscalizationService.fiscalize_on_payment(order.id)
-        except Exception:
-            logger.exception('non-critical fiscalization error in pay flow (order=%s)', order.id)
+        _schedule_fiscalization(order.id)
 
         return ServiceResponse.success(
             data={'is_paid': True},
@@ -854,7 +1005,7 @@ class AdminOrderService:
 
     @staticmethod
     @transaction.atomic
-    def mark_as_unpaid(order_id):
+    def mark_as_unpaid(order_id, cashier_id=None):
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -868,47 +1019,41 @@ class AdminOrderService:
         if not order.is_paid:
             return ServiceResponse.error('Order is not paid')
 
-        # Reverse exactly the cash that hit the drawer = bill total minus what settled
-        # externally, so a MIXED order reverses only its cash leg (mirrors the till's
-        # cancel path). Computed from the tender lines BEFORE they are removed.
-        from base.models import OrderPayment
-        from base.services.tender import order_tender_split
-        split, _ = order_tender_split(order)
-        cash_in_drawer = split['cash']
-
-        order.is_paid = False
-        order.payment_method = None
-        order.paid_at = None
-        order.save(update_fields=['is_paid', 'payment_method', 'paid_at'])
-
-        # Drop the tender lines. Without this a pay -> unpay -> re-pay cycle leaves
-        # stale OrderPayment rows behind (the pay path appends, it does not dedupe),
-        # so Sum(non-cash lines) can exceed total_amount and the tender split is
-        # forced into the `unknown` bucket. Soft-delete so the tombstone syncs.
-        for _p in OrderPayment.objects.filter(order=order, is_deleted=False):
-            _p.delete()
-
-        # Only the cash leg ever entered the register.
-        if cash_in_drawer > 0:
-            InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
-
-        # Reverse the stock deduction that mark_as_paid applied. Without
-        # this, a pay -> unpay -> pay sequence double-deducts inventory
-        # because deduct_for_order has no per-order dedup. The handler is
-        # idempotent for already-reversed orders.
+        from base.services.order_refund import (
+            SettlementInvariantError, record_paid_order_refund,
+        )
+        cashier_id = cashier_id or order.cashier_id
         try:
-            from stock.services import OrderStockService, StockSettingsService
-            settings = StockSettingsService.load()
-            if settings.stock_enabled and settings.deduct_on_order_status == 'PAID':
-                OrderStockService.reverse_deduction(
-                    order.id, order.user_id, 'Payment reversed',
-                )
-        except Exception:
-            logger.exception('stock reversal failed during unpay (order=%s)', order.id)
+            refund, _created = record_paid_order_refund(
+                order, cashier_id, reason='Admin void/unpay correction',
+            )
+        except SettlementInvariantError as exc:
+            return ServiceResponse.error(str(exc))
 
+        old_status = order.status
+        order.status = 'CANCELED'
+        order.save(update_fields=['status'])
+        stock_items = [
+            {'product_id': item.product_id, 'quantity': item.quantity}
+            for item in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, old_status, 'CANCELED', stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
+
+        # This endpoint is now a terminal correction, not an invitation to
+        # rewrite and repay the same sale. paid_at/payment_method/tender rows are
+        # deliberately preserved and the dated refund is the negative event.
         return ServiceResponse.success(
-            data={'is_paid': False},
-            message='Order marked as unpaid',
+            data={
+                'is_paid': True,
+                'status': 'CANCELED',
+                'refund_id': refund.id if refund else None,
+            },
+            message='Paid order voided with an immutable refund',
         )
 
     @staticmethod
@@ -930,7 +1075,11 @@ class AdminOrderService:
         order.status = 'READY'
         order.ready_at = now
         order.save(update_fields=['status', 'ready_at'])
-        order.items.filter(ready_at__isnull=True).update(ready_at=now)
+        for item in order.items.select_for_update().filter(
+            is_deleted=False, ready_at__isnull=True,
+        ):
+            item.ready_at = now
+            item.save(update_fields=['ready_at'])
 
         order_prep_time = (order.ready_at - order.created_at).total_seconds()
 
@@ -957,7 +1106,7 @@ class AdminOrderService:
         if order.status == 'READY':
             return ServiceResponse.error('Order is already marked as ready')
 
-        item = order.items.filter(id=item_id).first()
+        item = order.items.filter(id=item_id, is_deleted=False).first()
         if not item:
             return ServiceResponse.not_found('Order item not found')
 
@@ -1008,12 +1157,15 @@ class AdminOrderService:
             return ServiceResponse.error('Cannot modify cancelled order')
 
         from base.models import OrderItem as OI
-        updated = OI.objects.filter(
+        item = OI.objects.select_for_update().filter(
             id=item_id, order=order, ready_at__isnull=False
-        ).update(ready_at=None)
+        ).first()
 
-        if not updated:
+        if not item:
             return ServiceResponse.error('Item is not marked as ready')
+
+        item.ready_at = None
+        item.save(update_fields=['ready_at'])
 
         if order.status == 'READY':
             order.status = 'PREPARING'
@@ -1033,8 +1185,11 @@ class AdminOrderService:
                 order = Order.objects.get(pk=order_id)
             except Order.DoesNotExist:
                 return ServiceResponse.not_found('Order not found')
-            order.hard_delete()
-            return ServiceResponse.success(message='Order permanently deleted')
+            # Keep a cloud tombstone row. Physical deletion is invisible to
+            # branch timestamp cursors and caused supposedly deleted orders to
+            # survive indefinitely on tills and in their analytics.
+            order.delete()
+            return ServiceResponse.success(message='Order archived successfully')
 
         order = OrderRepository.get_by_id(order_id)
         if not order:
@@ -1081,20 +1236,28 @@ class AdminOrderService:
         # and folded the WHOLE of a MIXED order (materially part cash) into CARD.
         # Best-effort so a breakdown error never blanks the whole stats.
         try:
-            from base.models import Order, OrderItem
-            from base.services.tender import breakdown_for_orders
-            pq = Order.objects.filter(is_deleted=False, is_paid=True).exclude(status='CANCELED')
+            from base.models import Order, OrderItem, OrderRefund
+            from base.services.tender import net_breakdown
+            pq = Order.objects.filter(is_deleted=False, is_paid=True)
+            rq = OrderRefund.objects.filter(is_deleted=False)
             if date_from_dt:
                 pq = pq.filter(paid_at__gte=date_from_dt)
+                rq = rq.filter(refunded_at__gte=date_from_dt)
             if date_to_dt:
                 pq = pq.filter(paid_at__lte=date_to_dt)
+                rq = rq.filter(refunded_at__lte=date_to_dt)
             if cashier_id:
                 pq = pq.filter(cashier_id=cashier_id)
+                rq = rq.filter(cashier_id=cashier_id)
             if product_ids_list:
-                pq = pq.filter(id__in=OrderItem.objects.filter(
-                    is_deleted=False, product_id__in=product_ids_list).values('order_id'))
+                product_orders = OrderItem.objects.filter(
+                    is_deleted=False, product_id__in=product_ids_list,
+                ).values('order_id')
+                pq = pq.filter(id__in=product_orders)
+                rq = rq.filter(order_id__in=product_orders)
             pq = tod_filter(pq, tod_from_t, tod_to_t, field='paid_at')
-            _split, _detail = breakdown_for_orders(pq)
+            rq = tod_filter(rq, tod_from_t, tod_to_t, field='refunded_at')
+            _split, _detail = net_breakdown(pq, rq)
             payment_breakdown = {k: str(_split[k]) for k in ('cash', 'card', 'payme')}
             if _split['unknown']:
                 payment_breakdown['unknown'] = str(_split['unknown'])

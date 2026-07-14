@@ -18,7 +18,6 @@ from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
 from base.repositories import OrderRepository
-from base.repositories.shift import ShiftRepository
 from smartfood.models import BotOrder, Customer
 
 logger = logging.getLogger(__name__)
@@ -96,10 +95,18 @@ class DispatchService:
             return {'success': False, 'code': 'already_handled',
                     'message': f'Order already {bot_order.status.lower()}'}, 409
 
-        # The cashier MUST be on an active shift so the new order falls inside
-        # their shift window (attribution = cashier_id + time, no Shift FK).
-        if not ShiftRepository.get_active_for_user(cashier_id):
-            return ServiceResponse.error('Selected cashier is not on an active shift')
+        # Lock both cashier + ACTIVE shift and take branch ownership from that
+        # pair.  The cloud process has no single BRANCH_ID; using its environment
+        # here created global/blank orders that never belonged to the target
+        # till and could disappear from branch analytics after sync.
+        from base.services.order_refund import (
+            SettlementInvariantError, lock_active_cashier_shift,
+        )
+        try:
+            active_shift = lock_active_cashier_shift(cashier_id)
+        except SettlementInvariantError as exc:
+            return ServiceResponse.error(str(exc))
+        target_branch = str(active_shift.branch_id or '').strip()
 
         items = list(bot_order.items.select_related('product').all())
         if not items:
@@ -121,6 +128,8 @@ class DispatchService:
                 phone=sf_customer.phone_number or bot_order.phone_number or None,
                 telegram_id=sf_customer.telegram_id,
                 name=sf_customer.name,
+                branch_id=target_branch,
+                adopt_node_owned=True,
             )
         food_total = sum((it.line_total for it in items), Decimal('0.00'))
 
@@ -143,9 +152,13 @@ class DispatchService:
             user_id=placeholder.id,
             cashier_id=cashier_id,
             customer_id=pos_customer.id if pos_customer else None,
-            display_id=OrderRepository.next_display_id(),
-            chef_queue_number=OrderRepository.next_chef_queue_number(),
-            order_number=OrderRepository.next_order_number(),
+            display_id=OrderRepository.next_display_id(scope=target_branch),
+            chef_queue_number=OrderRepository.next_chef_queue_number(
+                scope=target_branch,
+            ),
+            order_number=OrderRepository.next_order_number(
+                scope=target_branch,
+            ),
             order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
             phone_number=bot_order.phone_number,
             description=description,
@@ -157,6 +170,7 @@ class DispatchService:
             # delivery and tips remain non-product revenue in total_amount.
             discount_amount=bot_order.discount,
             total_amount=bot_order.total,             # what the customer pays (nets discount + delivery + tip)
+            branch_id=target_branch,
         )
 
         any_kitchen = False
@@ -168,32 +182,57 @@ class DispatchService:
                 order=order, product=it.product, detail=(it.detail or None),
                 quantity=it.quantity, price=it.unit_price,   # frozen: base + size + toppings
                 ready_at=now if instant else None,
+                branch_id=target_branch,
             ))
         OrderItem.objects.bulk_create(new_items)
-        # bulk_create bypasses SyncMixin.save() -> stamp synced_at so /changes ships them.
-        OrderItem.objects.filter(order=order, synced_at__isnull=True).update(synced_at=now)
+        # Publish only after the dispatch transaction commits. A pre-commit
+        # timestamp can be captured by the change-feed cursor while these rows
+        # are still invisible, permanently dispatching an empty order shell.
+        for item in new_items:
+            item._publish_synced_at_after_commit(using=item._state.db)
 
         if not any_kitchen:
             order.status = 'READY'
             order.ready_at = now
             order.save(update_fields=['status', 'ready_at'])
 
-        # Stock deduction (best-effort). Toppings are price-only; base products drive
-        # stock. Run inside a SAVEPOINT so the stock layer's transaction.set_rollback()
-        # on insufficient stock rolls back ONLY the deduction, never the dispatch
-        # itself (oversell is allowed here, matching the POS create path; the order is
-        # still dispatched + recorded).
+        # Toppings are price-only; base products drive stock.  Dispatch and its
+        # configured deduction are one transaction: returning success after an
+        # inventory failure creates a sale that analytics can never reconcile.
         try:
             from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                with transaction.atomic():
-                    OrderStatusHandler.on_status_change(
-                        order.id, None, 'PREPARING',
-                        [{'product_id': it.product_id, 'quantity': it.quantity} for it in items],
-                        location_id, placeholder.id)
+            stock_settings = StockSettingsService.load()
+            stock_active = (
+                stock_settings.stock_enabled
+                and getattr(stock_settings, 'auto_deduct_on_sale', True)
+            )
+            location_id = (
+                StockSettingsService.get_default_location_id()
+                if stock_active else None
+            )
+            if (stock_active
+                    and not location_id
+                    and (stock_settings.reserve_on_order_create
+                         or stock_settings.deduct_on_order_status == 'PREPARING')):
+                transaction.set_rollback(True)
+                return ServiceResponse.error(
+                    'Stock is enabled but no default stock location is configured.'
+                )
+            if stock_active:
+                result, status = OrderStatusHandler.on_status_change(
+                    order.id, None, 'PREPARING',
+                    [{'product_id': it.product_id, 'quantity': it.quantity} for it in items],
+                    location_id, placeholder.id,
+                )
+                if status >= 400:
+                    transaction.set_rollback(True)
+                    return result, status
         except Exception:
             logger.exception('stock handler failed during bot dispatch (order=%s)', order.id)
+            transaction.set_rollback(True)
+            return ServiceResponse.error(
+                'Stock processing failed; the order was not dispatched. Please retry.'
+            )
 
         # Credit earned loyalty points now that it's a real order (via the ledger).
         if bot_order.loyalty_points_earned:

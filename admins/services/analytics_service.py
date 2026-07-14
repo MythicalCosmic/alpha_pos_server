@@ -23,7 +23,7 @@ DEFAULT_COGS_FRACTION = Decimal('0.35')
 
 def shift_performance(shift):
     """Return per-shift KPIs derived from orders during the shift window."""
-    from base.models import Order
+    from base.models import Order, OrderRefund
 
     start = shift.start_time
     end = shift.end_time or timezone.now()
@@ -47,9 +47,14 @@ def shift_performance(shift):
             is_paid=True,
             paid_at__gte=start, paid_at__lte=end,
         )
-        .exclude(status='CANCELED')
         .aggregate(paid=Count('id'), revenue=Sum('total_amount'))
     )
+    refunds = OrderRefund.objects.filter(
+        is_deleted=False,
+        shift=shift,
+        refunded_at__gte=start,
+        refunded_at__lte=end,
+    ).aggregate(count=Count('id'), amount=Sum('amount'))
 
     # Avg prep = (ready_at - created_at) over ready/completed orders, in SQL
     # instead of materialising every order row just to compute a mean.
@@ -67,7 +72,9 @@ def shift_performance(shift):
     total = counts['total'] or 0
     cancelled = counts['cancelled'] or 0
     cancel_rate = round(cancelled / total * 100, 2) if total else 0.0
-    revenue = settled['revenue'] or Decimal('0')
+    gross_revenue = settled['revenue'] or Decimal('0')
+    refund_amount = refunds['amount'] or Decimal('0')
+    revenue = gross_revenue - refund_amount
 
     hours = duration.total_seconds() / 3600 if duration_minutes else 0
     orders_per_hour = round(total / hours, 2) if hours else 0.0
@@ -88,8 +95,11 @@ def shift_performance(shift):
         'orders_completed': counts['completed'] or 0,
         'orders_cancelled': cancelled,
         'orders_paid': settled['paid'] or 0,
+        'orders_refunded': refunds['count'] or 0,
         'cancel_rate_pct': cancel_rate,
-        'revenue': str(int(revenue)),   # integer so'm (UZS), backend-independent
+        'gross_revenue': str(int(gross_revenue)),
+        'refund_amount': str(int(refund_amount)),
+        'revenue': str(int(revenue)),   # net revenue, integer so'm (UZS)
         'avg_prep_seconds': avg_prep_seconds,
         'orders_per_hour': orders_per_hour,
         'revenue_per_hour': str(revenue_per_hour),
@@ -113,31 +123,30 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     """
     from base.models import OrderItem
     from base.services.business_day import range_window
-    from base.services.revenue import net_line_revenue
+    from admins.services.refund_reporting import (
+        net_grouped_items, refund_item_events,
+    )
 
     lo, hi = range_window(date_from, date_to)
 
-    line_total = net_line_revenue()
-    rows = (
+    sale_items = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__paid_at__gte=lo, order__paid_at__lt=hi,
         )
         # Exclude cancelled orders — they never sold, so they must not skew
         # menu-engineering quadrants (qty sold / revenue).
-        .exclude(order__status='CANCELED')
-        .annotate(line_total=line_total)
-        .values('product_id', 'product__name', 'product__price')
-        .annotate(
-            qty_sold=Sum('quantity'),
-            revenue=Sum('line_total'),
-        )
+    )
+    rows = net_grouped_items(
+        sale_items,
+        refund_item_events(lo, hi),
+        ('product_id', 'product__name', 'product__price'),
     )
 
     items = []
     for r in rows:
         price = r['product__price'] or Decimal('0')
-        qty = int(r['qty_sold'] or 0)
+        qty = int(r['qty'] or 0)
         revenue = r['revenue'] or Decimal('0')
         # Discounts reduce realized margin. COGS remains based on the frozen
         # selling price, while net revenue is the canonical proportional
@@ -155,6 +164,10 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
             'price': str(price),
             'qty_sold': qty,
             'revenue': str(revenue),
+            'gross_qty_sold': int(r['gross_qty'] or 0),
+            'refunded_qty': int(r['refund_qty'] or 0),
+            'gross_revenue': str(r['gross_revenue'] or 0),
+            'refund_amount': str(r['refund_revenue'] or 0),
             'margin_per_unit': str(margin_per_unit),
             'margin_pct': str(margin_pct),
             'profit': profit,
@@ -216,7 +229,7 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     volume, completion/cancellation, paid revenue, units sold, and shifts/hours
     worked. Powers the admin-panel Staff dashboard (GET /staff/performance?range=).
     """
-    from base.models import Order, OrderItem, Shift
+    from base.models import Order, OrderItem, OrderRefund, Shift
     from base.services.business_day import range_window, tod_filter, parse_hhmm
 
     lo, hi = range_window(date_from, date_to)
@@ -246,13 +259,29 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
                 is_paid=True,
                 paid_at__gte=lo,
                 paid_at__lt=hi,
-            ).exclude(status='CANCELED'),
+            ),
             tf,
             tt,
             field='paid_at',
         )
         .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
         .annotate(paid=Count('id'), revenue=Sum('total_amount'))
+    )
+
+    refund_rows = list(
+        tod_filter(
+            OrderRefund.objects.filter(
+                is_deleted=False,
+                cashier__isnull=False,
+                refunded_at__gte=lo,
+                refunded_at__lt=hi,
+            ),
+            tf,
+            tt,
+            field='refunded_at',
+        )
+        .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
+        .annotate(refunded=Count('id'), refund_amount=Sum('amount'))
     )
 
     units_map = {
@@ -262,9 +291,28 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
                 is_deleted=False, order__is_deleted=False, order__is_paid=True,
                 order__paid_at__gte=lo, order__paid_at__lt=hi),
                 tf, tt, field='order__paid_at')
-            .exclude(order__status='CANCELED')
             .values('order__cashier_id')
             .annotate(u=Sum('quantity'))
+        )
+    }
+    from base.services.refund_lines import (
+        REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
+    )
+    refund_unit_items = refund_item_events(
+        cashier__isnull=False,
+        refunded_at__gte=lo,
+        refunded_at__lt=hi,
+    )
+    refund_unit_items = tod_filter(
+        refund_unit_items, tf, tt,
+        field=f'{REFUND_EVENT_ALIAS}__refunded_at',
+    )
+    refund_units_map = {
+        r[f'{REFUND_EVENT_ALIAS}__cashier_id']: int(r['u'] or 0)
+        for r in (
+            refund_unit_items
+            .values(f'{REFUND_EVENT_ALIAS}__cashier_id')
+            .annotate(u=Sum(refund_line_quantity(REFUND_EVENT_ALIAS)))
         )
     }
 
@@ -281,15 +329,19 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
 
     operational_map = {r['cashier_id']: r for r in operational_rows}
     paid_map = {r['cashier_id']: r for r in paid_rows}
+    refund_map = {r['cashier_id']: r for r in refund_rows}
     staff = []
-    for cid in set(operational_map) | set(paid_map):
+    for cid in set(operational_map) | set(paid_map) | set(refund_map):
         operational_row = operational_map.get(cid, {})
         paid_row = paid_map.get(cid, {})
-        identity = operational_row or paid_row
+        refund_row = refund_map.get(cid, {})
+        identity = operational_row or paid_row or refund_row
         orders_total = operational_row.get('orders_total') or 0
         cancelled = operational_row.get('cancelled') or 0
         paid = paid_row.get('paid') or 0
-        revenue = paid_row.get('revenue') or Decimal('0')
+        gross_revenue = paid_row.get('revenue') or Decimal('0')
+        refund_amount = refund_row.get('refund_amount') or Decimal('0')
+        revenue = gross_revenue - refund_amount
         sm = shift_map.get(cid, {'shifts': 0, 'seconds': 0.0})
         avg_order = (revenue / paid).quantize(Decimal('0.01')) if paid else Decimal('0')
         staff.append({
@@ -303,10 +355,15 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
             'orders_completed': operational_row.get('completed') or 0,
             'orders_cancelled': cancelled,
             'orders_paid': paid,
+            'orders_refunded': refund_row.get('refunded') or 0,
             'cancel_rate_pct': round(cancelled / orders_total * 100, 2) if orders_total else 0.0,
+            'gross_revenue': str(int(gross_revenue)),
+            'refund_amount': str(int(refund_amount)),
             'revenue': str(int(revenue)),
             'avg_order_value': str(int(avg_order)),
-            'units_sold': units_map.get(cid, 0),
+            'gross_units_sold': units_map.get(cid, 0),
+            'refunded_units': refund_units_map.get(cid, 0),
+            'units_sold': units_map.get(cid, 0) - refund_units_map.get(cid, 0),
             'shifts_worked': sm['shifts'],
             'hours_worked': round(sm['seconds'] / 3600, 2),
         })

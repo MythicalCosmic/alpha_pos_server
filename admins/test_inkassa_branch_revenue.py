@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from django.test import override_settings
+from django.utils import timezone
 
 
 pytestmark = pytest.mark.django_db
@@ -40,12 +41,50 @@ def test_inkassa_changes_only_selected_branch(admin_user):
     assert status == 200, result
     first.refresh_from_db()
     second.refresh_from_db()
-    assert first.current_balance == Decimal('70')
+    assert first.current_balance == Decimal('100')
     assert second.current_balance == Decimal('200')
+    assert Decimal(result['data']['balance_after']) == Decimal('70')
     assert result['data']['branch_id'] == 'branch-a'
 
 
-def test_sales_stats_use_created_at_and_net_product_revenue(
+@override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
+def test_mixed_inkassa_batch_owns_period_revenue_once(
+    admin_user, cashier_user, regular_user,
+):
+    from base.models import CashRegister, Inkassa, Order
+    from admins.services.inkassa_service import AdminInkassaService
+
+    Order.objects.create(
+        user=regular_user,
+        cashier=cashier_user,
+        branch_id='branch-a',
+        status='COMPLETED',
+        is_paid=True,
+        payment_method='CASH',
+        paid_at=timezone.now(),
+        subtotal='100.00',
+        total_amount='100.00',
+    )
+    CashRegister.objects.create(
+        branch_id='branch-a', current_balance='100.00',
+    )
+
+    result, status = AdminInkassaService.perform(
+        admin_user,
+        {'cash': '10.00', 'uzcard': '20.00'},
+        branch_id='branch-a',
+    )
+    assert status == 200, result
+    ids = [row['id'] for row in result['data']['inkassas']]
+    rows = list(Inkassa.objects.filter(pk__in=ids).order_by('pk'))
+    assert len(rows) == 2
+    assert sum((row.total_revenue for row in rows), Decimal('0')) == Decimal('100')
+    assert sum(row.total_orders for row in rows) == 1
+    assert rows[0].total_revenue == Decimal('100')
+    assert rows[1].total_revenue == Decimal('0')
+
+
+def test_sales_stats_use_paid_at_and_net_product_revenue(
     regular_user, cashier_user,
 ):
     from base.models import Category, Order, OrderItem, Product
@@ -85,7 +124,75 @@ def test_sales_stats_use_created_at_and_net_product_revenue(
     result, status = AdminInkassaService.get_stats(branch_id='branch-a')
     assert status == 200, result
     stats = result['data']['stats']
-    assert Decimal(stats['today']['total_revenue']) == Decimal('80')
+    assert Decimal(stats['today']['total_revenue']) == Decimal('200')
     assert stats['today']['order_count'] == 1
     assert len(stats['top_products']) == 1
-    assert Decimal(stats['top_products'][0]['total_revenue']) == Decimal('80')
+    assert Decimal(stats['top_products'][0]['total_revenue']) == Decimal('200')
+
+
+def test_sales_stats_book_refund_at_refunded_at(
+    regular_user, cashier_user,
+):
+    from base.models import Category, Order, OrderItem, OrderRefund, Product, Shift
+    from base.services.business_day import today_window
+    from admins.services.inkassa_service import AdminInkassaService
+
+    start, _ = today_window()
+    sale_time = start - timedelta(hours=1)
+    refund_time = start + timedelta(hours=1)
+    category = Category.objects.create(name='Refund food', slug='refund-food')
+    product = Product.objects.create(
+        name='Refund burger', category=category, price=80,
+    )
+    shift = Shift.objects.create(
+        user=cashier_user,
+        status=Shift.Status.ACTIVE,
+        start_time=start,
+        branch_id='branch-a',
+    )
+    order = Order.objects.create(
+        user=regular_user,
+        cashier=cashier_user,
+        branch_id='branch-a',
+        status='CANCELED',
+        is_paid=True,
+        payment_method='CASH',
+        paid_at=sale_time,
+        subtotal=80,
+        total_amount=80,
+    )
+    OrderItem.objects.create(
+        order=order, product=product, quantity=1, price=80,
+    )
+    OrderRefund.objects.create(
+        order=order,
+        shift=shift,
+        cashier=cashier_user,
+        amount='80.00',
+        cash_amount='80.00',
+        drawer_cash_amount='80.00',
+        refunded_at=refund_time,
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id=str(order.uuid),
+        branch_id='branch-a',
+    )
+
+    result, status = AdminInkassaService.get_stats(branch_id='branch-a')
+    assert status == 200, result
+    stats = result['data']['stats']
+    assert Decimal(stats['today']['total_revenue']) == Decimal('-80.00')
+    assert stats['today']['order_count'] == 0
+    assert stats['today']['refund_count'] == 1
+    assert Decimal(stats['today']['refund_total']) == Decimal('80.00')
+    assert stats['cashier_performance'] == [{
+        'cashier_id': cashier_user.id,
+        'cashier_name': (
+            f'{cashier_user.first_name} {cashier_user.last_name}'
+        ).strip(),
+        'total_revenue': '-80',
+        'order_count': 0,
+        'refund_count': 1,
+    }]
+    assert len(stats['top_products']) == 1
+    assert stats['top_products'][0]['total_quantity'] == -1
+    assert Decimal(stats['top_products'][0]['total_revenue']) == Decimal('-80.00')

@@ -95,7 +95,8 @@ class TestInkassaFloor:
         )
         assert status == 200
         register = CashRegister.objects.first()
-        assert register.current_balance == Decimal('700')
+        assert register.current_balance == Decimal('1000')
+        assert Decimal(result['data']['balance_after']) == Decimal('700')
 
 
 class TestInkassaTreasuryRouting:
@@ -107,8 +108,10 @@ class TestInkassaTreasuryRouting:
         result, status = AdminInkassaService.perform(
             admin_user, {'cash': '400', 'uzcard': '300', 'humo': '100'})
         assert status == 200
-        # Only the 400 cash left the drawer (bug fix: cards never were in it).
-        assert CashRegister.objects.first().current_balance == Decimal('600')
+        # Cloud records a durable 400 cash command; it cannot overwrite the
+        # branch-owned raw register before the desktop acknowledges it.
+        assert CashRegister.objects.first().current_balance == Decimal('1000')
+        assert Decimal(result['data']['balance_after']) == Decimal('600')
         assert TreasuryAccount.objects.get(kind='SAFE').balance == Decimal('400')
         assert TreasuryAccount.objects.get(kind='BANK').balance == Decimal('400')
         assert Decimal(result['data']['cash_to_safe']) == Decimal('400')

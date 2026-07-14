@@ -71,6 +71,8 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
     idx = {d: i for i, d in enumerate(days)}
 
     revenue = [Decimal('0.00')] * len(days)
+    gross_revenue = [Decimal('0.00')] * len(days)
+    refunds = [Decimal('0.00')] * len(days)
     expense = [Decimal('0.00')] * len(days)
     channels = [{'hall': 0, 'delivery': 0, 'pickup': 0} for _ in days]
     heat = [[0] * len(HM_HOURS) for _ in HM_DAYS]
@@ -102,12 +104,24 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
     _pqs = tod_filter(Order.objects.filter(
         is_deleted=False, is_paid=True,
         paid_at__gte=lo, paid_at__lt=hi,
-    ).exclude(status='CANCELED'), tod_from, tod_to, field='paid_at')
+    ), tod_from, tod_to, field='paid_at')
     for paid_at, total in _pqs.values_list('paid_at', 'total_amount'):
         bday = (timezone.localtime(paid_at) - offset).date()
         i = idx.get(bday)
         if i is not None:
             revenue[i] += (total or Decimal('0'))
+            gross_revenue[i] += (total or Decimal('0'))
+
+    from admins.services.refund_reporting import refund_events
+    for refunded_at, amount in refund_events(
+        lo, hi, tod_from=tod_from, tod_to=tod_to,
+    ).values_list('refunded_at', 'amount'):
+        bday = (timezone.localtime(refunded_at) - offset).date()
+        i = idx.get(bday)
+        if i is not None:
+            value = amount or Decimal('0')
+            revenue[i] -= value
+            refunds[i] += value
 
     _eqs = tod_filter(CashboxExpense.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
@@ -117,7 +131,7 @@ def _series(d_from, d_to, tod_from=None, tod_to=None):
         if i is not None:
             expense[i] += (amount or Decimal('0'))
 
-    return days, revenue, expense, channels, heat
+    return days, revenue, gross_revenue, refunds, expense, channels, heat
 
 
 def _series_hourly(bday, tod_from=None, tod_to=None):
@@ -137,6 +151,8 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
     labels = [f'{h:02d}:00' for h in hours]
 
     revenue = [Decimal('0.00')] * 24
+    gross_revenue = [Decimal('0.00')] * 24
+    refunds = [Decimal('0.00')] * 24
     expense = [Decimal('0.00')] * 24
     channels = [{'hall': 0, 'delivery': 0, 'pickup': 0} for _ in range(24)]
     heat = [[0] * len(HM_HOURS) for _ in HM_DAYS]
@@ -162,11 +178,22 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
     _pqs = tod_filter(Order.objects.filter(
         is_deleted=False, is_paid=True,
         paid_at__gte=lo, paid_at__lt=hi,
-    ).exclude(status='CANCELED'), tod_from, tod_to, field='paid_at')
+    ), tod_from, tod_to, field='paid_at')
     for paid_at, total in _pqs.values_list('paid_at', 'total_amount'):
         i = hpos.get(timezone.localtime(paid_at).hour)
         if i is not None:
             revenue[i] += (total or Decimal('0'))
+            gross_revenue[i] += (total or Decimal('0'))
+
+    from admins.services.refund_reporting import refund_events
+    for refunded_at, amount in refund_events(
+        lo, hi, tod_from=tod_from, tod_to=tod_to,
+    ).values_list('refunded_at', 'amount'):
+        i = hpos.get(timezone.localtime(refunded_at).hour)
+        if i is not None:
+            value = amount or Decimal('0')
+            revenue[i] -= value
+            refunds[i] += value
 
     _eqs = tod_filter(CashboxExpense.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
@@ -175,7 +202,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
         if i is not None:
             expense[i] += (amount or Decimal('0'))
 
-    return labels, revenue, expense, channels, heat
+    return labels, revenue, gross_revenue, refunds, expense, channels, heat
 
 
 def sales_dashboard(range_token=None, date_from=None, date_to=None,
@@ -188,30 +215,36 @@ def sales_dashboard(range_token=None, date_from=None, date_to=None,
     # draw a 24-point line (one daily point can't). Otherwise per-business-day.
     hourly = (granularity or '').strip().lower() == 'hour' and d_from == d_to
     if hourly:
-        labels, revenue, expense, channels, heat = _series_hourly(d_from, tf, tt)
+        labels, revenue, gross_revenue, refunds, expense, channels, heat = _series_hourly(d_from, tf, tt)
         # Comparison line = the PREVIOUS business day's hourly revenue (day-over-day).
-        _, prev_rev, _, _, _ = _series_hourly(d_from - timedelta(days=1), tf, tt)
+        _, prev_rev, _, _, _, _, _ = _series_hourly(d_from - timedelta(days=1), tf, tt)
         span = 24
         day_labels = labels                 # "03:00".."02:00"
         channel_labels = labels
     else:
-        days, revenue, expense, channels, heat = _series(d_from, d_to, tf, tt)
+        days, revenue, gross_revenue, refunds, expense, channels, heat = _series(d_from, d_to, tf, tt)
         span = len(days)
         # Preceding window of equal length, aligned day-for-day, for the comparison line.
         prev_from = d_from - timedelta(days=span)
         prev_to = d_from - timedelta(days=1)
-        _, prev_rev, _, _, _ = _series(prev_from, prev_to, tf, tt)
+        _, prev_rev, _, _, _, _, _ = _series(prev_from, prev_to, tf, tt)
         day_labels = [d.isoformat() for d in days]
         channel_labels = day_labels
 
     month_revenue = sum(revenue, Decimal('0.00'))
+    month_gross_revenue = sum(gross_revenue, Decimal('0.00'))
+    refund_amount = sum(refunds, Decimal('0.00'))
     return {
         'range': {'from': d_from.isoformat(), 'to': d_to.isoformat(),
                   'days': span, 'granularity': 'hour' if hourly else 'day'},
         'monthRevenue': _uzs(month_revenue),
+        'monthGrossRevenue': _uzs(month_gross_revenue),
+        'refundAmount': _uzs(refund_amount),
         # Estimated gross margin (1 - assumed COGS fraction) until recipe costs wired.
         'grossMargin': float(Decimal('1') - DEFAULT_COGS_FRACTION),
         'revenue30': [_uzs(v) for v in revenue],
+        'grossRevenue30': [_uzs(v) for v in gross_revenue],
+        'refund30': [_uzs(v) for v in refunds],
         'expense30': [_uzs(v) for v in expense],
         'lastMonthRev': [_uzs(v) for v in prev_rev],
         'dayLabels': day_labels,

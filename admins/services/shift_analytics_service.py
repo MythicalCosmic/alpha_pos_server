@@ -148,7 +148,7 @@ def _reconciliation(shift):
 # ───────────────────────── per-shift rows ─────────────────────────
 
 def _cashier_shift_row(shift, att_map):
-    from base.models import Order, OrderItem
+    from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
     end = shift.end_time or timezone.now()
@@ -184,15 +184,27 @@ def _cashier_shift_row(shift, att_map):
         order__is_paid=True,
         order__paid_at__gte=start,
         order__paid_at__lte=end,
-    ).exclude(order__status='CANCELED').aggregate(
+    ).aggregate(
         units=Coalesce(Sum('quantity'), 0),
         lines=Count('id'),
+    )
+    from base.services.refund_lines import (
+        REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
+    )
+    refunded_items = refund_item_events(shift=shift)
+    refunded_item_totals = refunded_items.aggregate(
+        units=Coalesce(
+            Sum(refund_line_quantity(REFUND_EVENT_ALIAS)), 0,
+        ),
+        lines=Count(
+            'id', filter=Q(refund_event__source='ORDER_CANCEL'),
+        ),
     )
 
     paid = Order.objects.filter(
         is_deleted=False, cashier_id=shift.user_id, is_paid=True,
         paid_at__gte=start, paid_at__lte=end,
-    ).exclude(status='CANCELED')
+    )
     money = paid.aggregate(
         revenue=Coalesce(Sum('total_amount'), Decimal('0'), output_field=_DEC),
         paid_count=Count('id'),
@@ -200,7 +212,10 @@ def _cashier_shift_row(shift, att_map):
         discounted_orders=Count('id', filter=Q(discount_amount__gt=0) | Q(discount_percent__gt=0)),
         avg_discount_pct=Avg('discount_percent', filter=Q(discount_percent__gt=0)),
     )
-    revenue = money['revenue'] or Decimal('0')
+    refunds = OrderRefund.objects.filter(is_deleted=False, shift=shift)
+    from base.services.order_refund import refund_totals
+    refunded = refund_totals(refunds)
+    revenue = (money['revenue'] or Decimal('0')) - refunded['amount']
     paid_count = money['paid_count'] or 0
     # Tender split comes from base.services.tender, not from Order.payment_method:
     # a MIXED order used to contribute NOTHING to cash or card (its whole total sat
@@ -208,7 +223,17 @@ def _cashier_shift_row(shift, att_map):
     # containing a split payment. cash is derived (bill portion, not tendered).
     from base.services.tender import breakdown_for_orders
     _split, _detail = breakdown_for_orders(paid)
-    cash, card, payme = _split['cash'], _split['card'], _split['payme']
+    cash = _split['cash'] - refunded['cash_amount']
+    card = _split['card'] - refunded['card_amount']
+    payme = _split['payme'] - refunded['payme_amount']
+    unknown = _split['unknown'] - refunded['unknown_amount']
+    card_detail = {key: Decimal(value or 0) for key, value in _detail.items()}
+    for detail in refunds.values_list('card_detail', flat=True):
+        for method, raw in (detail or {}).items():
+            method = str(method or '').upper()
+            card_detail[method] = card_detail.get(method, Decimal('0')) - Decimal(
+                str(raw or 0)
+            )
     total = vol['total'] or 0
 
     return {
@@ -230,7 +255,14 @@ def _cashier_shift_row(shift, att_map):
             'cancel_rate_pct': _pct(vol['cancelled'] or 0, total),
             'by_type': {'hall': vol['hall'] or 0, 'delivery': vol['delivery'] or 0, 'pickup': vol['pickup'] or 0},
         },
-        'items': {'units_sold': items['units'] or 0, 'line_items': items['lines'] or 0},
+        'items': {
+            'units_sold': (
+                (items['units'] or 0) - (refunded_item_totals['units'] or 0)
+            ),
+            'line_items': (
+                (items['lines'] or 0) - (refunded_item_totals['lines'] or 0)
+            ),
+        },
         'money': {
             'revenue': _money(revenue),
             'cash': _money(cash),
@@ -242,9 +274,16 @@ def _cashier_shift_row(shift, att_map):
                 'cash': _money(cash),
                 'card': _money(card),
                 'payme': _money(payme),
-                **({'unknown': _money(_split['unknown'])} if _split['unknown'] else {}),
+                **({'unknown': _money(unknown)} if unknown else {}),
             },
-            'card_detail': {k: _money(v) for k, v in _detail.items()},
+            'card_detail': {k: _money(v) for k, v in card_detail.items()},
+        },
+        'refunds': {
+            'count': refunds.count(),
+            'total': _money(refunded['amount']),
+            'cash': _money(refunded['cash_amount']),
+            'card': _money(refunded['card_amount']),
+            'payme': _money(refunded['payme_amount']),
         },
         'discounts': {
             'total_given': _money(money['discount_total']),
@@ -266,7 +305,7 @@ def _cashier_shift_row(shift, att_map):
 
 
 def _kitchen_shift_row(shift, att_map, target_prep_seconds):
-    from base.models import Order, OrderItem
+    from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
     end = shift.end_time or timezone.now()
@@ -337,7 +376,7 @@ def _hourly_daily(shifts):
     Keeping two event streams is essential around shift/cutoff boundaries: a
     ticket contributes demand when it was opened and money when it settled.
     """
-    from base.models import Order
+    from base.models import Order, OrderRefund
     if not shifts:
         return {'by_hour': [], 'by_date': [], 'peak_hour': None}
 
@@ -357,9 +396,12 @@ def _hourly_daily(shifts):
             paid_at__gte=window_start,
             paid_at__lte=window_end,
         )
-        .exclude(status='CANCELED')
         .values_list('paid_at', 'total_amount')
     )
+    refunded_rows = OrderRefund.objects.filter(
+        is_deleted=False,
+        shift_id__in=[s.id for s in shifts],
+    ).values_list('refunded_at', 'amount')
 
     by_hour = {h: {'orders': 0, 'revenue': Decimal('0')} for h in range(24)}
     by_date = {}
@@ -379,6 +421,15 @@ def _hourly_daily(shifts):
         if total_amount:
             by_hour[h]['revenue'] += total_amount
             slot['revenue'] += total_amount
+
+    for refunded_at, amount in refunded_rows:
+        local = timezone.localtime(refunded_at)
+        h = local.hour
+        d = local.date().isoformat()
+        slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
+        if amount:
+            by_hour[h]['revenue'] -= amount
+            slot['revenue'] -= amount
 
     hour_list = [
         {'hour': h, 'orders': by_hour[h]['orders'], 'revenue': _money(by_hour[h]['revenue'])}
@@ -597,7 +648,7 @@ def shift_handover_report(shift):
     speed, punctuality, cash reconciliation) PLUS every receipt, a what-sold
     product breakdown, and the shift's peak hours.
     """
-    from base.models import Order, OrderItem
+    from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
     end = shift.end_time or timezone.now()
@@ -620,8 +671,8 @@ def shift_handover_report(shift):
             paid_at__gte=start,
             paid_at__lte=end,
         )
-        .exclude(status='CANCELED')
     )
+    refund_qs = OrderRefund.objects.filter(is_deleted=False, shift=shift)
 
     # Every receipt taken during the shift.
     receipts = []
@@ -657,29 +708,71 @@ def shift_handover_report(shift):
     # What sold: per-product quantity, how many orders it appeared in, revenue.
     from base.services.revenue import net_line_revenue
     line_total = net_line_revenue()
-    product_rows = (
-        OrderItem.objects.filter(
+    def product_rows(qs, *, refund=False):
+        from base.services.refund_lines import (
+            REFUND_EVENT_ALIAS, refund_line_quantity, refund_line_revenue,
+        )
+        return (
+            qs
+            .values('product_id', 'product__name')
+            .annotate(
+                units=Coalesce(Sum(
+                    refund_line_quantity(REFUND_EVENT_ALIAS)
+                    if refund else 'quantity'
+                ), 0),
+                orders=Count(
+                    'order_id',
+                    filter=(
+                        Q(refund_event__source='ORDER_CANCEL')
+                        if refund else None
+                    ),
+                    distinct=True,
+                ),
+                revenue=Coalesce(
+                    Sum(
+                        refund_line_revenue(REFUND_EVENT_ALIAS)
+                        if refund else line_total
+                    ),
+                    Decimal('0'), output_field=_DEC,
+                ),
+            )
+        )
+
+    sold_items = OrderItem.objects.filter(
             is_deleted=False,
             order__in=paid_qs,
-        )
-        .values('product_id', 'product__name')
-        .annotate(
-            units_sold=Coalesce(Sum('quantity'), 0),
-            times_sold=Count('order', distinct=True),
-            revenue=Coalesce(Sum(line_total), Decimal('0'), output_field=_DEC),
-        )
-        .order_by('-units_sold')
     )
-    products = [
-        {
-            'product_id': r['product_id'],
-            'name': r['product__name'],
-            'units_sold': r['units_sold'] or 0,
-            'times_sold': r['times_sold'] or 0,        # distinct orders it was in
-            'revenue': _money(r['revenue']),
-        }
-        for r in product_rows
-    ]
+    from base.services.refund_lines import refund_item_events
+    refunded_items = refund_item_events(
+        id__in=refund_qs.values('id'),
+    )
+    product_net = {}
+    for sign, rows in (
+        (1, product_rows(sold_items)),
+        (-1, product_rows(refunded_items, refund=True)),
+    ):
+        for value in rows:
+            key = (value['product_id'], value['product__name'])
+            bucket = product_net.setdefault(
+                key,
+                {'units': 0, 'orders': 0, 'refunds': 0, 'revenue': Decimal('0')},
+            )
+            bucket['units'] += sign * int(value['units'] or 0)
+            if sign > 0:
+                bucket['orders'] += int(value['orders'] or 0)
+            else:
+                bucket['refunds'] += int(value['orders'] or 0)
+            bucket['revenue'] += sign * Decimal(value['revenue'] or 0)
+    products = [{
+        'product_id': key[0],
+        'name': key[1],
+        'units_sold': value['units'],
+        'times_sold': value['orders'],
+        'times_refunded': value['refunds'],
+        'revenue': _money(value['revenue']),
+    } for key, value in sorted(
+        product_net.items(), key=lambda item: item[1]['units'], reverse=True,
+    ) if value['units'] or value['revenue']]
 
     distribution = _hourly_daily([shift])  # by_hour / peak_hour for this shift
 
@@ -715,6 +808,16 @@ def shift_handover_report(shift):
         'cash_expenses': cash_expenses,
         'receipts': receipts,
         'receipt_count': len(receipts),
+        'refunds': [{
+            'refund_id': refund.id,
+            'order_id': refund.order_id,
+            'amount': _money(refund.amount),
+            'cash': _money(refund.cash_amount),
+            'card': _money(refund.card_amount),
+            'payme': _money(refund.payme_amount),
+            'refunded_at': refund.refunded_at.isoformat(),
+            'reason': OrderRefund.visible_reason(refund.reason),
+        } for refund in refund_qs.select_related('order').order_by('refunded_at')],
         'products': products,
         'best_seller': products[0] if products else None,
         'distribution': distribution,

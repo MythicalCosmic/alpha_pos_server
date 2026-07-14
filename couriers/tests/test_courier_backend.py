@@ -13,7 +13,7 @@ import pytest
 from django.test import Client
 from django.utils import timezone
 
-from base.models import User, Order, Session
+from base.models import User, Order, OrderPayment, OrderRefund, Session
 from base.repositories.session import SessionRepository
 from base.security.hashing import hash_password
 from couriers import services, payments, geo
@@ -75,17 +75,29 @@ def test_cash_payment_marks_order_paid_and_records():
     assert order.is_paid and order.payment_method == 'CASH' and order.paid_at
 
 
-def test_refund_reverses_order_paid_state():
+def test_refund_appends_ledger_and_preserves_paid_evidence():
     c = _courier()
     order, _ = _order(c)
     payment, _ = payments.create_payment(c, order, 'CASH')
+    order.refresh_from_db()
+    original_paid_at = order.paid_at
     refunded, err = payments.refund_payment(payment)
     assert err is None and refunded.status == CourierPayment.Status.REFUNDED
     order.refresh_from_db()
-    assert not order.is_paid and order.payment_method is None and order.paid_at is None
-    # second refund is idempotent (no error, stays refunded)
+    payment.refresh_from_db()
+    assert order.is_paid and order.payment_method == 'CASH'
+    assert order.paid_at == original_paid_at
+    assert payment.status == CourierPayment.Status.PAID
+    assert payment.refunded_at is None
+    event = OrderRefund.objects.get(order=order)
+    assert event.source == OrderRefund.Source.COURIER_PAYMENT
+    assert event.amount == Decimal('100000')
+    assert event.cash_amount == Decimal('100000')
+    assert event.drawer_cash_amount == Decimal('0')
+    # A replay returns legacy wire status but does not append/debit twice.
     again, err = payments.refund_payment(refunded)
     assert err is None and again.status == CourierPayment.Status.REFUNDED
+    assert OrderRefund.objects.filter(order=order).count() == 1
 
 
 def test_partial_then_completing_payment_sets_mixed():
@@ -99,12 +111,233 @@ def test_partial_then_completing_payment_sets_mixed():
     assert order.is_paid and order.payment_method == 'MIXED'
 
 
+def test_split_provider_refunds_are_multi_event_and_never_touch_drawer():
+    from base.models import CashRegister
+    from base.services.tender import net_breakdown
+
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    cash, err = payments.create_payment(
+        c, order, 'CASH', amount=40000, external_id='split-cash-refund',
+    )
+    assert err is None
+    qr, err = payments.create_payment(
+        c, order, 'QR', amount=60000, external_id='split-qr-refund',
+    )
+    assert err is None
+
+    first, err = payments.refund_payment(cash)
+    assert err is None and first.status == CourierPayment.Status.REFUNDED
+    second, err = payments.refund_payment(qr)
+    assert err is None and second.status == CourierPayment.Status.REFUNDED
+
+    events = OrderRefund.objects.filter(order=order).order_by('refunded_at')
+    assert events.count() == 2
+    assert sum((event.amount for event in events), Decimal('0')) == Decimal('100000')
+    assert sum((event.drawer_cash_amount for event in events), Decimal('0')) == 0
+    assert not CashRegister.objects.filter(branch_id=order.branch_id).exists()
+    order.refresh_from_db()
+    assert order.is_paid and order.payment_method == Order.PaymentMethod.MIXED
+    assert CourierPayment.objects.filter(
+        order=order, status=CourierPayment.Status.PAID,
+    ).count() == 2
+    split, _detail = net_breakdown(Order.objects.filter(pk=order.pk), events)
+    assert sum(split.values(), Decimal('0')) == 0
+
+
+def test_blank_external_id_retry_reuses_one_durable_event():
+    c = _courier()
+    order, _ = _order(c)
+
+    first, err = payments.create_payment(c, order, 'CASH')
+    assert err is None
+    replay, err = payments.create_payment(c, order, 'CASH')
+
+    assert err is None
+    assert replay.pk == first.pk
+    assert first.external_id.startswith('manual:')
+    assert CourierPayment.objects.filter(order=order).count() == 1
+
+
+def test_blank_external_id_retry_does_not_resurrect_refunded_collection():
+    c = _courier()
+    order, _ = _order(c)
+    payment, _ = payments.create_payment(c, order, 'CASH')
+    payment, err = payments.refund_payment(payment)
+    assert err is None
+
+    replay, err = payments.create_payment(c, order, 'CASH')
+
+    assert err is None
+    assert replay.pk == payment.pk
+    assert replay.status == CourierPayment.Status.REFUNDED
+    assert CourierPayment.objects.filter(order=order).count() == 1
+    order.refresh_from_db()
+    assert order.is_paid is True
+    assert OrderRefund.objects.filter(order=order).count() == 1
+
+
+def test_courier_payment_aggregate_cannot_exceed_order_total():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    first, err = payments.create_payment(c, order, 'CASH', amount=60000)
+    assert err is None
+
+    rejected, err = payments.create_payment(c, order, 'QR', amount=40001)
+
+    assert rejected is None
+    assert 'exceeds remaining order amount' in err
+    assert CourierPayment.objects.filter(order=order).count() == 1
+    first.refresh_from_db()
+    assert first.status == CourierPayment.Status.PAID
+    order.refresh_from_db()
+    assert order.is_paid is False
+
+
+def test_distinct_ids_allow_intentional_equal_split_without_overpayment():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+
+    first, err = payments.create_payment(
+        c, order, 'CASH', amount=50000, external_id='split-part-1',
+    )
+    assert err is None
+    second, err = payments.create_payment(
+        c, order, 'CASH', amount=50000, external_id='split-part-2',
+    )
+
+    assert err is None
+    assert first.pk != second.pk
+    order.refresh_from_db()
+    assert order.is_paid is True
+    assert order.payment_method == 'CASH'
+
+
+def test_till_and_courier_evidence_recompute_and_report_as_one_split():
+    from base.services.tender import order_tender_split
+
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    OrderPayment.objects.create(
+        order=order, method=Order.PaymentMethod.CASH, amount=40000,
+        branch_id=order.branch_id,
+    )
+
+    payment, err = payments.create_payment(c, order, 'QR', amount=60000)
+
+    assert err is None
+    assert payment.status == CourierPayment.Status.PAID
+    order.refresh_from_db()
+    assert order.is_paid is True
+    assert order.payment_method == Order.PaymentMethod.MIXED
+    split, _detail = order_tender_split(order)
+    assert split['cash'] == Decimal('40000')
+    assert split['payme'] == Decimal('60000')
+    assert sum(split.values()) == order.total_amount
+
+
+def test_drawer_cash_excludes_all_courier_collection_even_when_till_tender_is_large():
+    from base.services.tender import order_tender_sources
+
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    OrderPayment.objects.create(
+        order=order,
+        method=Order.PaymentMethod.CASH,
+        amount=100000,  # raw tender may include money/change beyond its bill leg
+        branch_id=order.branch_id,
+    )
+    CourierPayment.objects.create(
+        order=order,
+        courier=c,
+        provider=CourierPayment.Provider.CASH,
+        amount=50000,
+        status=CourierPayment.Status.PAID,
+        paid_at=timezone.now(),
+        external_id='historical-mixed-cash-sources',
+        branch_id=order.branch_id,
+    )
+
+    split, _detail, drawer_cash = order_tender_sources(order)
+
+    assert split['cash'] == Decimal('100000')
+    assert drawer_cash == Decimal('50000')
+
+
+def test_refund_keeps_order_paid_when_separate_till_payment_covers_it():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    till = OrderPayment.objects.create(
+        order=order, method=Order.PaymentMethod.HUMO, amount=100000,
+        branch_id=order.branch_id,
+    )
+    # Historical mixed state from before aggregate validation was introduced.
+    courier = CourierPayment.objects.create(
+        order=order, courier=c, provider=CourierPayment.Provider.CASH,
+        amount=100000, status=CourierPayment.Status.PAID,
+        paid_at=timezone.now(), external_id='historical-double-settlement',
+        branch_id=order.branch_id,
+    )
+    Order.objects.filter(pk=order.pk).update(
+        is_paid=True, payment_method=Order.PaymentMethod.MIXED,
+        paid_at=timezone.now(),
+    )
+
+    refunded, err = payments.refund_payment(courier)
+
+    assert err is None
+    assert refunded.status == CourierPayment.Status.REFUNDED
+    order.refresh_from_db()
+    assert order.is_paid is True
+    # Both positive settlement events remain frozen; the refund ledger supplies
+    # the dated negative courier leg to reports.
+    assert order.payment_method == Order.PaymentMethod.MIXED
+    courier.refresh_from_db()
+    assert courier.status == CourierPayment.Status.PAID
+    assert OrderRefund.objects.get(order=order).drawer_cash_amount == 0
+
+
+def test_webhook_cannot_activate_pending_payment_beyond_remaining_amount():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    paid, err = payments.create_payment(c, order, 'CASH', amount=70000)
+    assert err is None and paid.status == CourierPayment.Status.PAID
+    pending = CourierPayment.objects.create(
+        order=order, courier=c, provider='QR', amount=30001,
+        status=CourierPayment.Status.PENDING, external_id='too-large-pending',
+        branch_id=order.branch_id,
+    )
+
+    activated, err = payments.apply_webhook(
+        external_id=pending.external_id, status='paid',
+    )
+
+    assert activated is None
+    assert 'exceeds remaining order amount' in err
+    pending.refresh_from_db()
+    assert pending.status == CourierPayment.Status.PENDING
+
+
 def test_invalid_provider_and_amount_rejected():
     c = _courier()
     order, _ = _order(c)
     assert payments.create_payment(c, order, 'BTC')[1]
     assert payments.create_payment(c, order, 'CASH', amount=-5)[1]
     assert payments.create_payment(c, order, 'CASH', amount='abc')[1]
+    assert payments.create_payment(c, order, 'CASH', amount=1.5)[1]
+
+
+def test_shiftless_courier_settlement_cannot_bypass_till_for_nondelivery_order():
+    c = _courier()
+    order, _ = _order(c)
+    Order.objects.filter(pk=order.pk).update(order_type=Order.OrderType.HALL)
+    order.refresh_from_db()
+
+    payment, err = payments.create_payment(c, order, 'CASH')
+
+    assert payment is None
+    assert 'only for delivery orders' in err
+    assert not CourierPayment.objects.filter(order=order).exists()
 
 
 def test_webhook_confirms_pending_payment():
@@ -119,6 +352,136 @@ def test_webhook_confirms_pending_payment():
     assert payment.status == CourierPayment.Status.PAID
     order.refresh_from_db()
     assert order.is_paid and order.payment_method == 'PAYME'
+
+
+def test_webhook_external_id_replay_creates_only_one_money_event():
+    c = _courier()
+    order, _ = _order(c)
+
+    first, err = payments.apply_webhook(
+        external_id='gateway-event-1', status='paid', order_id=order.id,
+        provider='QR', amount=100000,
+    )
+    assert err is None
+    replay, err = payments.apply_webhook(
+        external_id='gateway-event-1', status='paid', order_id=order.id,
+        provider='QR', amount=100000,
+    )
+
+    assert err is None
+    assert replay.pk == first.pk
+    assert CourierPayment.objects.filter(external_id='gateway-event-1').count() == 1
+
+
+def test_gateway_external_id_cannot_be_reused_for_another_order():
+    c = _courier()
+    first_order, _ = _order(c)
+    second_order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, first_order, 'QR', external_id='gateway-event-shared',
+    )
+    assert err is None
+
+    duplicate, err = payments.create_payment(
+        c, second_order, 'QR', external_id='gateway-event-shared',
+    )
+
+    assert duplicate is None
+    assert 'another order' in err
+    assert CourierPayment.objects.filter(external_id='gateway-event-shared').count() == 1
+    second_order.refresh_from_db()
+    assert second_order.is_paid is False
+
+
+def test_refunded_external_event_cannot_be_resurrected_by_late_paid_replay():
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'QR', external_id='gateway-refunded-event',
+    )
+    assert err is None
+    payment, err = payments.refund_payment(payment)
+    assert err is None
+    refunded_at = payment.refunded_at
+
+    replay, err = payments.apply_webhook(
+        external_id='gateway-refunded-event', status='paid',
+        order_id=order.id, provider='QR', amount=100000,
+    )
+    assert err is None
+    assert replay.status == CourierPayment.Status.REFUNDED
+    assert replay.refunded_at == refunded_at
+
+    direct_replay, err = payments.create_payment(
+        c, order, 'QR', external_id='gateway-refunded-event',
+    )
+    assert err is None
+    assert direct_replay.status == CourierPayment.Status.REFUNDED
+    assert direct_replay.refunded_at == refunded_at
+    order.refresh_from_db()
+    payment.refresh_from_db()
+    assert order.is_paid is True
+    assert order.paid_at is not None
+    assert payment.status == CourierPayment.Status.PAID
+    assert payment.refunded_at is None
+    assert OrderRefund.objects.filter(order=order).count() == 1
+
+
+def test_external_event_replay_rejects_changed_money_fields():
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'QR', amount=100000, external_id='gateway-fixed-identity',
+    )
+    assert err is None
+
+    replay, err = payments.create_payment(
+        c, order, 'QR', amount=90000, external_id='gateway-fixed-identity',
+    )
+
+    assert replay is None
+    assert 'different amount' in err
+    payment.refresh_from_db()
+    assert payment.amount == 100000
+
+
+def test_terminal_webhook_states_ignore_late_conflicting_callbacks():
+    c = _courier()
+    paid_order, _ = _order(c)
+    paid = CourierPayment.objects.create(
+        order=paid_order, courier=c, provider='QR', amount=100000,
+        status=CourierPayment.Status.PENDING, external_id='gateway-paid-first',
+        branch_id='cloud',
+    )
+    paid, err = payments.apply_webhook(
+        external_id=paid.external_id, status='paid',
+    )
+    assert err is None
+    replay, err = payments.apply_webhook(
+        external_id=paid.external_id, status='failed',
+    )
+    assert err is None
+    assert replay.status == CourierPayment.Status.PAID
+    paid_order.refresh_from_db()
+    assert paid_order.is_paid is True
+
+    failed_order, _ = _order(c)
+    failed = CourierPayment.objects.create(
+        order=failed_order, courier=c, provider='QR', amount=100000,
+        status=CourierPayment.Status.PENDING, external_id='gateway-failed-first',
+        branch_id='cloud',
+    )
+    failed, err = payments.apply_webhook(
+        external_id=failed.external_id, status='failed',
+    )
+    assert err is None
+    replay, err = payments.apply_webhook(
+        external_id=failed.external_id, status='paid',
+    )
+    assert err is None
+    assert replay.status == CourierPayment.Status.FAILED
+    failed_order.refresh_from_db()
+    assert failed_order.is_paid is False
 
 
 # --------------------------------------------------------------------------- #

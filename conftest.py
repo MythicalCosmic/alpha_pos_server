@@ -22,6 +22,13 @@ django.setup()
 
 
 @pytest.fixture(autouse=True)
+def _single_branch_cloud_target(settings):
+    """Match the explicit single-branch target used by production."""
+    if not getattr(settings, 'CLOUD_DEFAULT_TARGET_BRANCH_ID', ''):
+        settings.CLOUD_DEFAULT_TARGET_BRANCH_ID = 'branch1'
+
+
+@pytest.fixture(autouse=True)
 def _clear_caches():
     """LocMemCache is process-wide and survives across tests; explicitly
     purge it so cached settings singletons (NotificationSettings,

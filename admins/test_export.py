@@ -79,6 +79,20 @@ class TestBuildExport:
         assert товары[0].find('Наименование').text == 'Margherita'
         assert товары[0].find('Количество').text == '2'
 
+    def test_excludes_soft_deleted_order_lines(self, regular_user):
+        from base.models import OrderItem
+
+        order = _make_order(regular_user)
+        _add_item(order, 'Live line', '50000', 1)
+        _add_item(order, 'Removed line', '50000', 1)
+        OrderItem.objects.get(order=order, product__name='Removed line').delete()
+
+        xml, count = build_export(date(2026, 5, 1), timezone.localdate())
+
+        assert count == 1
+        assert b'Live line' in xml
+        assert b'Removed line' not in xml
+
     def test_excludes_unpaid_by_default(self, regular_user):
         _make_order(regular_user, is_paid=False)
         _, count = build_export(date(2026, 5, 1), timezone.localdate())
