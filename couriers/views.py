@@ -162,6 +162,10 @@ def stats_today(request):
         provider=CourierPayment.Provider.CASH,
         paid_at__gte=start, paid_at__lt=end)
         .aggregate(s=Sum('amount'))['s'] or 0)
+    cash_refunded = services.courier_refund_events(
+        request.courier, start=start, end=end,
+    ).aggregate(s=Sum('cash_amount'))['s'] or 0
+    cash_collected -= cash_refunded
     started = request.courier.shift_started_at
     active_hours = ''
     if started:
@@ -197,12 +201,33 @@ def balance(request):
     for p in (CourierPayment.objects.filter(courier=courier)
               .exclude(status=CourierPayment.Status.PENDING)
               .order_by('-created_at')[:20]):
-        signed = -int(p.amount) if p.status == CourierPayment.Status.REFUNDED else int(p.amount)
-        verb = 'Refund' if p.status == CourierPayment.Status.REFUNDED else 'Collected'
-        when = p.refunded_at or p.paid_at or p.created_at
+        signed = int(p.amount)
+        verb = 'Collected'
+        when = p.paid_at or p.created_at
         rows.append((when, presenters.ledger_row(
             at=when, kind='payment', amount=signed, order=p.order_id,
             label=f'{verb} · {p.get_provider_display()} · order #{p.order_id}')))
+    refund_rows = list(
+        services.courier_refund_events(courier)
+        .order_by('-refunded_at', '-pk')[:20]
+    )
+    providers = {
+        external_id: provider
+        for external_id, provider in CourierPayment.objects.filter(
+            courier=courier,
+            external_id__in=[refund.source_id for refund in refund_rows],
+        ).values_list('external_id', 'provider')
+    }
+    provider_labels = dict(CourierPayment.Provider.choices)
+    for refund in refund_rows:
+        provider = provider_labels.get(providers.get(refund.source_id), 'Provider')
+        rows.append((refund.refunded_at, presenters.ledger_row(
+            at=refund.refunded_at,
+            kind='refund',
+            amount=-int(refund.amount),
+            order=refund.order_id,
+            label=f'Refund - {provider} - order #{refund.order_id}',
+        )))
     rows.sort(key=lambda r: r[0] or timezone.now(), reverse=True)
     ledger = [row for _, row in rows[:30]]
 
@@ -401,7 +426,10 @@ def push_token(request):
 @courier_required
 def payment_create(request):
     """POST /payments/create/  {order_id, provider, amount?} -> {payment_id, status, link}.
-    Records a courier-collected payment as PAID and fires ``payment.paid``."""
+    Records provider evidence collected at the door and fires ``payment.paid``.
+    This deliberately has no cashier-shift requirement: ownership is enforced
+    against the delivery assignment, and the service never writes till money or
+    ``OrderPayment`` rows."""
     data, error = parse_json_body(request)
     if error:
         return JsonResponse(error[0], status=error[1])

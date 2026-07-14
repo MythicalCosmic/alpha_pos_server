@@ -58,6 +58,11 @@ services:
       DB_PORT: "5432"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       USE_REDIS: ${USE_REDIS:-True}
+      # This installation currently has one operational branch. Branch-scoped
+      # cloud CRUD that omits branch_id targets it explicitly instead of
+      # creating invisible branch_id=cloud rows. Multi-branch deployments must
+      # set this empty and pass branch_id per operation.
+      CLOUD_DEFAULT_TARGET_BRANCH_ID: ${CLOUD_DEFAULT_TARGET_BRANCH_ID:-branch1}
       # Pin MEDIA_ROOT to the persisted volume below so HR documents
       # (ID scans, contracts, medical books) survive container rebuilds.
       MEDIA_ROOT: /app/private_media
@@ -83,12 +88,19 @@ services:
       args:
         GIT_SHA: ${GIT_SHA:-unknown}
     image: alpha_pos_server:local
-    command: python manage.py run_customer_bot
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ -n "$${CUSTOMER_BOT_TOKEN:-}" ]; then
+          exec python manage.py run_customer_bot
+        fi
+        echo "CUSTOMER_BOT_TOKEN is unset; bot poller is parked."
+        exec tail -f /dev/null
     # unless-stopped: restart the poller on ANY exit AND on host reboot. Docker does
     # NOT auto-start `on-failure` containers after a reboot, which left the customer
-    # bot down after a server restart. CUSTOMER_BOT_TOKEN is reliably present (.env
-    # via deploy.sh keep() + apply-edge.sh), so the old missing-token crash-loop
-    # concern (the reason on-failure was chosen) doesn't apply in practice.
+    # bot down after a server restart. When no token is configured the command parks
+    # cleanly instead of creating a restart loop.
     restart: unless-stopped
     # The shared image bakes an HTTP `/healthz` HEALTHCHECK for `web`; this poller
     # runs no web server on :8000, so that probe always fails and marks a perfectly
@@ -105,6 +117,7 @@ services:
       DB_HOST: db
       DB_PORT: "5432"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CLOUD_DEFAULT_TARGET_BRANCH_ID: ${CLOUD_DEFAULT_TARGET_BRANCH_ID:-branch1}
     depends_on:
       web:
         condition: service_started

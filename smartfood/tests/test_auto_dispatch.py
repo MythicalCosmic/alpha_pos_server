@@ -24,7 +24,7 @@ class TestAutoDispatch:
     def test_dispatches_to_connected_cashier(self, cfg, active_shift, cashier, product, customer):
         from base.services import presence
         from smartfood.services.dispatch_service import DispatchService
-        presence.mark_device_live('till-1', 'cloud', cashier.id)     # this till is online
+        presence.mark_device_live('till-1', 'branch-a', cashier.id)  # this till is online
         o = _bot_order(customer, product)
         body, st = DispatchService.auto_dispatch(o.id)
         assert st == 200, body
@@ -45,7 +45,7 @@ class TestAutoDispatch:
         # till online + reports the cashier, but the cashier has NO active shift
         from base.services import presence
         from smartfood.services.dispatch_service import DispatchService
-        presence.mark_device_live('till-1', 'cloud', cashier.id)
+        presence.mark_device_live('till-1', 'branch-a', cashier.id)
         o = _bot_order(customer, product)
         DispatchService.auto_dispatch(o.id)
         o.refresh_from_db()
@@ -53,7 +53,7 @@ class TestAutoDispatch:
 
     def test_connected_pos_endpoint(self, operator_client, cfg, cashier):
         from base.services import presence
-        presence.mark_device_live('till-1', 'cloud', cashier.id)
+        presence.mark_device_live('till-1', 'branch-a', cashier.id)
         r = operator_client.get('/api/admins/smartfood/pos/connected')
         assert r.status_code == 200, r.content
         items = r.json()['data']['items']
@@ -72,7 +72,7 @@ class TestCreateAutoDispatchIntegration:
         from smartfood.services.order_service import BotOrderService
         from smartfood.models import BotOrder
         settings.SMARTFOOD_AUTO_DISPATCH = True
-        presence.mark_device_live('till-1', 'cloud', cashier.id)
+        presence.mark_device_live('till-1', 'branch-a', cashier.id)
         res, st = BotOrderService.create(
             customer, items=[{'product_id': product.id, 'quantity': 1}],
             order_type='DELIVERY', address_id=address.id)

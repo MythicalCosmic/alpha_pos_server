@@ -114,6 +114,8 @@ def shift_start(request):
     result, status_code = ShiftService.start_shift(
         user_id=user_id,
         shift_template_id=data.get('shift_template_id'),
+        actor=request.user,
+        branch_id=data.get('branch_id'),
     )
     return JsonResponse(result, status=status_code)
 

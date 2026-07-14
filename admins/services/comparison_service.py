@@ -16,8 +16,8 @@ Conventions (matching the rest of admins/services):
   discount_amount so it never depends on `subtotal` being back-filled on old rows.
 - Line-item revenue proportionally allocates Order.discount_amount, matching the
   product analytics and reconciling discounted orders.
-- refunds / gross_profit / margin are OMITTED: the schema has no refund record and no
-  product-cost/COGS field, so per the FE spec we drop KPIs we have no real data for.
+- Refunds are separate events attributed to refunded_at. Net revenue and product
+  movement subtract those events without erasing the original paid_at sale.
 - Every aggregation happens in the DB (annotate/aggregate + Trunc/Extract), two
   filtered passes — one per period.
 """
@@ -34,13 +34,12 @@ from django.db.models.functions import (
 from django.utils import timezone as djtz
 
 from base.models import Order, OrderItem
-from base.services.revenue import net_line_revenue
+from admins.services.refund_reporting import (
+    net_grouped_items, refund_events, refund_item_events,
+)
 
-# price * quantity for a line; 18 digits so a wide window can't overflow the sum.
-_LINE_TOTAL = net_line_revenue()
-
-# A "sale" everywhere below: not deleted, paid, not canceled.
-_SALES = Q(is_deleted=False, is_paid=True) & ~Q(status='CANCELED')
+# A paid row remains a historical sale even if it is later cancelled/refunded.
+_SALES = Q(is_deleted=False, is_paid=True)
 
 _TRUNC = {'day': TruncDay, 'week': TruncWeek, 'month': TruncMonth}
 
@@ -112,12 +111,19 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         settled_orders = settled_orders.filter(branch_id=branch_id)
         operational_orders = operational_orders.filter(branch_id=branch_id)
 
+    refunds = refund_events(lo, hi)
+    if branch_id:
+        refunds = refunds.filter(branch_id=branch_id)
+
     items = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__paid_at__gte=lo, order__paid_at__lt=hi,
-    ).exclude(order__status='CANCELED')
+    )
     if branch_id:
         items = items.filter(order__branch_id=branch_id)
+    refund_items = refund_item_events(lo, hi)
+    if branch_id:
+        refund_items = refund_items.filter(order__branch_id=branch_id)
 
     # -- headline scalars ---------------------------------------------------
     k = settled_orders.aggregate(
@@ -125,12 +131,16 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         discounts=Sum('discount_amount'),
         orders=Count('id'),
     )
-    net = _som(k['net'])
+    sale_net = _som(k['net'])
+    refund_amount = _som(refunds.aggregate(v=Sum('amount'))['v'])
+    net = sale_net - refund_amount
     discounts = _som(k['discounts'])
     settled_count = k['orders'] or 0
     operational_count = operational_orders.count()
-    gross = net + discounts                       # == Sum(subtotal), COGS-free
-    n_items = int(items.aggregate(q=Sum('quantity'))['q'] or 0)
+    gross = sale_net + discounts                  # pre-discount sale revenue
+    gross_items = int(items.aggregate(q=Sum('quantity'))['q'] or 0)
+    refunded_items = int(refund_items.aggregate(q=Sum('quantity'))['q'] or 0)
+    n_items = gross_items - refunded_items
 
     # -- revenue timeseries (bucket -> so'm) --------------------------------
     trunc = _TRUNC.get(granularity, TruncDay)
@@ -151,21 +161,38 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         d = _local_date(r['bucket'], tz)
         if d is not None:
             ts[d] = _som(r['v'])
+    refund_clock = ExpressionWrapper(
+        F('refunded_at') - offset,
+        output_field=DateTimeField(),
+    )
+    for r in (refunds.annotate(bucket=trunc(refund_clock, tzinfo=tz))
+                     .values('bucket').annotate(v=Sum('amount'))):
+        d = _local_date(r['bucket'], tz)
+        if d is not None:
+            ts[d] = ts.get(d, 0) - _som(r['v'])
 
     # -- categories / products ---------------------------------------------
     cat = {}
-    for r in (items.values('product__category_id', 'product__category__name')
-                   .annotate(revenue=Sum(_LINE_TOTAL), qty=Sum('quantity'))):
+    for r in net_grouped_items(
+        items, refund_items,
+        ('product__category_id', 'product__category__name'),
+    ):
         cat[r['product__category_id']] = {
             'name': r['product__category__name'],
             'revenue': _som(r['revenue']), 'qty': int(r['qty'] or 0),
+            'gross_revenue': _som(r['gross_revenue']),
+            'refund_amount': _som(r['refund_revenue']),
         }
     prod = {}
-    for r in (items.values('product_id', 'product__name', 'product__category__name')
-                   .annotate(revenue=Sum(_LINE_TOTAL), qty=Sum('quantity'))):
+    for r in net_grouped_items(
+        items, refund_items,
+        ('product_id', 'product__name', 'product__category__name'),
+    ):
         prod[r['product_id']] = {
             'name': r['product__name'], 'category': r['product__category__name'],
             'revenue': _som(r['revenue']), 'qty': int(r['qty'] or 0),
+            'gross_revenue': _som(r['gross_revenue']),
+            'refund_amount': _som(r['refund_revenue']),
         }
 
     # -- hour / weekday / hour×weekday (order counts) -----------------------
@@ -186,8 +213,8 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
     # -- payment methods / order types (revenue) ----------------------------
     # Canonical tenders (cash / card / payme). A MIXED order is attributed to its
     # real tenders instead of a `MIXED` bucket; cash is the bill portion.
-    from base.services.tender import breakdown_for_orders
-    _tsplit, _ = breakdown_for_orders(settled_orders)
+    from base.services.tender import net_breakdown
+    _tsplit, _ = net_breakdown(settled_orders, refunds)
     pay = {k: _som(_tsplit[k]) for k in ('cash', 'card', 'payme')}
     if _tsplit['unknown']:
         pay['unknown'] = _som(_tsplit['unknown'])
@@ -195,10 +222,16 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
     for r in settled_orders.values('order_type').annotate(v=Sum('total_amount')):
         key = r['order_type'] or 'HALL'
         otype[key] = otype.get(key, 0) + _som(r['v'])
+    for r in refunds.values('order__order_type').annotate(v=Sum('amount')):
+        key = r['order__order_type'] or 'HALL'
+        otype[key] = otype.get(key, 0) - _som(r['v'])
 
     # -- branch / cashier ---------------------------------------------------
     branch = {r['branch_id']: _som(r['v']) for r in
               settled_orders.values('branch_id').annotate(v=Sum('total_amount'))}
+    for r in refunds.values('branch_id').annotate(v=Sum('amount')):
+        key = r['branch_id'] or ''
+        branch[key] = branch.get(key, 0) - _som(r['v'])
     cashier = {}
     for r in (settled_orders.values(
             'cashier_id', 'cashier__first_name', 'cashier__last_name',
@@ -208,9 +241,21 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
             continue
         name = f"{r['cashier__first_name'] or ''} {r['cashier__last_name'] or ''}".strip()
         cashier[cid] = {'name': name or f'#{cid}', 'revenue': _som(r['v'])}
+    for r in refunds.values(
+        'cashier_id', 'cashier__first_name', 'cashier__last_name',
+    ).annotate(v=Sum('amount')):
+        cid = r['cashier_id']
+        if cid is None:
+            continue
+        name = f"{r['cashier__first_name'] or ''} {r['cashier__last_name'] or ''}".strip()
+        target = cashier.setdefault(cid, {
+            'name': name or f'#{cid}', 'revenue': 0,
+        })
+        target['revenue'] -= _som(r['v'])
 
     return {
-        'net': net, 'gross': gross, 'discounts': discounts,
+        'net': net, 'gross': gross, 'sale_net': sale_net,
+        'refunds': refund_amount, 'discounts': discounts,
         'orders': operational_count, 'items': n_items,
         'aov': (net / settled_count) if settled_count else 0,
         'aipo': (n_items / settled_count) if settled_count else 0,
@@ -267,6 +312,7 @@ def compare_periods(a_start, a_end, b_start, b_end, granularity='day',
     kpis = {
         'gross_revenue': _kpi(A['gross'], B['gross'], True),
         'net_revenue': _kpi(A['net'], B['net'], True),
+        'refunds': _kpi(A['refunds'], B['refunds'], False),
         'orders': _kpi(A['orders'], B['orders'], True),
         'items_sold': _kpi(A['items'], B['items'], True),
         'aov': _kpi(A['aov'], B['aov'], True),
@@ -283,6 +329,10 @@ def compare_periods(a_start, a_end, b_start, b_end, granularity='day',
             'id': cid, 'name': a.get('name') or b.get('name') or 'Uncategorized',
             'a_revenue': ar, 'b_revenue': br,
             'a_qty': a.get('qty', 0), 'b_qty': b.get('qty', 0),
+            'a_gross_revenue': a.get('gross_revenue', 0),
+            'b_gross_revenue': b.get('gross_revenue', 0),
+            'a_refund_amount': a.get('refund_amount', 0),
+            'b_refund_amount': b.get('refund_amount', 0),
             'delta_pct': _pct(ar, br),
         })
     categories.sort(key=lambda c: c['a_revenue'], reverse=True)
@@ -296,6 +346,10 @@ def compare_periods(a_start, a_end, b_start, b_end, granularity='day',
             'id': pid, 'name': a.get('name') or b.get('name'),
             'category': a.get('category') or b.get('category'),
             'a_qty': a.get('qty', 0), 'b_qty': b.get('qty', 0),
+            'a_gross_revenue': a.get('gross_revenue', 0),
+            'b_gross_revenue': b.get('gross_revenue', 0),
+            'a_refund_amount': a.get('refund_amount', 0),
+            'b_refund_amount': b.get('refund_amount', 0),
             'a_revenue': ar, 'b_revenue': br, 'delta_pct': _pct(ar, br),
         })
     prows.sort(key=lambda r: r['a_revenue'], reverse=True)
@@ -308,6 +362,10 @@ def compare_periods(a_start, a_end, b_start, b_end, granularity='day',
             'id': None, 'name': 'Others', 'category': None,
             'a_qty': sum(r['a_qty'] for r in others),
             'b_qty': sum(r['b_qty'] for r in others),
+            'a_gross_revenue': sum(r['a_gross_revenue'] for r in others),
+            'b_gross_revenue': sum(r['b_gross_revenue'] for r in others),
+            'a_refund_amount': sum(r['a_refund_amount'] for r in others),
+            'b_refund_amount': sum(r['b_refund_amount'] for r in others),
             'a_revenue': oa, 'b_revenue': ob, 'delta_pct': _pct(oa, ob),
         })
 

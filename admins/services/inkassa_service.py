@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Sum, Count
 from django.utils import timezone
 
-from base.models import CashRegister, Inkassa, Order, OrderItem
+from base.models import CashRegister, Inkassa, Order, OrderItem, OrderRefund
 from base.helpers.response import ServiceResponse
 from base.repositories import CashRegisterRepository
 from base.services.revenue import net_line_revenue
@@ -63,9 +63,13 @@ class AdminInkassaService:
         register, error = _resolve_register(branch_id)
         if error:
             return error
+        pending = Inkassa.pending_register_amount(register)
+        available = (register.current_balance or Decimal('0')) - pending
         return ServiceResponse.success(data={
             'branch_id': register.branch_id,
-            'balance': str(register.current_balance),
+            'balance': str(available),
+            'reported_balance': str(register.current_balance),
+            'pending_cash_commands': str(pending),
             'last_updated': register.last_updated.isoformat(),
         })
 
@@ -76,30 +80,78 @@ class AdminInkassaService:
         from base.services.business_day import today_window
         today_start, today_end = today_window()
 
-        # Exclude cancelled orders. Cancelling a paid order reverses its cash
-        # from the register (add_to_register(-total)) but leaves is_paid /
-        # paid_at set, so without this exclusion the reported revenue counts
-        # money the drawer no longer holds — overstating expected cash.
+        # A sale remains a positive event at paid_at even when its later
+        # operational status becomes CANCELED. Its dated OrderRefund is the
+        # separate negative event; status filtering erases the original sale.
         today_orders = Order.objects.filter(
             is_deleted=False, is_paid=True,
             paid_at__gte=today_start, paid_at__lt=today_end,
-        ).exclude(status='CANCELED')
+        )
+        today_refunds = OrderRefund.objects.filter(
+            is_deleted=False,
+            refunded_at__gte=today_start, refunded_at__lt=today_end,
+        )
         if branch_id:
             today_orders = today_orders.filter(branch_id=branch_id)
+            today_refunds = today_refunds.filter(branch_id=branch_id)
         today_agg = today_orders.aggregate(
             total_revenue=Sum('total_amount'),
             order_count=Count('id'),
         )
+        from base.services.order_refund import refund_totals
+        today_refund_agg = refund_totals(today_refunds)
+        today_revenue = (
+            today_agg['total_revenue'] or Decimal('0')
+        ) - today_refund_agg['amount']
 
-        cashier_perf = (
+        cashier_sales = (
             today_orders
-            .exclude(status='CANCELED')
             .values('cashier__id', 'cashier__first_name', 'cashier__last_name')
             .annotate(
                 total_revenue=Sum('total_amount'),
                 order_count=Count('id'),
             )
-            .order_by('-total_revenue')
+        )
+        cashier_refunds = (
+            today_refunds
+            .values('cashier__id', 'cashier__first_name', 'cashier__last_name')
+            .annotate(
+                total_refunds=Sum('amount'),
+                refund_count=Count('id'),
+            )
+        )
+        cashier_perf_by_id = {}
+        for row in cashier_sales:
+            cashier_id = row['cashier__id']
+            cashier_perf_by_id[cashier_id] = {
+                'cashier_id': cashier_id,
+                'cashier_name': (
+                    f"{row['cashier__first_name'] or ''} "
+                    f"{row['cashier__last_name'] or ''}"
+                ).strip(),
+                'total_revenue': row['total_revenue'] or Decimal('0'),
+                'order_count': row['order_count'] or 0,
+                'refund_count': 0,
+            }
+        for row in cashier_refunds:
+            cashier_id = row['cashier__id']
+            current = cashier_perf_by_id.setdefault(cashier_id, {
+                'cashier_id': cashier_id,
+                'cashier_name': (
+                    f"{row['cashier__first_name'] or ''} "
+                    f"{row['cashier__last_name'] or ''}"
+                ).strip(),
+                'total_revenue': Decimal('0'),
+                'order_count': 0,
+                'refund_count': 0,
+            })
+            current['total_revenue'] -= row['total_refunds'] or Decimal('0')
+            current['refund_count'] += row['refund_count'] or 0
+        cashier_perf = sorted(
+            cashier_perf_by_id.values(),
+            key=lambda row: (
+                -row['total_revenue'], row['cashier_name'], row['cashier_id'] or 0,
+            ),
         )
 
         product_items = OrderItem.objects.filter(
@@ -111,38 +163,87 @@ class AdminInkassaService:
         )
         if branch_id:
             product_items = product_items.filter(order__branch_id=branch_id)
-        top_products = (
+        product_sales = (
             product_items
-            .exclude(order__status='CANCELED')
             .values('product__id', 'product__name')
             .annotate(
                 total_quantity=Sum('quantity'),
                 total_revenue=Sum(net_line_revenue()),
             )
-            .order_by('-total_quantity')[:10]
         )
+        from base.services.refund_lines import (
+            REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
+            refund_line_revenue,
+        )
+        refunded_items = refund_item_events(
+            refunded_at__gte=today_start,
+            refunded_at__lt=today_end,
+        )
+        if branch_id:
+            refunded_items = refunded_items.filter(
+                order__branch_id=branch_id,
+            )
+        product_refunds = (
+            refunded_items
+            .values('product__id', 'product__name')
+            .annotate(
+                total_quantity=Sum(
+                    refund_line_quantity(REFUND_EVENT_ALIAS)
+                ),
+                total_revenue=Sum(
+                    refund_line_revenue(REFUND_EVENT_ALIAS)
+                ),
+            )
+        )
+        product_totals = {}
+        for row in product_sales:
+            product_totals[row['product__id']] = {
+                'product_id': row['product__id'],
+                'product_name': row['product__name'],
+                'total_quantity': row['total_quantity'] or 0,
+                'total_revenue': row['total_revenue'] or Decimal('0'),
+            }
+        for row in product_refunds:
+            current = product_totals.setdefault(row['product__id'], {
+                'product_id': row['product__id'],
+                'product_name': row['product__name'],
+                'total_quantity': 0,
+                'total_revenue': Decimal('0'),
+            })
+            current['total_quantity'] -= row['total_quantity'] or 0
+            current['total_revenue'] -= row['total_revenue'] or Decimal('0')
+        top_products = sorted(
+            product_totals.values(),
+            key=lambda row: (
+                -row['total_quantity'], row['product_name'] or '',
+                row['product_id'] or 0,
+            ),
+        )[:10]
 
         return ServiceResponse.success(data={
             'stats': {
                 'today': {
-                    'total_revenue': str(today_agg['total_revenue'] or Decimal('0')),
+                    'total_revenue': str(today_revenue),
                     'order_count': today_agg['order_count'] or 0,
+                    'refund_count': today_refunds.count(),
+                    'refund_total': str(today_refund_agg['amount']),
                 },
                 'cashier_performance': [
                     {
-                        'cashier_id': cp['cashier__id'],
-                        'cashier_name': f"{cp['cashier__first_name'] or ''} {cp['cashier__last_name'] or ''}".strip(),
-                        'total_revenue': str(cp['total_revenue'] or Decimal('0')),
+                        'cashier_id': cp['cashier_id'],
+                        'cashier_name': cp['cashier_name'],
+                        'total_revenue': str(cp['total_revenue']),
                         'order_count': cp['order_count'],
+                        'refund_count': cp['refund_count'],
                     }
                     for cp in cashier_perf
                 ],
                 'top_products': [
                     {
-                        'product_id': tp['product__id'],
-                        'product_name': tp['product__name'],
+                        'product_id': tp['product_id'],
+                        'product_name': tp['product_name'],
                         'total_quantity': tp['total_quantity'],
-                        'total_revenue': str(tp['total_revenue'] or Decimal('0')),
+                        'total_revenue': str(tp['total_revenue']),
                     }
                     for tp in top_products
                 ],
@@ -151,7 +252,12 @@ class AdminInkassaService:
 
     @staticmethod
     def get_history(page=1, per_page=20, branch_id=None):
-        qs = Inkassa.objects.filter(is_deleted=False).select_related('cashier').order_by('-created_at')
+        qs = (
+            Inkassa.objects.filter(is_deleted=False)
+            .exclude(notes__startswith=Inkassa.refund_command_prefix())
+            .select_related('cashier')
+            .order_by('-created_at')
+        )
         if branch_id:
             qs = qs.filter(branch_id=branch_id)
         total = qs.count()
@@ -174,8 +280,13 @@ class AdminInkassaService:
     def get_detail(inkassa_id):
         try:
             inkassa = Inkassa.objects.select_related('cashier').get(
-                pk=inkassa_id, is_deleted=False
+                pk=inkassa_id,
+                is_deleted=False,
             )
+            if str(inkassa.notes or '').startswith(
+                Inkassa.refund_command_prefix()
+            ):
+                raise Inkassa.DoesNotExist
         except Inkassa.DoesNotExist:
             return ServiceResponse.not_found('Inkassa not found')
         return ServiceResponse.success(data={'inkassa': _serialize_inkassa(inkassa)})
@@ -188,7 +299,10 @@ class AdminInkassaService:
         if error:
             return error
 
-        balance_before = register.current_balance
+        pending_before = Inkassa.pending_register_amount(register)
+        balance_before = (
+            register.current_balance or Decimal('0')
+        ) - pending_before
 
         method_amounts = {}
         total_removed = Decimal('0')
@@ -234,6 +348,8 @@ class AdminInkassaService:
 
         last_inkassa = Inkassa.objects.filter(
             is_deleted=False, branch_id=register.branch_id,
+        ).exclude(
+            notes__startswith=Inkassa.refund_command_prefix(),
         ).order_by('-created_at').first()
         # Chain the period to the previous inkassa's end. Previously period_end
         # was never set on creation, so this always fell back to today_start and
@@ -245,11 +361,21 @@ class AdminInkassaService:
         period_orders = Order.objects.filter(
             is_deleted=False, is_paid=True, branch_id=register.branch_id,
             paid_at__gte=period_start, paid_at__lte=now,
-        ).exclude(status='CANCELED')
+        )
         today_agg = period_orders.aggregate(
             total_revenue=Sum('total_amount'),
             order_count=Count('id'),
         )
+        from base.services.order_refund import refund_totals
+        period_refunds = refund_totals(OrderRefund.objects.filter(
+            is_deleted=False,
+            branch_id=register.branch_id,
+            refunded_at__gte=period_start,
+            refunded_at__lte=now,
+        ))
+        period_revenue = (
+            today_agg['total_revenue'] or Decimal('0')
+        ) - period_refunds['amount']
 
         created_inkassas = []
         running_balance = balance_before
@@ -258,6 +384,11 @@ class AdminInkassaService:
             # Only cash leaves the drawer; card rows don't move the register.
             if method == 'CASH':
                 running_balance = running_balance - amount
+            # Exactly one row owns the period aggregate. Copying it to every
+            # tender row made AI/report sums multiply mixed collections.
+            first_in_batch = not created_inkassas
+            is_cash_command = method == 'CASH'
+            operator_notes = amounts.get('notes', '')
             inkassa = Inkassa.objects.create(
                 branch_id=register.branch_id,
                 cashier=user,
@@ -267,19 +398,20 @@ class AdminInkassaService:
                 balance_after=running_balance,
                 period_start=period_start,
                 period_end=now,
-                total_orders=today_agg['order_count'] or 0,
-                total_revenue=today_agg['total_revenue'] or 0,
-                notes=amounts.get('notes', ''),
+                total_orders=(today_agg['order_count'] or 0) if first_in_batch else 0,
+                total_revenue=period_revenue if first_in_batch else 0,
+                register_command=is_cash_command,
+                notes=(
+                    Inkassa.command_notes(operator_notes)
+                    if is_cash_command else operator_notes
+                ),
             )
             created_inkassas.append(inkassa)
 
-        # Remove only the cash from the register, then route the whole
-        # collection into the treasury: cash → SAFE, cards → BANK. synced_at /
-        # sync_version are reset so the new balance propagates to the cloud.
-        register.current_balance -= cash_amount
-        register.save(update_fields=['current_balance', 'last_updated',
-                                     'synced_at', 'sync_version'])
-
+        # CashRegister is branch-owned; the desktop intentionally rejects a
+        # pulled cloud balance. The CASH row is therefore a durable removal
+        # command. Pending commands reduce cloud availability immediately, and
+        # the branch applies/acknowledges them atomically on its next sync.
         from base.services.treasury_service import TreasuryService
         TreasuryService.deposit_inkassa(
             cash_amount=cash_amount, card_amount=card_amount,
@@ -295,7 +427,9 @@ class AdminInkassaService:
                 'cash_to_safe': str(cash_amount),
                 'card_to_bank': str(card_amount),
                 'balance_before': str(balance_before),
-                'balance_after': str(register.current_balance),
+                'balance_after': str(running_balance),
+                'reported_balance': str(register.current_balance),
+                'pending_cash_commands': str(pending_before + cash_amount),
                 'branch_id': register.branch_id,
                 'inkassas': [_serialize_inkassa(i) for i in created_inkassas],
             },
@@ -315,7 +449,7 @@ def _serialize_inkassa(i):
         'period_end': i.period_end.isoformat() if i.period_end else None,
         'total_orders': i.total_orders,
         'total_revenue': str(i.total_revenue),
-        'notes': i.notes or '',
+        'notes': Inkassa.visible_notes(i.notes),
         'cashier': {
             'id': i.cashier.id,
             'name': f"{i.cashier.first_name} {i.cashier.last_name}",

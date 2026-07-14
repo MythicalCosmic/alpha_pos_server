@@ -1,11 +1,55 @@
+from django.conf import settings
+
 from base.helpers.response import ServiceResponse
+from base.models import CashRegister
 from base.repositories import PlaceRepository, TableRepository
+
+
+def _resolve_branch_id(branch_id=None):
+    """Resolve the operational branch targeted by an admin place mutation.
+
+    A local node is already bound to one branch.  The cloud may infer a target
+    only when exactly one operational register exists; a multi-branch install
+    must send ``branch_id`` explicitly instead of creating invisible
+    ``branch_id='cloud'`` rows.
+    """
+    requested = str(branch_id or '').strip()
+    node_branch = str(getattr(settings, 'BRANCH_ID', '') or '').strip()
+    if requested:
+        return requested, None
+    if getattr(settings, 'DEPLOYMENT_MODE', 'local') != 'cloud':
+        if node_branch:
+            return node_branch, None
+    else:
+        candidates = list(
+            CashRegister.objects.filter(is_deleted=False)
+            .exclude(branch_id__in=['', node_branch])
+            .order_by()
+            .values_list('branch_id', flat=True)
+            .distinct()[:2]
+        )
+        if len(candidates) == 1:
+            return candidates[0], None
+
+    return None, ServiceResponse.validation_error(
+        errors={'branch_id': 'Required unless exactly one operational branch exists'},
+        message='Choose a branch',
+    )
+
+
+def _get_place(place_id, branch_id):
+    return PlaceRepository.filter(id=place_id, branch_id=branch_id).first()
+
+
+def _get_table(table_id, branch_id):
+    return TableRepository.filter(id=table_id, branch_id=branch_id).first()
 
 
 def _serialize_place(place):
     return {
         'id': place.id,
         'uuid': str(place.uuid),
+        'branch_id': place.branch_id,
         'name': place.name,
         'place_type': place.place_type,
         'capacity': place.capacity,
@@ -20,6 +64,7 @@ def _serialize_table(table):
     return {
         'id': table.id,
         'uuid': str(table.uuid),
+        'branch_id': table.branch_id,
         'place': {
             'id': table.place.id,
             'name': table.place.name,
@@ -39,8 +84,13 @@ VALID_TABLE_STATUSES = ['AVAILABLE', 'OCCUPIED', 'RESERVED', 'OUT_OF_SERVICE']
 class PlaceService:
 
     @staticmethod
-    def list(page=1, per_page=20, place_type=None, is_active=None):
-        qs = PlaceRepository.get_all()
+    def list(
+        page=1, per_page=20, place_type=None, is_active=None, branch_id=None,
+    ):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        qs = PlaceRepository.get_all().filter(branch_id=branch_id)
 
         if place_type:
             qs = qs.filter(place_type=place_type)
@@ -64,8 +114,11 @@ class PlaceService:
         })
 
     @staticmethod
-    def get(place_id):
-        place = PlaceRepository.get_by_id(place_id)
+    def get(place_id, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        place = _get_place(place_id, branch_id)
         if not place:
             return ServiceResponse.not_found('Place not found')
 
@@ -75,12 +128,16 @@ class PlaceService:
         return ServiceResponse.success(data={'place': data})
 
     @staticmethod
-    def create(name, place_type='HALL', capacity=0):
+    def create(name, place_type='HALL', capacity=0, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
         if not name or not name.strip():
             return ServiceResponse.validation_error(
                 errors={'name': 'Name is required'},
                 message='Validation failed',
             )
+        clean_name = name.strip()
 
         if place_type not in VALID_PLACE_TYPES:
             return ServiceResponse.validation_error(
@@ -88,13 +145,16 @@ class PlaceService:
                 message='Invalid place type',
             )
 
-        if PlaceRepository.name_exists(name):
+        if PlaceRepository.filter(
+            branch_id=branch_id, name__iexact=clean_name,
+        ).exists():
             return ServiceResponse.error('A place with this name already exists')
 
         place = PlaceRepository.create(
-            name=name.strip(),
+            name=clean_name,
             place_type=place_type,
             capacity=capacity,
+            branch_id=branch_id,
         )
 
         return ServiceResponse.created(
@@ -103,8 +163,11 @@ class PlaceService:
         )
 
     @staticmethod
-    def update(place_id, **kwargs):
-        place = PlaceRepository.get_by_id(place_id)
+    def update(place_id, branch_id=None, **kwargs):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        place = _get_place(place_id, branch_id)
         if not place:
             return ServiceResponse.not_found('Place not found')
 
@@ -115,9 +178,12 @@ class PlaceService:
                     errors={'name': 'Name is required'},
                     message='Validation failed',
                 )
-            if PlaceRepository.name_exists(name, exclude_id=place_id):
+            clean_name = name.strip()
+            if PlaceRepository.filter(
+                branch_id=branch_id, name__iexact=clean_name,
+            ).exclude(id=place_id).exists():
                 return ServiceResponse.error('A place with this name already exists')
-            kwargs['name'] = name.strip()
+            kwargs['name'] = clean_name
 
         if 'place_type' in kwargs and kwargs['place_type'] not in VALID_PLACE_TYPES:
             return ServiceResponse.validation_error(
@@ -133,8 +199,11 @@ class PlaceService:
         )
 
     @staticmethod
-    def delete(place_id):
-        place = PlaceRepository.get_by_id(place_id)
+    def delete(place_id, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        place = _get_place(place_id, branch_id)
         if not place:
             return ServiceResponse.not_found('Place not found')
 
@@ -152,8 +221,15 @@ class PlaceService:
 class TableService:
 
     @staticmethod
-    def list(page=1, per_page=20, place_id=None, status=None):
-        qs = TableRepository.get_all().select_related('place')
+    def list(page=1, per_page=20, place_id=None, status=None, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        qs = (
+            TableRepository.get_all()
+            .filter(branch_id=branch_id)
+            .select_related('place')
+        )
 
         if place_id:
             qs = qs.filter(place_id=place_id)
@@ -177,16 +253,22 @@ class TableService:
         })
 
     @staticmethod
-    def get(table_id):
-        table = TableRepository.get_by_id(table_id)
+    def get(table_id, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        table = _get_table(table_id, branch_id)
         if not table:
             return ServiceResponse.not_found('Table not found')
 
         return ServiceResponse.success(data={'table': _serialize_table(table)})
 
     @staticmethod
-    def create(place_id, number, capacity=4):
-        place = PlaceRepository.get_by_id(place_id)
+    def create(place_id, number, capacity=4, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        place = _get_place(place_id, branch_id)
         if not place:
             return ServiceResponse.not_found('Place not found')
 
@@ -205,6 +287,7 @@ class TableService:
             place=place,
             number=str(number).strip(),
             capacity=capacity,
+            branch_id=place.branch_id,
         )
 
         return ServiceResponse.created(
@@ -213,8 +296,11 @@ class TableService:
         )
 
     @staticmethod
-    def update(table_id, **kwargs):
-        table = TableRepository.get_by_id(table_id)
+    def update(table_id, branch_id=None, **kwargs):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        table = _get_table(table_id, branch_id)
         if not table:
             return ServiceResponse.not_found('Table not found')
 
@@ -239,10 +325,11 @@ class TableService:
             )
 
         if 'place_id' in kwargs:
-            place = PlaceRepository.get_by_id(kwargs['place_id'])
+            place = _get_place(kwargs['place_id'], branch_id)
             if not place:
                 return ServiceResponse.not_found('Place not found')
             kwargs['place'] = place
+            kwargs['branch_id'] = place.branch_id
             del kwargs['place_id']
 
         table = TableRepository.update(table, **kwargs)
@@ -253,8 +340,11 @@ class TableService:
         )
 
     @staticmethod
-    def delete(table_id):
-        table = TableRepository.get_by_id(table_id)
+    def delete(table_id, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        table = _get_table(table_id, branch_id)
         if not table:
             return ServiceResponse.not_found('Table not found')
 
@@ -263,16 +353,21 @@ class TableService:
         return ServiceResponse.success(message='Table deleted successfully')
 
     @staticmethod
-    def update_status(table_id, status):
+    def update_status(table_id, status, branch_id=None):
         if status not in VALID_TABLE_STATUSES:
             return ServiceResponse.validation_error(
                 errors={'status': f'Must be one of: {", ".join(VALID_TABLE_STATUSES)}'},
                 message='Invalid table status',
             )
 
-        table = TableRepository.update_status(table_id, status)
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        table = _get_table(table_id, branch_id)
         if not table:
             return ServiceResponse.not_found('Table not found')
+        table.status = status
+        table.save(update_fields=['status'])
 
         return ServiceResponse.success(
             data={'table': _serialize_table(table)},
@@ -280,8 +375,11 @@ class TableService:
         )
 
     @staticmethod
-    def get_for_place(place_id):
-        place = PlaceRepository.get_by_id(place_id)
+    def get_for_place(place_id, branch_id=None):
+        branch_id, error = _resolve_branch_id(branch_id)
+        if error:
+            return error
+        place = _get_place(place_id, branch_id)
         if not place:
             return ServiceResponse.not_found('Place not found')
 

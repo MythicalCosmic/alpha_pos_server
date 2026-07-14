@@ -206,7 +206,7 @@ class CourierPayment(models.Model):
     )
     link = models.CharField(max_length=512, blank=True, default='')   # gateway pay link (QR/online)
     external_id = models.CharField(            # gateway ref / idempotency key
-        max_length=128, blank=True, default='', db_index=True,
+        max_length=128,
     )
     branch_id = models.CharField(max_length=50, blank=True, default='', db_index=True)
     note = models.CharField(max_length=200, blank=True, default='')
@@ -220,6 +220,16 @@ class CourierPayment(models.Model):
         indexes = [
             models.Index(fields=['courier', 'status']),
             models.Index(fields=['order', 'status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['external_id'],
+                name='uniq_courier_payment_external_id',
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(external_id=''),
+                name='courier_payment_external_id_required',
+            ),
         ]
 
     def __str__(self):

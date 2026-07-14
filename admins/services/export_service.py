@@ -104,7 +104,10 @@ def build_export(date_from, date_to, include_unpaid=False):
         Order.objects.filter(status='COMPLETED', is_deleted=False)
         .select_related('user', 'cashier', 'customer')
         .prefetch_related(
-            Prefetch('items', queryset=OrderItem.objects.select_related('product')),
+            Prefetch(
+                'items',
+                queryset=OrderItem.objects.filter(is_deleted=False).select_related('product'),
+            ),
         )
     )
     if include_unpaid:

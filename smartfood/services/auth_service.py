@@ -24,20 +24,28 @@ def _norm_lang(code):
     return c if c in ('uz', 'ru', 'en') else 'uz'
 
 
-def _link_base_customer(sf_customer):
+def _link_base_customer(sf_customer, branch_id=None):
     """Converge this Telegram customer onto the unified master base.Customer
     (keyed by phone, then telegram_id). This is what lets a phone-matched walk-in's
-    in-store orders + loyalty show up for this Telegram account. Best-effort."""
+    in-store orders + loyalty show up for this Telegram account. Authentication
+    does not yet know which restaurant will receive an order, so without an
+    explicit branch this only links an existing row and does not create a
+    cloud-owned FK parent. Best-effort."""
     try:
         from base.models import Customer as BaseCustomer
-        BaseCustomer.resolve(
+        customer, _ = BaseCustomer.resolve(
             phone=sf_customer.phone_number or None,
             telegram_id=sf_customer.telegram_id,
             name=sf_customer.name,
+            branch_id=branch_id,
+            create=bool(branch_id),
+            adopt_node_owned=bool(branch_id),
         )
+        return customer
     except Exception:  # noqa: BLE001 — never block auth on the cross-model link
         logger.exception('smartfood: base.Customer link failed for tg=%s',
                          sf_customer.telegram_id)
+        return None
 
 
 class CustomerAuthService:

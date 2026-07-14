@@ -24,15 +24,19 @@ logger = logging.getLogger(__name__)
 _TENDERS = ('cash', 'card', 'payme')
 
 
-def _tender_breakdown(paid_qs):
-    """Canonical {cash, card, payme} over a paid, non-cancelled Order queryset.
+def _tender_breakdown(paid_qs, refund_qs=None):
+    """Canonical net {cash, card, payme} over dated settlement events.
 
     Adds `unknown` only when some revenue genuinely has no determinable tender
     (alertable, never a display value) and `card_detail` with the acquirer split.
     Always sums exactly to the queryset's revenue.
     """
-    from base.services.tender import breakdown_for_orders
-    split, detail = breakdown_for_orders(paid_qs)
+    from base.services.tender import breakdown_for_orders, net_breakdown
+    split, detail = (
+        net_breakdown(paid_qs, refund_qs)
+        if refund_qs is not None
+        else breakdown_for_orders(paid_qs)
+    )
     out = {t: _uzs(split[t]) for t in _TENDERS}
     if split['unknown']:
         out['unknown'] = _uzs(split['unknown'])
@@ -70,17 +74,27 @@ def _today_window():
 
 def _today_revenue():
     from base.models import Order
+    from admins.services.refund_reporting import refund_events
     start, end = _today_window()
-    agg = Order.objects.filter(
+    sales = Order.objects.filter(
         is_deleted=False, is_paid=True,
         paid_at__gte=start, paid_at__lt=end,
-    ).exclude(status='CANCELED').aggregate(
+    )
+    agg = sales.aggregate(
         total=Sum('total_amount'),
         orders=Count('id'),
     )
+    refunds = refund_events(start, end).aggregate(
+        total=Sum('amount'), orders=Count('id'),
+    )
+    gross = agg['total'] or Decimal('0')
+    refunded = refunds['total'] or Decimal('0')
     return {
-        'revenue': _uzs(agg['total']),
+        'revenue': _uzs(gross - refunded),
+        'gross_revenue': _uzs(gross),
+        'refund_amount': _uzs(refunded),
         'paid_orders': agg['orders'] or 0,
+        'refunded_orders': refunds['orders'] or 0,
     }
 
 
@@ -103,86 +117,102 @@ def _today_orders_breakdown():
 
 def _top_products_today(limit=5):
     from base.models import OrderItem
-    from base.services.revenue import net_line_revenue
+    from admins.services.refund_reporting import (
+        net_grouped_items, refund_item_events,
+    )
     start, end = _today_window()
-    line_total = net_line_revenue()
-    rows = (
+    sale_items = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__paid_at__gte=start, order__paid_at__lt=end,
         )
         # Cancelled orders never sold — keep them out of "top products today".
-        .exclude(order__status='CANCELED')
-        .annotate(line_total=line_total)
-        .values('product_id', 'product__name')
-        .annotate(
-            quantity=Sum('quantity'),
-            revenue=Sum('line_total'),
-        )
-        .order_by('-quantity')[:limit]
     )
+    rows = net_grouped_items(
+        sale_items, refund_item_events(start, end),
+        ('product_id', 'product__name'),
+    )
+    rows.sort(key=lambda row: (-(row['qty'] or 0), row['product_id'] or 0))
     return [
         {
             'product_id': r['product_id'],
             'product_name': r['product__name'],
-            'quantity': int(r['quantity'] or 0),
+            'quantity': int(r['qty'] or 0),
             'revenue': str(r['revenue'] or 0),
+            'gross_quantity': int(r['gross_qty'] or 0),
+            'refunded_quantity': int(r['refund_qty'] or 0),
+            'gross_revenue': str(r['gross_revenue'] or 0),
+            'refund_amount': str(r['refund_revenue'] or 0),
         }
-        for r in rows
+        for r in rows[:limit]
     ]
 
 
 def _today_payment_breakdown():
     """Paid revenue today by canonical tender (cash / card / payme)."""
     from base.models import Order
+    from admins.services.refund_reporting import refund_events
     start, end = _today_window()
     paid = Order.objects.filter(
         is_deleted=False, is_paid=True,
         paid_at__gte=start, paid_at__lt=end,
-    ).exclude(status='CANCELED')
-    return _tender_breakdown(paid)
+    )
+    return _tender_breakdown(paid, refund_events(start, end))
 
 
 def _today_category_stats():
     """Units + revenue today grouped by product category."""
     from base.models import OrderItem
-    from base.services.revenue import net_line_revenue
+    from admins.services.refund_reporting import (
+        net_grouped_items, refund_item_events,
+    )
     start, end = _today_window()
-    line_total = net_line_revenue()
-    rows = (
+    sale_items = (
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
             order__paid_at__gte=start, order__paid_at__lt=end,
         )
-        .exclude(order__status='CANCELED')
-        .values('product__category_id', 'product__category__name')
         # Alias the unit count as `units`, NOT `quantity`: the revenue expression
         # references F('quantity'), and reusing the column name as an aggregate alias
         # makes Django resolve that F() to the aggregate -> "is an aggregate"
         # FieldError (silently emptied category stats on Postgres).
-        .annotate(units=Sum('quantity'), revenue=Sum(line_total))
-        .order_by('-revenue')
     )
+    rows = net_grouped_items(
+        sale_items, refund_item_events(start, end),
+        ('product__category_id', 'product__category__name'),
+    )
+    rows.sort(key=lambda row: -(row['revenue'] or 0))
     return [
         {
             'category_id': r['product__category_id'],
             'category': r['product__category__name'],
-            'quantity': int(r['units'] or 0),
+            'quantity': int(r['qty'] or 0),
             'revenue': _uzs(r['revenue']),
+            'gross_quantity': int(r['gross_qty'] or 0),
+            'refunded_quantity': int(r['refund_qty'] or 0),
+            'gross_revenue': _uzs(r['gross_revenue']),
+            'refund_amount': _uzs(r['refund_revenue']),
         }
         for r in rows
     ]
 
 
 def _today_units_sold():
-    """Total product units sold today (excludes cancelled orders)."""
+    """Net product units for today's sale and refund event windows."""
     from base.models import OrderItem
     start, end = _today_window()
-    agg = OrderItem.objects.filter(
+    sold = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__paid_at__gte=start, order__paid_at__lt=end,
-    ).exclude(order__status='CANCELED').aggregate(q=Sum('quantity'))
-    return int(agg['q'] or 0)
+    ).aggregate(q=Sum('quantity'))['q'] or 0
+    from admins.services.refund_reporting import refund_item_events
+    from base.services.refund_lines import (
+        REFUND_EVENT_ALIAS, refund_line_quantity,
+    )
+    refunded = refund_item_events(start, end).aggregate(
+        q=Sum(refund_line_quantity(REFUND_EVENT_ALIAS)),
+    )['q'] or 0
+    return int(sold - refunded)
 
 
 def _today_peak_hour():
@@ -276,7 +306,10 @@ def get_today():
     return {
         'today': {
             'revenue': revenue['revenue'],
+            'gross_revenue': revenue['gross_revenue'],
+            'refund_amount': revenue['refund_amount'],
             'paid_orders': revenue['paid_orders'],
+            'refunded_orders': revenue['refunded_orders'],
             'orders': breakdown['orders'],
             'cancelled': breakdown['cancelled'],
             'open': breakdown['open'],
@@ -324,7 +357,9 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     ("HH:MM") restrict to a working-hours window within each business day."""
     from base.models import Order, OrderItem
     from base.services.business_day import tod_filter, parse_hhmm
-    from base.services.revenue import net_line_revenue
+    from admins.services.refund_reporting import (
+        net_grouped_items, refund_events, refund_item_events,
+    )
     d_from, d_to, start, end = _range_window(date_from, date_to)
     tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
     sold = Order.objects.filter(
@@ -333,49 +368,70 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     sold = tod_filter(sold, tf, tt, field='created_at')
     paid = Order.objects.filter(
         is_deleted=False, is_paid=True, paid_at__gte=start, paid_at__lt=end,
-    ).exclude(status='CANCELED')
+    )
     paid = tod_filter(paid, tf, tt, field='paid_at')
     rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
+    refunds = refund_events(
+        start, end, tod_from=tf, tod_to=tt,
+    )
+    refund_agg = refunds.aggregate(total=Sum('amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
-    pay = _tender_breakdown(paid)
-    line_total = net_line_revenue()
+    pay = _tender_breakdown(paid, refunds)
     items = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__paid_at__gte=start, order__paid_at__lt=end,
-    ).exclude(order__status='CANCELED')
+    )
     items = tod_filter(items, tf, tt, field='order__paid_at')
-    units = items.aggregate(q=Sum('quantity'))['q'] or 0
-    top = list(items.annotate(lt=line_total).values('product_id', 'product__name')
-               .annotate(quantity=Sum('quantity'), revenue=Sum('lt'))
-               .order_by('-quantity')[:5])
+    refund_items = refund_item_events(
+        start, end, tod_from=tf, tod_to=tt,
+    )
+    top = net_grouped_items(
+        items, refund_items, ('product_id', 'product__name'),
+    )
+    top.sort(key=lambda row: (-(row['qty'] or 0), row['product_id'] or 0))
+    units = sum((row['qty'] or 0) for row in top)
     # Category breakdown over the SAME range window (mirrors _today_category_stats).
     # Alias the count as `units`, NOT `quantity`: Sum(line_total) references
     # F('quantity'), so a `quantity` aggregate alias triggers an "is an aggregate"
     # FieldError on Postgres and silently empties the category stats.
-    cat_rows = list(
-        items.values('product__category_id', 'product__category__name')
-        .annotate(units=Sum('quantity'), revenue=Sum(line_total))
-        .order_by('-revenue'))
+    cat_rows = net_grouped_items(
+        items, refund_items,
+        ('product__category_id', 'product__category__name'),
+    )
+    cat_rows.sort(key=lambda row: -(row['revenue'] or 0))
+    gross_revenue = rev['total'] or Decimal('0')
+    refund_amount = refund_agg['total'] or Decimal('0')
     return {
         'range': {'from': d_from.isoformat(), 'to': d_to.isoformat()},
-        'revenue': _uzs(rev['total']),
+        'revenue': _uzs(gross_revenue - refund_amount),
+        'gross_revenue': _uzs(gross_revenue),
+        'refund_amount': _uzs(refund_amount),
         'paid_orders': rev['n'] or 0,
+        'refunded_orders': refund_agg['n'] or 0,
         'orders': counts['total'] or 0,
         'cancelled': counts['cancelled'] or 0,
         'units_sold': int(units),
         'payment_breakdown': pay,
         'top_products': [{
             'product_id': r['product_id'], 'product_name': r['product__name'],
-            'quantity': int(r['quantity'] or 0), 'revenue': _uzs(r['revenue']),
-        } for r in top],
+            'quantity': int(r['qty'] or 0), 'revenue': _uzs(r['revenue']),
+            'gross_quantity': int(r['gross_qty'] or 0),
+            'refunded_quantity': int(r['refund_qty'] or 0),
+            'gross_revenue': _uzs(r['gross_revenue']),
+            'refund_amount': _uzs(r['refund_revenue']),
+        } for r in top[:5]],
         # Executive-tab category stats for the selected range (same shape as
         # /dashboard/today's category_stats_today).
         'category_stats': [{
             'category_id': r['product__category_id'],
             'category': r['product__category__name'],
-            'quantity': int(r['units'] or 0),
+            'quantity': int(r['qty'] or 0),
             'revenue': _uzs(r['revenue']),
+            'gross_quantity': int(r['gross_qty'] or 0),
+            'refunded_quantity': int(r['refund_qty'] or 0),
+            'gross_revenue': _uzs(r['gross_revenue']),
+            'refund_amount': _uzs(r['refund_revenue']),
         } for r in cat_rows],
     }
 
@@ -384,6 +440,7 @@ def get_sidebar_counts():
     """One-call sidebar counters — active shifts + today's order count + today's
     revenue — replacing two separate 90s polls."""
     from base.models import Order, Shift
+    from admins.services.refund_reporting import refund_events
     start, end = _today_window()
     active = _safe('sidebar active_shifts',
                    lambda: Shift.objects.filter(is_deleted=False, status='ACTIVE').count(), 0)
@@ -399,11 +456,17 @@ def get_sidebar_counts():
         lambda: Order.objects.filter(
             is_deleted=False, is_paid=True,
             paid_at__gte=start, paid_at__lt=end,
-        ).exclude(status='CANCELED').aggregate(
+        ).aggregate(
             revenue=Coalesce(
                 Sum('total_amount'), Decimal('0.00'), output_field=DecimalField(),
             ),
-        )['revenue'],
+        )['revenue'] - (
+            refund_events(start, end).aggregate(
+                revenue=Coalesce(
+                    Sum('amount'), Decimal('0.00'), output_field=DecimalField(),
+                ),
+            )['revenue']
+        ),
         Decimal('0'),
     )
     return {

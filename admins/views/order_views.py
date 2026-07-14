@@ -182,7 +182,10 @@ def update_status(request, order_id):
             "errors": {"status": "status is required"},
         }, 422))
 
-    result, status_code = AdminOrderService.update_order_status(order_id, status)
+    result, status_code = AdminOrderService.update_order_status(
+        order_id, status, cashier_id=request.user.id,
+        reason=(data.get('reason') or '')[:255],
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -206,7 +209,8 @@ def pay_order(request, order_id):
             payment_method = body.get('payment_method', 'CASH')
             payments = body.get('payments')
     result, status_code = AdminOrderService.mark_as_paid(
-        order_id, payment_method=payment_method, payments=payments)
+        order_id, payment_method=payment_method, payments=payments,
+        cashier_id=request.user.id)
     return JsonResponse(result, status=status_code)
 
 
@@ -216,7 +220,9 @@ def pay_order(request, order_id):
 @permission_required('order.update')
 @idempotent('orders.unpay')
 def unpay_order(request, order_id):
-    result, status_code = AdminOrderService.mark_as_unpaid(order_id)
+    result, status_code = AdminOrderService.mark_as_unpaid(
+        order_id, cashier_id=request.user.id,
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -253,7 +259,14 @@ def unmark_item_ready(request, order_id, item_id):
 @permission_required('order.update')
 @idempotent('orders.cancel')
 def cancel_order(request, order_id):
-    result, status_code = AdminOrderService.update_order_status(order_id, 'CANCELED')
+    reason = ''
+    if request.body:
+        body, _ = parse_json_body(request)
+        if body:
+            reason = (body.get('reason') or '')[:255]
+    result, status_code = AdminOrderService.update_order_status(
+        order_id, 'CANCELED', cashier_id=request.user.id, reason=reason,
+    )
     if result.get('success'):
         audit(
             request,

@@ -39,40 +39,58 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
         ],
       }
     """
-    from base.models import OrderItem
+    from base.models import OrderItem, OrderRefund
     cutoff = timezone.now() - timedelta(days=days)
 
     # Top-N products by total quantity in the window — keeps the prompt
     # bounded and focuses Gemini on the products that actually drive prep.
     top = (
         OrderItem.objects.filter(
-            is_deleted=False, order__is_deleted=False,
-            order__created_at__gte=cutoff,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
+            order__paid_at__gte=cutoff,
         )
         # Cancelled orders never actually sold — counting them biases the prep
         # forecast upward.
-        .exclude(order__status='CANCELED')
         .values('product_id', 'product__name')
         .annotate(total_qty=Sum('quantity'))
-        .order_by('-total_qty')[:top_n]
+        .order_by('-total_qty')
     )
     top_ids = [row['product_id'] for row in top]
     name_by_id = {row['product_id']: row['product__name'] for row in top}
     totals_by_id = {row['product_id']: int(row['total_qty'] or 0) for row in top}
+    from base.services.refund_lines import (
+        REFUND_EVENT_ALIAS, refund_item_events,
+    )
+    cancelled_items = refund_item_events(
+        source=OrderRefund.Source.ORDER_CANCEL,
+        refunded_at__gte=cutoff,
+    )
+    for row in cancelled_items.values(
+        'product_id', 'product__name',
+    ).annotate(total_qty=Sum('quantity')):
+        pid = row['product_id']
+        totals_by_id[pid] = totals_by_id.get(pid, 0) - int(row['total_qty'] or 0)
+        name_by_id.setdefault(pid, row['product__name'])
+    top_ids = [
+        pid for pid, qty in sorted(
+            totals_by_id.items(), key=lambda item: (-item[1], item[0]),
+        ) if qty > 0
+    ][:top_n]
+    totals_by_id = {pid: totals_by_id[pid] for pid in top_ids}
+    name_by_id = {pid: name_by_id[pid] for pid in top_ids}
 
     # One aggregate keyed on (product, weekday, hour) instead of N+1 fan-out.
     # Previously this fired top_n+1 queries; now it's 2.
     breakdown_rows = (
         OrderItem.objects.filter(
             product_id__in=top_ids,
-            is_deleted=False, order__is_deleted=False,
-            order__created_at__gte=cutoff,
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
+            order__paid_at__gte=cutoff,
         )
-        .exclude(order__status='CANCELED')
         .values(
             'product_id',
-            weekday=F('order__created_at__week_day'),
-            hour=F('order__created_at__hour'),
+            weekday=F('order__paid_at__week_day'),
+            hour=F('order__paid_at__hour'),
         )
         .annotate(qty=Sum('quantity'))
     ) if top_ids else []
@@ -88,6 +106,22 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
         per_product_weekday[pid][wd] = per_product_weekday[pid].get(wd, 0) + qty
         hr = str(cell['hour'])
         per_product_hour[pid][hr] = per_product_hour[pid].get(hr, 0) + qty
+    refund_breakdown_rows = (
+        cancelled_items.filter(product_id__in=top_ids)
+        .values(
+            'product_id',
+            weekday=F(f'{REFUND_EVENT_ALIAS}__refunded_at__week_day'),
+            hour=F(f'{REFUND_EVENT_ALIAS}__refunded_at__hour'),
+        )
+        .annotate(qty=Sum('quantity'))
+    ) if top_ids else []
+    for cell in refund_breakdown_rows:
+        pid = cell['product_id']
+        qty = int(cell['qty'] or 0)
+        wd = weekday_map.get(cell['weekday'], str(cell['weekday']))
+        per_product_weekday[pid][wd] = per_product_weekday[pid].get(wd, 0) - qty
+        hr = str(cell['hour'])
+        per_product_hour[pid][hr] = per_product_hour[pid].get(hr, 0) - qty
 
     products = [
         {

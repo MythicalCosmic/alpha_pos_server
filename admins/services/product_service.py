@@ -220,9 +220,12 @@ class AdminProductService:
             return ServiceResponse.error("Product is already deleted")
 
         if hard_delete:
-            product.hard_delete()
+            # Physical cloud deletes cannot be represented by the timestamp
+            # change feed. Retain a synchronized tombstone row so all branches
+            # stop selling the product instead of keeping a stale copy.
+            product.delete()
             ProductRepository.invalidate_cache()
-            return ServiceResponse.success(message="Product permanently deleted")
+            return ServiceResponse.success(message="Product archived successfully")
 
         product.is_deleted = True
         product.save(update_fields=['is_deleted', 'synced_at', 'sync_version'])

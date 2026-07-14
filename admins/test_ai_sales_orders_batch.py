@@ -120,6 +120,24 @@ class TestIncludeItems:
         assert 'items' in row_with and row_with['items_count'] == 1
         assert 'items' not in row_wo and row_wo['items_count'] == 1  # count stays
 
+    def test_list_query_count_does_not_grow_per_order(self, order_factory):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from admins.services.order_service import AdminOrderService
+
+        order_factory()
+        with CaptureQueriesContext(connection) as one_order_queries:
+            result, status = AdminOrderService.get_all_orders(per_page=100)
+        assert status == 200, result
+
+        for _ in range(5):
+            order_factory()
+        with CaptureQueriesContext(connection) as many_order_queries:
+            result, status = AdminOrderService.get_all_orders(per_page=100)
+        assert status == 200, result
+
+        assert len(many_order_queries) == len(one_order_queries)
+
 
 # ── Product affinity / market-basket (item 16) ──
 

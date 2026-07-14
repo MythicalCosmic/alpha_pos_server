@@ -10,6 +10,7 @@
 # FIRST checkout must be `git clone --recurse-submodules` (this script also runs
 # `submodule update --init` defensively).
 set -euo pipefail
+umask 077
 
 IP="${1:?Usage: ./deploy.sh <SERVER_PUBLIC_IP>}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,12 +35,16 @@ SECRET="$(keep SECRET_KEY)";            SECRET="${SECRET:-$(rand 64)}"
 DBPASS="$(keep DB_PASSWORD)";           DBPASS="${DBPASS:-$(rand 32)}"
 FERNET="$(keep LICENSE_FERNET_KEY)";    FERNET="${FERNET:-$(fernet)}"
 BTOK="$(keep DESKTOP_BRANCH_TOKEN)";    BTOK="${BTOK:-$(rand 32)}"
-# Smart Food customer bot (Telegram Mini App). Token baked in by default; any
-# existing .env value wins via keep(). Set CUSTOMER_WEBAPP_URL to the Mini App's
-# real hosted URL, and YANDEX_GEOCODER_KEY for server-side address geocoding.
-CBOT="$(keep CUSTOMER_BOT_TOKEN)";      CBOT="${CBOT:-8783914595:AAFaThtUdYIzPXt9Sj0gvrhIGMG7f3_BLos}"
+# Smart Food customer bot (Telegram Mini App). Configure its token once in the
+# server-side .env; deploys preserve it. Never bake a live bot credential into
+# source. Set YANDEX_GEOCODER_KEY there for server-side address geocoding.
+CBOT="$(keep CUSTOMER_BOT_TOKEN)"
 CWHSEC="$(keep CUSTOMER_WEBHOOK_SECRET)"; CWHSEC="${CWHSEC:-$(rand 32)}"
 YGEO="$(keep YANDEX_GEOCODER_KEY)"
+# Bootstrap credentials are generated once and kept only in the server-side
+# .env. Never bake a real credential or a shared default password into Git.
+ADMIN_EMAIL="$(keep ALPHA_POS_ADMIN_EMAIL)"; ADMIN_EMAIL="${ADMIN_EMAIL:-admin@alpha.local}"
+ADMIN_PASS="$(keep ALPHA_POS_ADMIN_PASSWORD)"; ADMIN_PASS="${ADMIN_PASS:-$(rand 32)}"
 # Auto bot-dispatch + auto courier-assign default OFF for a safe rollout: presence
 # needs tills on 1.0.13+ (older tills send no device presence, so auto-dispatch
 # would reject every bot order). Flip to true in .env once the tills are updated.
@@ -74,6 +79,8 @@ BRANCH_ID=cloud
 LICENSE_FERNET_KEY=${FERNET}
 LICENSE_CONTROL_CENTER_URL=${CONTROL_URL}
 LICENSE_HEARTBEAT_DISABLED=1
+ALPHA_POS_ADMIN_EMAIL=${ADMIN_EMAIL}
+ALPHA_POS_ADMIN_PASSWORD=${ADMIN_PASS}
 DESKTOP_BRANCH_TOKEN=${BTOK}
 BRANCH_TOKEN_MAP={"${BTOK}":"branch1"}
 TRUST_FORWARDED_PROTO=True
@@ -96,6 +103,7 @@ ANTHROPIC_MODEL=${AMODEL}
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_API_KEY=${GAPI}
 EOF
+chmod 600 "$DIR/.env"
 echo ">> wrote .env (secrets preserved)"
 
 # --- 4. edge overlay: join the app to the shared network as 'alpha-web' ----
@@ -159,26 +167,12 @@ for _i in $(seq 1 90); do
 done
 eval "$DC migrate --noinput" || true   # idempotent safety-net in case the wait timed out
 eval "$DC activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
-eval "$DC bootstrap_admin --email admin@alpha.local --password 'CHANGE-ME-strong'" || true
-
-# Django admin users (idempotent): a superuser for /admin/ + a normal user, both
-# with password root1234 (default auth.User model). Piped to manage.py shell.
-( cd "$DIR" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py shell ) <<'PYEOF' || true
-from django.contrib.auth import get_user_model
-U = get_user_model()
-a, _ = U.objects.get_or_create(username='admin', defaults={'email': 'admin@local'})
-a.is_staff = a.is_superuser = a.is_active = True
-a.set_password('root1234'); a.save()
-n, _ = U.objects.get_or_create(username='user', defaults={'email': 'user@local'})
-n.is_active = True
-n.set_password('root1234'); n.save()
-print('Django admin users ready: admin (superuser) + user, password root1234')
-PYEOF
+eval "$DC bootstrap_admin" || true
 
 echo ""
 echo "============================================================"
 echo "  Alpha POS server is up:  https://${HOST}"
-echo "  POS API admin: admin@alpha.local / CHANGE-ME-strong  (CHANGE IT)"
-echo "  Django /admin/: admin / root1234 (superuser)  +  user / root1234"
-echo "  Desktop tills use this as CLOUD_SYNC_TOKEN:  ${BTOK}"
+echo "  POS API admin credentials are stored in the root-only .env file."
+echo "  No predictable Django /admin/ accounts are created automatically."
+echo "  Desktop branch token is stored in the root-only .env file."
 echo "============================================================"

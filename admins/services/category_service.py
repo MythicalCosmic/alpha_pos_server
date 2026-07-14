@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count, Q
 
 from base.repositories import CategoryRepository
@@ -202,9 +203,14 @@ class AdminCategoryService:
             )
 
         if hard_delete:
-            category.hard_delete()
+            # Cloud-origin catalog deletion must remain in the change feed so
+            # every branch removes the category too. A physical delete has no
+            # cloud tombstone lane and left tills serving stale categories.
+            # Keep the historical `hard=true` API compatible as an archive
+            # request, but persist a synchronized soft-delete marker.
+            category.delete()
             CategoryRepository.invalidate_cache()
-            return ServiceResponse.success(message="Category permanently deleted")
+            return ServiceResponse.success(message="Category archived successfully")
 
         category.is_deleted = True
         category.save(update_fields=['is_deleted', 'synced_at', 'sync_version'])
@@ -243,6 +249,7 @@ class AdminCategoryService:
         )
 
     @staticmethod
+    @transaction.atomic
     def update_category_status(category_id, status):
         if status not in ('ACTIVE', 'INACTIVE'):
             return ServiceResponse.validation_error(
@@ -250,12 +257,15 @@ class AdminCategoryService:
                 message="Invalid status",
             )
 
-        updated = CategoryRepository.model.objects.filter(
-            id=category_id, is_deleted=False
-        ).update(status=status)
-
-        if updated == 0:
+        category = CategoryRepository.model.objects.select_for_update().filter(
+            id=category_id, is_deleted=False,
+        ).first()
+        if not category:
             return ServiceResponse.not_found("Category not found")
+
+        if category.status != status:
+            category.status = status
+            category.save(update_fields=['status'])
 
         CategoryRepository.invalidate_cache()
         return ServiceResponse.success(message=f"Category status updated to {status}")
@@ -277,6 +287,7 @@ class AdminCategoryService:
         )
 
     @staticmethod
+    @transaction.atomic
     def reorder_categories(category_orders):
         if not category_orders or not isinstance(category_orders, list):
             return ServiceResponse.validation_error(
@@ -284,15 +295,33 @@ class AdminCategoryService:
                 message="Validation failed",
             )
 
+        orders_by_id = {}
         for item in category_orders:
             if 'id' not in item or 'sort_order' not in item:
                 return ServiceResponse.validation_error(
                     errors={'orders': 'Each item must have id and sort_order'},
                     message="Validation failed",
                 )
-            CategoryRepository.model.objects.filter(
-                id=item['id'], is_deleted=False
-            ).update(sort_order=item['sort_order'])
+            try:
+                category_id = int(item['id'])
+                sort_order = int(item['sort_order'])
+            except (TypeError, ValueError):
+                return ServiceResponse.validation_error(
+                    errors={'orders': 'Category id and sort_order must be integers'},
+                    message="Validation failed",
+                )
+            # Collapse duplicate IDs so one request publishes one final version
+            # per category (the last supplied position wins).
+            orders_by_id[category_id] = sort_order
+
+        categories = CategoryRepository.model.objects.select_for_update().filter(
+            id__in=orders_by_id, is_deleted=False,
+        )
+        for category in categories:
+            sort_order = orders_by_id[category.id]
+            if category.sort_order != sort_order:
+                category.sort_order = sort_order
+                category.save(update_fields=['sort_order'])
 
         CategoryRepository.invalidate_cache()
         return ServiceResponse.success(message="Categories reordered successfully")
