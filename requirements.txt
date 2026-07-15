@@ -8,3 +8,4 @@
 # (deploy.sh also runs `git submodule update --init` defensively).
 channels-redis==4.3.0        # Redis channel layer: websocket group fan-out across uvicorn workers
 uvicorn[standard]==0.49.0    # ASGI server (replaces gunicorn / WSGI)
+openpyxl==3.1.5              # Native XLSX dashboard and shift-report exports

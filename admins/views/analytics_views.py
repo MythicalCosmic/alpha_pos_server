@@ -2,6 +2,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.http import JsonResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.views.decorators.http import require_GET
 
@@ -16,8 +17,14 @@ from admins.services.product_analytics_service import (
 from admins.services.shift_analytics_service import (
     cashier_shift_analytics, kitchen_shift_analytics, shift_handover_report,
 )
+from admins.services.workbook_export_service import build_shift_report_workbook
+from admins.views.export_response import xlsx_attachment
 from base.models import Shift
 from base.security.permissions import manager_required, pos_staff_required
+from base.security.rate_limit import rate_limit
+
+
+MAX_SHIFT_EXPORT_RECEIPTS = 5000
 
 
 def _can_view_any_shift(user):
@@ -27,19 +34,43 @@ def _can_view_any_shift(user):
     return getattr(user, 'role', None) in ('ADMIN', 'MANAGER')
 
 
-@require_GET
-@pos_staff_required
-def shift_perf_view(request, shift_id):
+def _visible_shift(request, shift_id):
+    """Load one shift and enforce the shared report/performance ownership rule."""
     try:
-        shift = Shift.objects.select_related('user').get(
-            id=shift_id, is_deleted=False,
-        )
+        shift = Shift.objects.select_related(
+            'user', 'shift_template', 'reconciliation',
+        ).get(id=shift_id, is_deleted=False)
     except Shift.DoesNotExist:
-        return JsonResponse(
+        return None, JsonResponse(
             {'success': False, 'message': 'Shift not found'}, status=404,
         )
     if not _can_view_any_shift(request.user) and shift.user_id != request.user.id:
-        return JsonResponse({'success': False, 'message': 'Forbidden'}, status=403)
+        return None, JsonResponse(
+            {'success': False, 'message': 'Forbidden'}, status=403,
+        )
+    return shift, None
+
+
+def _shift_export_receipt_count(shift):
+    """Cheap guard before materializing an anomalously large XLSX report."""
+    from base.models import Order
+
+    end = shift.end_time or timezone.now()
+    return Order.objects.filter(
+        is_deleted=False,
+        cashier_id=shift.user_id,
+        branch_id=shift.branch_id,
+        created_at__gte=shift.start_time,
+        created_at__lt=end,
+    ).count()
+
+
+@require_GET
+@pos_staff_required
+def shift_perf_view(request, shift_id):
+    shift, error = _visible_shift(request, shift_id)
+    if error is not None:
+        return error
     return JsonResponse({'success': True, 'data': shift_performance(shift)})
 
 
@@ -124,15 +155,43 @@ def cashier_shift_analytics_view(request):
 @require_GET
 @pos_staff_required
 def shift_report_view(request, shift_id):
-    try:
-        shift = Shift.objects.select_related('user', 'shift_template', 'reconciliation').get(
-            id=shift_id, is_deleted=False,
-        )
-    except Shift.DoesNotExist:
-        return JsonResponse({'success': False, 'message': 'Shift not found'}, status=404)
-    if not _can_view_any_shift(request.user) and shift.user_id != request.user.id:
-        return JsonResponse({'success': False, 'message': 'Forbidden'}, status=403)
+    shift, error = _visible_shift(request, shift_id)
+    if error is not None:
+        return error
     return JsonResponse({'success': True, 'data': shift_handover_report(shift)})
+
+
+@require_GET
+@rate_limit('admin_shift_report_export', max_attempts=10, window=60)
+@pos_staff_required
+def shift_report_export_view(request, shift_id):
+    """Download the canonical handover report without recomputing its figures."""
+    shift, error = _visible_shift(request, shift_id)
+    if error is not None:
+        return error
+    receipt_count = _shift_export_receipt_count(shift)
+    if receipt_count > MAX_SHIFT_EXPORT_RECEIPTS:
+        return JsonResponse(
+            {
+                'success': False,
+                'message': (
+                    'Shift report is too large for an immediate download; '
+                    'contact support for an archive export.'
+                ),
+                'receipt_count': receipt_count,
+                'max_receipts': MAX_SHIFT_EXPORT_RECEIPTS,
+            },
+            status=413,
+        )
+    report = shift_handover_report(shift)
+    payload = build_shift_report_workbook(report)
+    local_date = timezone.localtime(shift.start_time).date().isoformat()
+    filename = f'alpha-pos-shift-{shift.id}-report-{local_date}.xlsx'
+    return xlsx_attachment(
+        payload,
+        filename,
+        count=report.get('receipt_count', 0),
+    )
 
 
 @require_GET

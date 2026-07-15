@@ -111,6 +111,7 @@ urlpatterns = [
     path('dashboard/today', dashboard_views.today_view, name='dashboard_today'),
     path('dashboard/sales', dashboard_views.sales_view, name='dashboard_sales'),
     path('dashboard/operations', dashboard_views.operations_view, name='dashboard_operations'),
+    path('dashboard/export', dashboard_views.export_view, name='dashboard_export'),
     path('dashboard', dashboard_views.range_view, name='dashboard_range'),
     path('sidebar-counts', dashboard_views.sidebar_counts_view, name='sidebar_counts'),
 
@@ -128,6 +129,7 @@ urlpatterns = [
     path('analytics/shifts/kitchen', analytics_views.kitchen_shift_analytics_view, name='analytics_shifts_kitchen'),
     # Shift handover report (manager view when a cashier ends their shift).
     path('analytics/shifts/<int:shift_id>/report', analytics_views.shift_report_view, name='analytics_shift_report'),
+    path('analytics/shifts/<int:shift_id>/report/export', analytics_views.shift_report_export_view, name='analytics_shift_report_export'),
 
     # Products dashboard (item 9) — ?from=&to= (YYYY-MM-DD), business-day window.
     path('analytics/products/overview', analytics_views.products_overview_view, name='analytics_products_overview'),
