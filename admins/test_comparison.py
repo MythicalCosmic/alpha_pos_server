@@ -76,8 +76,13 @@ def dataset():
     _item(o1, y, 1, 40000)   # 40000 Food
     o2 = _order(c1, utc(2026, 6, 12, 6), 50000, pm='UZCARD', otype='DELIVERY')
     _item(o2, x, 1, 30000)   # 30000 Drinks
-    # Noise that must be excluded from A: a canceled + an unpaid order.
-    _order(c1, utc(2026, 6, 11, 9), 999999, status='CANCELED')
+    # Unpaid canceled noise is neither operational demand nor a settlement.
+    # Paid cancellations are covered separately and remain immutable sales
+    # until a dated OrderRefund reverses them.
+    _order(
+        c1, utc(2026, 6, 11, 9), 999999,
+        status='CANCELED', is_paid=False,
+    )
     _order(c1, utc(2026, 6, 11, 9), 888888, is_paid=False, status='OPEN')
 
     # Period B: 2026-06-02 14:00 TAS
@@ -108,8 +113,8 @@ def test_kpis(dataset):
     assert k['discounts']['a'] == 0 and k['discounts']['delta_pct'] == 0.0
     assert k['avg_items_per_order']['a'] == 2.0          # 4 items / 2 orders
     assert k['avg_items_per_order']['is_up_good'] is True
-    # Omitted (no data): refunds, gross_profit, margin_pct.
-    assert 'refunds' not in k and 'gross_profit' not in k and 'margin_pct' not in k
+    assert k['refunds']['a'] == 0 and k['refunds']['b'] == 0
+    assert 'gross_profit' not in k and 'margin_pct' not in k
 
 
 def test_categories_and_products(dataset):

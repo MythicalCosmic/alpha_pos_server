@@ -22,9 +22,11 @@ pytestmark = pytest.mark.django_db
 
 def _add_history(user, product, qty, hours_ago):
     from base.models import Order, OrderItem
+    paid_at = timezone.now() - timedelta(hours=hours_ago)
     o = Order.objects.create(
         user=user, phone_number='998900000001', order_type='PICKUP',
         status='COMPLETED', is_paid=True, payment_method='CASH',
+        paid_at=paid_at,
         total_amount=Decimal('100'), subtotal=Decimal('100'),
         display_id=Order.objects.count() + 1,
     )
@@ -34,7 +36,7 @@ def _add_history(user, product, qty, hours_ago):
     )
     from base.models import Order as O
     O.objects.filter(pk=o.pk).update(
-        created_at=timezone.now() - timedelta(hours=hours_ago),
+        created_at=paid_at,
     )
     return o
 

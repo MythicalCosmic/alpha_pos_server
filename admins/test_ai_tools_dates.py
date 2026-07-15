@@ -60,7 +60,20 @@ def test_query_db_allows_orderitem_side_sum():
 def test_overview_today_revenue_excludes_unpaid_and_cancelled():
     _order(100000, is_paid=True, status='COMPLETED')    # counts
     _order(50000, is_paid=False, status='OPEN')          # unpaid -> excluded
-    _order(30000, is_paid=True, status='CANCELED')       # cancelled -> excluded
+    cancelled = _order(30000, is_paid=True, status='CANCELED')
+    # Paid headers remain immutable gross-sale evidence.  The dated terminal
+    # refund is what reverses the sale from net revenue.
+    from base.models import OrderRefund
+    OrderRefund.objects.create(
+        order=cancelled,
+        branch_id=cancelled.branch_id,
+        amount=Decimal('30000'),
+        cash_amount=Decimal('30000'),
+        drawer_cash_amount=Decimal('30000'),
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id='ai-overview-cancel',
+        refunded_at=timezone.now(),
+    )
     res = _exec('get_overview', {})
     ts = res['today_sales']
     assert ts['paid_revenue_uzs'] == 100000.0, ts

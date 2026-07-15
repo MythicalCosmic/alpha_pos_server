@@ -16,16 +16,19 @@ pytestmark = pytest.mark.django_db
 
 def _make_paid_order(user, total='100000', minutes_ago=10, cancelled=False):
     from base.models import Order
+    settled_at = timezone.now() - timedelta(minutes=minutes_ago)
     o = Order.objects.create(
         user=user, phone_number='998900000001', order_type='PICKUP',
         status='CANCELED' if cancelled else 'COMPLETED',
         is_paid=not cancelled, payment_method='CASH' if not cancelled else None,
+        paid_at=settled_at if not cancelled else None,
         total_amount=Decimal(total), subtotal=Decimal(total),
         display_id=Order.objects.count() + 1,
     )
     from base.models import Order as O
     O.objects.filter(pk=o.pk).update(
-        created_at=timezone.now() - timedelta(minutes=minutes_ago),
+        created_at=settled_at,
+        paid_at=settled_at if not cancelled else None,
     )
     o.refresh_from_db()
     return o

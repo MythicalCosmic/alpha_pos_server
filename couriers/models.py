@@ -242,9 +242,9 @@ class CourierPayment(models.Model):
 
 class CourierSettlement(models.Model):
     """A shift-handover snapshot. Closing one is what "settles" the courier:
-    every payment/delivery created at or before ``period_end`` is considered
-    settled, so the next reconciliation only counts events after it. The numbers
-    are a frozen copy of the reconciliation at handover time (so'm)."""
+    every payment, refund, and delivery in the half-open window
+    ``[period_start, period_end)`` is considered settled. The numbers are a
+    frozen copy of the reconciliation at handover time (so'm)."""
 
     courier = models.ForeignKey(
         Courier, on_delete=models.CASCADE, related_name='settlements',

@@ -37,6 +37,9 @@ from base.models import Order, OrderItem
 from admins.services.refund_reporting import (
     net_grouped_items, refund_events, refund_item_events,
 )
+from base.services.refund_lines import (
+    REFUND_EVENT_ALIAS, refund_line_quantity,
+)
 
 # A paid row remains a historical sale even if it is later cancelled/refunded.
 _SALES = Q(is_deleted=False, is_paid=True)
@@ -139,7 +142,9 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
     operational_count = operational_orders.count()
     gross = sale_net + discounts                  # pre-discount sale revenue
     gross_items = int(items.aggregate(q=Sum('quantity'))['q'] or 0)
-    refunded_items = int(refund_items.aggregate(q=Sum('quantity'))['q'] or 0)
+    refunded_items = int(refund_items.aggregate(
+        q=Sum(refund_line_quantity(REFUND_EVENT_ALIAS)),
+    )['q'] or 0)
     n_items = gross_items - refunded_items
 
     # -- revenue timeseries (bucket -> so'm) --------------------------------

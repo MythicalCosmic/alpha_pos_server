@@ -6,9 +6,11 @@ counts toward the night before, consistent with the dashboard and order stats.
 """
 from decimal import Decimal
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from base.services.revenue import net_line_revenue
-from base.services.refund_lines import REFUND_EVENT_ALIAS
+from base.services.refund_lines import (
+    REFUND_EVENT_ALIAS, refund_line_quantity, refund_line_revenue,
+)
 
 _LINE_TOTAL = net_line_revenue()
 
@@ -78,8 +80,16 @@ def products_overview(date_from, date_to, tod_from=None, tod_to=None):
         orders=Count('order_id', distinct=True),
     )
     reversed_ = refunds.aggregate(
-        units=Sum('quantity'), revenue=Sum(_LINE_TOTAL), lines=Count('id'),
-        orders=Count('order_id', distinct=True),
+        units=Sum(refund_line_quantity(REFUND_EVENT_ALIAS)),
+        revenue=Sum(refund_line_revenue(REFUND_EVENT_ALIAS)),
+        lines=Count(
+            'id', filter=Q(refund_event__source='ORDER_CANCEL'),
+        ),
+        orders=Count(
+            'order_id',
+            filter=Q(refund_event__source='ORDER_CANCEL'),
+            distinct=True,
+        ),
     )
     gross_revenue = gross['revenue'] or Decimal('0')
     refund_amount = reversed_['revenue'] or Decimal('0')
@@ -295,8 +305,10 @@ def products_affinity(date_from, date_to, limit=10):
         )
         .values_list('order_id', 'product_id')
     )
-    refund_rows = _refunded_items(date_from, date_to).values_list(
-        'order_id', 'product_id',
+    refund_rows = (
+        _refunded_items(date_from, date_to)
+        .filter(refund_event__source='ORDER_CANCEL')
+        .values_list('order_id', 'product_id')
     )
 
     baskets = {}  # order_id -> {product_id, ...} (distinct products per order)
@@ -305,7 +317,12 @@ def products_affinity(date_from, date_to, limit=10):
             baskets.setdefault(oid, set()).add(pid)
     refund_baskets = {}
     for oid, pid in refund_rows:
-        if pid is not None:
+        # Affinity describes the sale cohort selected above.  A cancellation
+        # from a different reporting window is a valid negative money event,
+        # but there is no basket in this cohort for it to neutralize.  Counting
+        # it here produced negative totalOrders/product counts on refund-only
+        # days and invalid lift denominators.
+        if oid in baskets and pid is not None:
             refund_baskets.setdefault(oid, set()).add(pid)
 
     total_orders = len(baskets) - len(refund_baskets)

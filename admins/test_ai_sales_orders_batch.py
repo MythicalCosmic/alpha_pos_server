@@ -164,21 +164,21 @@ class TestProductAffinity:
         _order_with([A, B, C])                            # paid
         _order_with([A, B])                               # paid
         _order_with([A, C])                               # paid
-        _order_with([A, B], status='CANCELED')            # excluded (cancelled)
+        _order_with([A, B], status='CANCELED')            # paid sale remains immutable
         _order_with([A, B], paid=False, status='OPEN')    # excluded (unpaid)
 
         data = products_affinity(date(2026, 3, 10), date(2026, 3, 10), limit=10)
-        assert data['totalOrders'] == 3                   # only the 3 paid, non-cancelled
+        assert data['totalOrders'] == 4                   # every paid sale; refunds reverse separately
         by_id = {p['id']: p for p in data['products']}
-        assert by_id[A.id]['orders'] == 3
-        assert by_id[B.id]['orders'] == 2 and by_id[C.id]['orders'] == 2
+        assert by_id[A.id]['orders'] == 4
+        assert by_id[B.id]['orders'] == 3 and by_id[C.id]['orders'] == 2
         assert data['products'][0]['id'] == A.id          # most orders first
         # every pair: a<b (by index), count>0
         assert all(p['a'] < p['b'] and p['count'] > 0 for p in data['pairs'])
         idx_to_id = [p['id'] for p in data['products']]
         counts = {tuple(sorted((idx_to_id[p['a']], idx_to_id[p['b']]))): p['count']
                   for p in data['pairs']}
-        assert counts[tuple(sorted((A.id, B.id)))] == 2
+        assert counts[tuple(sorted((A.id, B.id)))] == 3
         assert counts[tuple(sorted((A.id, C.id)))] == 2
         assert counts[tuple(sorted((B.id, C.id)))] == 1
         assert len(data['pairs']) == 3

@@ -26,6 +26,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from base.models import Order, OrderPayment
+from base.services.accounting_cursor import lock_branch_accounting
 from couriers import presenters, realtime, services
 from couriers.models import CourierPayment
 
@@ -136,7 +137,7 @@ def _capacity_error(order, amount):
     return None
 
 
-def _recompute_order_paid(order):
+def _recompute_order_paid(order, *, accounting_recorded_at=None):
     """Re-derive the paid header from all concrete till/courier evidence."""
     evidence, error = _payment_evidence(order)
     if error:
@@ -151,6 +152,12 @@ def _recompute_order_paid(order):
         if not order.is_paid:
             order.is_paid = True
             fields.append('is_paid')
+            if (
+                order.accounting_recorded_at is None
+                and accounting_recorded_at is not None
+            ):
+                order.accounting_recorded_at = accounting_recorded_at
+                fields.append('accounting_recorded_at')
         if order.payment_method != method:
             order.payment_method = method
             fields.append('payment_method')
@@ -243,7 +250,7 @@ def _manual_external_id(*, order, courier, provider, amount):
 
 
 def _refund_event_id(payment):
-    return str(payment.external_id or f'legacy-payment:{payment.pk}')
+    return services.courier_payment_event_key(payment)
 
 
 def _existing_refund(payment):
@@ -281,7 +288,6 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
     if err:
         return None, err
 
-    now = timezone.now()
     supplied_external_id = (external_id or '').strip()[:128]
     with transaction.atomic():
         # Lock the order row so concurrent create/refund recomputes serialize
@@ -295,6 +301,15 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
             )
             if assignment_courier_id != courier.pk:
                 return None, 'order is not assigned to this courier'
+        if not order.branch_id:
+            return None, 'delivery order has no branch ownership'
+        # Global lock order is branch register -> courier. Inkassa and courier
+        # settlement take the same owner rows before their cutoffs, so this event
+        # falls wholly before one boundary or wholly after it.
+        lock_branch_accounting(order.branch_id)
+        if courier is not None:
+            courier = services.lock_courier_accounting(courier)
+        now = timezone.now()
         if use_locked_order_total:
             amount, err = _coerce_amount(None, order)
             if err:
@@ -346,19 +361,19 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
             if payment.status == CourierPayment.Status.PAID:
                 # Exact replay: repair the header if necessary but never emit a
                 # second money event/notification.
-                _recompute_order_paid(order)
+                _recompute_order_paid(order, accounting_recorded_at=now)
                 refund = _existing_refund(payment)
                 if refund is not None:
                     return _present_refunded(payment, refund), None
                 return payment, None
             if payment.status == CourierPayment.Status.REFUNDED:
-                _recompute_order_paid(order)
+                _recompute_order_paid(order, accounting_recorded_at=now)
                 return payment, None
             if payment.status == CourierPayment.Status.FAILED:
-                _recompute_order_paid(order)
+                _recompute_order_paid(order, accounting_recorded_at=now)
                 return None, 'external_id belongs to a failed payment'
             if payment.status != CourierPayment.Status.PENDING:
-                _recompute_order_paid(order)
+                _recompute_order_paid(order, accounting_recorded_at=now)
                 return None, f'invalid existing payment status {payment.status!r}'
             capacity_error = _capacity_error(order, amount)
             if capacity_error:
@@ -389,13 +404,13 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
                     CourierPayment.Status.PAID,
                     CourierPayment.Status.REFUNDED,
                 }:
-                    _recompute_order_paid(order)
+                    _recompute_order_paid(order, accounting_recorded_at=now)
                     refund = _existing_refund(payment)
                     if refund is not None:
                         return _present_refunded(payment, refund), None
                     return payment, None
                 return None, f'external_id belongs to a {payment.status.lower()} payment'
-        _recompute_order_paid(order)
+        _recompute_order_paid(order, accounting_recorded_at=now)
 
     _emit(payment, 'payment.paid', order)
     label = dict(CourierPayment.Provider.choices).get(provider, provider)
@@ -416,6 +431,13 @@ def refund_payment(payment):
         if payment.status != CourierPayment.Status.PAID:
             _recompute_order_paid(order)
             return None, 'only a paid payment can be refunded'
+        if not order.branch_id:
+            return None, 'delivery order has no branch ownership'
+        lock_branch_accounting(order.branch_id)
+        if payment.courier_id:
+            payment.courier = services.lock_courier_accounting(
+                payment.courier_id,
+            )
         from base.services.order_refund import (
             SettlementInvariantError, record_external_provider_refund,
         )
@@ -490,10 +512,18 @@ def apply_webhook(*, external_id='', payment_id=None, status='', order_id=None,
                 capacity_error = _capacity_error(order, payment.amount)
                 if capacity_error:
                     return None, capacity_error
+                if not order.branch_id:
+                    return None, 'delivery order has no branch ownership'
+                lock_branch_accounting(order.branch_id)
+                if payment.courier_id:
+                    payment.courier = services.lock_courier_accounting(
+                        payment.courier_id,
+                    )
+                now = timezone.now()
                 payment.status = CourierPayment.Status.PAID
-                payment.paid_at = timezone.now()
+                payment.paid_at = now
                 payment.save(update_fields=['status', 'paid_at'])
-                _recompute_order_paid(order)
+                _recompute_order_paid(order, accounting_recorded_at=now)
             _emit(payment, 'payment.paid', order)
             return payment, None
         if order_id:

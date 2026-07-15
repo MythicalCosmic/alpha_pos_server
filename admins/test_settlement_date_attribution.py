@@ -64,6 +64,7 @@ def _sale(*, discount_percent='0'):
 
 
 def _shifts(cashier):
+    from django.conf import settings
     from base.models import Shift
 
     creation_shift = Shift.objects.create(
@@ -71,12 +72,14 @@ def _shifts(cashier):
         status='ENDED',
         start_time=CREATED_AT - timedelta(hours=1),
         end_time=CREATED_AT + timedelta(minutes=30),
+        branch_id=settings.BRANCH_ID,
     )
     settlement_shift = Shift.objects.create(
         user=cashier,
         status='ENDED',
         start_time=PAID_AT - timedelta(minutes=1),
         end_time=PAID_AT + timedelta(hours=1),
+        branch_id=settings.BRANCH_ID,
     )
     return creation_shift, settlement_shift
 
@@ -142,7 +145,15 @@ def test_product_sales_and_trends_follow_paid_business_date():
 
     trend = products_trends(date(2026, 7, 10), date(2026, 7, 10))
     assert trend['daily'] == [
-        {'date': '2026-07-10', 'units': 2, 'revenue': '100'},
+        {
+            'date': '2026-07-10',
+            'units': 2,
+            'revenue': '100',
+            'gross_units': 2,
+            'refunded_units': 0,
+            'gross_revenue': '100',
+            'refund_amount': '0',
+        },
     ]
     assert products_affinity(
         date(2026, 7, 9), date(2026, 7, 9),

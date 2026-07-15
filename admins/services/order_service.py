@@ -948,17 +948,26 @@ class AdminOrderService:
             return ServiceResponse.validation_error(
                 errors={'payments': 'Non-cash overpayment is not allowed'})
 
+        branch_assigned = False
+        if not order.branch_id:
+            order.branch_id = settlement_shift.branch_id
+            branch_assigned = True
+        from base.services.accounting_cursor import lock_branch_accounting
+        lock_branch_accounting(order.branch_id)
+        paid_event_at = timezone.now()
+
         distinct = {m for m, _ in lines}
         order.is_paid = True
         order.payment_method = (next(iter(distinct)) if len(distinct) == 1
                                 else Order.PaymentMethod.MIXED)
-        order.paid_at = timezone.now()
+        order.paid_at = paid_event_at
+        order.accounting_recorded_at = paid_event_at
         order.cashier_id = settlement_shift.user_id
         payment_update_fields = [
-            'is_paid', 'payment_method', 'paid_at', 'cashier',
+            'is_paid', 'payment_method', 'paid_at',
+            'accounting_recorded_at', 'cashier',
         ]
-        if not order.branch_id:
-            order.branch_id = settlement_shift.branch_id
+        if branch_assigned:
             payment_update_fields.append('branch_id')
         order.save(update_fields=payment_update_fields)
 

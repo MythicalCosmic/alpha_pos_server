@@ -17,13 +17,29 @@ def _u():
 
 
 def _order(method='CASH', total='100', cancelled=False, paid=True):
-    from base.models import Order
-    return Order.objects.create(
+    from base.models import Order, OrderRefund
+    order = Order.objects.create(
         user=_u(), cashier=_u(),
         status='CANCELED' if cancelled else 'COMPLETED',
         is_paid=paid, display_id=1, subtotal=total, total_amount=total,
         payment_method=(method if paid else None),
         paid_at=(timezone.now() if paid else None))
+    if cancelled and paid:
+        amount = Decimal(total)
+        kwargs = {
+            'cash_amount': amount,
+            'drawer_cash_amount': amount,
+        } if method == 'CASH' else {'card_amount': amount}
+        OrderRefund.objects.create(
+            order=order,
+            branch_id=order.branch_id,
+            amount=amount,
+            source=OrderRefund.Source.ORDER_CANCEL,
+            source_id=f'dashboard-range-cancel-{order.pk}',
+            refunded_at=order.paid_at,
+            **kwargs,
+        )
+    return order
 
 
 def test_get_range_today_revenue_and_payment():
@@ -33,7 +49,7 @@ def test_get_range_today_revenue_and_payment():
     _order('CASH', '30', cancelled=True)          # cancelled -> excluded
     data = dashboard_service.get_range()           # default = today
     assert data['orders'] == 3
-    assert data['paid_orders'] == 2                # cancelled excluded
+    assert data['paid_orders'] == 3                # immutable gross paid headers
     assert Decimal(data['revenue']) == 150
     # Canonical tenders: UZCARD folds into `card`; no MIXED bucket.
     assert Decimal(data['payment_breakdown']['cash']) == 100
@@ -45,7 +61,8 @@ def test_get_range_window_excludes_other_days():
     from admins.services import dashboard_service
     from base.models import Order
     o = _order('CASH', '999')
-    Order.objects.filter(pk=o.pk).update(created_at=timezone.now() - timedelta(days=10))
+    old = timezone.now() - timedelta(days=10)
+    Order.objects.filter(pk=o.pk).update(created_at=old, paid_at=old)
     _order('CASH', '100')                          # today
     data = dashboard_service.get_range()            # today only
     assert Decimal(data['revenue']) == 100

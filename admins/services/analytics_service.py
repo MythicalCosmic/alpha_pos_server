@@ -33,7 +33,8 @@ def shift_performance(shift):
     operational = Order.objects.filter(
         is_deleted=False,
         cashier_id=shift.user_id,
-        created_at__gte=start, created_at__lte=end,
+        branch_id=shift.branch_id,
+        created_at__gte=start, created_at__lt=end,
     )
     counts = operational.aggregate(
         total=Count('id'),
@@ -44,16 +45,18 @@ def shift_performance(shift):
         Order.objects.filter(
             is_deleted=False,
             cashier_id=shift.user_id,
+            branch_id=shift.branch_id,
             is_paid=True,
-            paid_at__gte=start, paid_at__lte=end,
+            paid_at__gte=start, paid_at__lt=end,
         )
         .aggregate(paid=Count('id'), revenue=Sum('total_amount'))
     )
     refunds = OrderRefund.objects.filter(
         is_deleted=False,
         shift=shift,
+        branch_id=shift.branch_id,
         refunded_at__gte=start,
-        refunded_at__lte=end,
+        refunded_at__lt=end,
     ).aggregate(count=Count('id'), amount=Sum('amount'))
 
     # Avg prep = (ready_at - created_at) over ready/completed orders, in SQL

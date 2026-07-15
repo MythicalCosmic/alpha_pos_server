@@ -65,9 +65,11 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
         subtotal='100.00',
         total_amount='100.00',
     )
-    CashRegister.objects.create(
-        branch_id='branch-a', current_balance='100.00',
-    )
+    # Paid Order.save already created the branch register as its accounting
+    # lock. Seed revenue on that same drawer rather than creating a duplicate.
+    register = CashRegister.objects.get(branch_id='branch-a')
+    register.current_balance = Decimal('100.00')
+    register.save(update_fields=['current_balance'])
 
     result, status = AdminInkassaService.perform(
         admin_user,

@@ -135,7 +135,10 @@ def test_split_provider_refunds_are_multi_event_and_never_touch_drawer():
     assert events.count() == 2
     assert sum((event.amount for event in events), Decimal('0')) == Decimal('100000')
     assert sum((event.drawer_cash_amount for event in events), Decimal('0')) == 0
-    assert not CashRegister.objects.filter(branch_id=order.branch_id).exists()
+    # The register row is also the branch accounting serialization lock.  A
+    # courier event may create that row, but it must never move drawer cash.
+    register = CashRegister.objects.get(branch_id=order.branch_id)
+    assert register.current_balance == Decimal('0')
     order.refresh_from_db()
     assert order.is_paid and order.payment_method == Order.PaymentMethod.MIXED
     assert CourierPayment.objects.filter(
@@ -373,6 +376,38 @@ def test_webhook_external_id_replay_creates_only_one_money_event():
     assert CourierPayment.objects.filter(external_id='gateway-event-1').count() == 1
 
 
+def test_paid_webhook_replay_repairs_legacy_header_with_accounting_cursor():
+    from base.models import CashRegister
+
+    c = _courier()
+    order, _ = _order(c)
+    paid_at = timezone.now() - timedelta(days=2)
+    CourierPayment.objects.create(
+        order=order,
+        courier=c,
+        provider='QR',
+        amount=order.total_amount,
+        status=CourierPayment.Status.PAID,
+        external_id='gateway-legacy-paid-replay',
+        branch_id=order.branch_id,
+        paid_at=paid_at,
+    )
+    receipt_floor = timezone.now()
+
+    replay, err = payments.apply_webhook(
+        external_id='gateway-legacy-paid-replay', status='paid',
+    )
+
+    assert err is None
+    assert replay.status == CourierPayment.Status.PAID
+    order.refresh_from_db()
+    assert order.is_paid is True
+    assert order.paid_at == paid_at
+    assert order.accounting_recorded_at >= receipt_floor
+    assert order.accounting_recorded_at > order.paid_at
+    assert CashRegister.objects.filter(branch_id=order.branch_id).exists()
+
+
 def test_gateway_external_id_cannot_be_reused_for_another_order():
     c = _courier()
     first_order, _ = _order(c)
@@ -487,6 +522,46 @@ def test_terminal_webhook_states_ignore_late_conflicting_callbacks():
 # --------------------------------------------------------------------------- #
 # reconciliation + settlement ledger
 # --------------------------------------------------------------------------- #
+def test_delivered_locks_assignment_then_order_then_courier(monkeypatch):
+    c = _courier()
+    order, assignment = _order(c, step='ON_WAY')
+    calls = []
+
+    real_assignment_lock = DeliveryAssignment.objects.select_for_update
+    real_order_lock = Order.objects.select_for_update
+    real_courier_lock = services.lock_courier_accounting
+
+    def tracked_assignment_lock(*args, **kwargs):
+        calls.append('assignment')
+        return real_assignment_lock(*args, **kwargs)
+
+    def tracked_order_lock(*args, **kwargs):
+        calls.append('order')
+        return real_order_lock(*args, **kwargs)
+
+    def tracked_courier_lock(courier_or_id):
+        calls.append('courier')
+        return real_courier_lock(courier_or_id)
+
+    monkeypatch.setattr(
+        DeliveryAssignment.objects, 'select_for_update',
+        tracked_assignment_lock,
+    )
+    monkeypatch.setattr(
+        Order.objects, 'select_for_update', tracked_order_lock,
+    )
+    monkeypatch.setattr(
+        services, 'lock_courier_accounting', tracked_courier_lock,
+    )
+
+    delivered, err = services.advance_status(assignment, 'DELIVERED')
+
+    assert err is None and delivered.step == 'DELIVERED'
+    assert calls == ['assignment', 'order', 'courier']
+    order.refresh_from_db()
+    assert order.status == 'COMPLETED'
+
+
 def test_reconciliation_counts_fees_and_cash():
     c = _courier()
     order, a = _order(c, step='ON_WAY', fee=7000)
@@ -525,6 +600,183 @@ def test_qr_and_card_fold_into_noncash():
     snap = services.reconciliation_snapshot(c)
     assert snap['cash_collected'] == 0
     assert snap['qr_collected'] == 200000 and snap['qr_orders'] == 2
+
+
+def test_refund_key_falls_back_to_legacy_primary_key():
+    payment = CourierPayment(pk=731, external_id='')
+    assert services.courier_payment_event_key(payment) == 'legacy-payment:731'
+    assert payments._refund_event_id(payment) == 'legacy-payment:731'
+
+
+def test_refund_and_pending_paid_webhook_take_courier_owner_lock(monkeypatch):
+    c = _courier()
+    order, _ = _order(c)
+    paid, err = payments.create_payment(
+        c, order, 'CASH', external_id='lock-refund-event',
+    )
+    assert err is None
+
+    calls = []
+    real_lock = services.lock_courier_accounting
+
+    def tracked_lock(courier_or_id):
+        calls.append(getattr(courier_or_id, 'pk', courier_or_id))
+        return real_lock(courier_or_id)
+
+    monkeypatch.setattr(services, 'lock_courier_accounting', tracked_lock)
+    refunded, err = payments.refund_payment(paid)
+    assert err is None and refunded is not None
+
+    pending_order, _ = _order(c)
+    pending = CourierPayment.objects.create(
+        order=pending_order,
+        courier=c,
+        provider=CourierPayment.Provider.QR,
+        amount=100000,
+        status=CourierPayment.Status.PENDING,
+        external_id='lock-paid-webhook',
+        branch_id='cloud',
+    )
+    confirmed, err = payments.apply_webhook(
+        external_id=pending.external_id, status='paid',
+    )
+    assert err is None and confirmed.status == CourierPayment.Status.PAID
+    assert calls == [c.pk, c.pk]
+
+
+def test_order_cancel_refunds_only_unreversed_courier_tender():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    OrderPayment.objects.create(
+        order=order, method=Order.PaymentMethod.UZCARD, amount=30000,
+        branch_id='cloud',
+    )
+    cash, err = payments.create_payment(
+        c, order, 'CASH', amount=40000, external_id='cancel-mixed-cash',
+    )
+    assert err is None
+    _qr, err = payments.create_payment(
+        c, order, 'QR', amount=30000, external_id='cancel-mixed-qr',
+    )
+    assert err is None
+    _refunded, err = payments.refund_payment(cash)
+    assert err is None
+
+    cancellation = OrderRefund.objects.create(
+        order=order,
+        amount=Decimal('60000'),
+        cash_amount=Decimal('0'),
+        drawer_cash_amount=Decimal('0'),
+        card_amount=Decimal('30000'),
+        payme_amount=Decimal('30000'),
+        unknown_amount=Decimal('0'),
+        refunded_at=timezone.now(),
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id=str(order.uuid),
+        branch_id='cloud',
+    )
+
+    entries = services.courier_refund_entries(c)
+    attributed = {entry['source_id']: entry for entry in entries}
+    assert attributed[cash.external_id]['amount'] == Decimal('40000')
+    assert attributed[cancellation.source_id]['amount'] == Decimal('30000')
+    assert attributed[cancellation.source_id]['card_amount'] == 0
+    assert attributed[cancellation.source_id]['payme_amount'] == 30000
+    snap = services.reconciliation_snapshot(c)
+    assert snap['cash_collected'] == 0
+    assert snap['qr_collected'] == 0
+
+
+def test_reconciliation_windows_are_half_open_at_exact_cutoff():
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'CASH', external_id='boundary-payment',
+    )
+    assert err is None
+    cutoff = timezone.now()
+    CourierPayment.objects.filter(pk=payment.pk).update(paid_at=cutoff)
+
+    before = services.reconciliation_snapshot(
+        c, start=cutoff - timedelta(seconds=1), end=cutoff,
+    )
+    after = services.reconciliation_snapshot(
+        c, start=cutoff, end=cutoff + timedelta(seconds=1),
+    )
+    assert before['cash_collected'] == 0
+    assert after['cash_collected'] == 100000
+
+
+def test_legacy_refunded_status_keeps_gross_and_refund_in_same_window():
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'CASH', external_id='legacy-status-same-window',
+    )
+    assert err is None
+    _refunded, err = payments.refund_payment(payment)
+    assert err is None
+    CourierPayment.objects.filter(pk=payment.pk).update(
+        status=CourierPayment.Status.REFUNDED,
+    )
+
+    snap = services.reconciliation_snapshot(c)
+    assert snap['cash_collected'] == 0
+    assert snap['cash_in_hand'] == 0
+
+
+def test_late_economic_refund_rolls_into_post_settlement_cursor_window():
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'CASH', external_id='late-refund-after-handover',
+    )
+    assert err is None
+    settlement = services.settle(c)
+
+    _refunded, err = payments.refund_payment(payment)
+    assert err is None
+    refund = OrderRefund.objects.get(
+        source=OrderRefund.Source.COURIER_PAYMENT,
+        source_id=payment.external_id,
+    )
+    # Simulate a delayed provider event whose economic time predates the closed
+    # handover; its local receipt cursor remains in the new window.
+    OrderRefund.objects.filter(pk=refund.pk).update(
+        refunded_at=settlement.period_end - timedelta(days=1),
+    )
+    CourierPayment.objects.filter(pk=payment.pk).update(
+        status=CourierPayment.Status.REFUNDED,
+    )
+    refund.refresh_from_db()
+    assert refund.accounting_recorded_at >= settlement.period_end
+
+    snap = services.reconciliation_snapshot(c)
+    assert snap['cash_collected'] == -100000
+    assert snap['cash_in_hand'] == -100000
+
+
+def test_settlement_locks_order_branch_for_legacy_blank_payment_branch(
+    monkeypatch,
+):
+    c = _courier()
+    order, _ = _order(c)
+    payment, err = payments.create_payment(
+        c, order, 'CASH', external_id='legacy-blank-branch',
+    )
+    assert err is None
+    CourierPayment.objects.filter(pk=payment.pk).update(branch_id='')
+
+    locked = []
+    real_lock = services.lock_branch_accounting
+
+    def tracked_lock(branch_id):
+        locked.append(branch_id)
+        return real_lock(branch_id)
+
+    monkeypatch.setattr(services, 'lock_branch_accounting', tracked_lock)
+    services.settle(c)
+    assert locked == ['cloud']
 
 
 # --------------------------------------------------------------------------- #

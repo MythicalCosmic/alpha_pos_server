@@ -13,7 +13,7 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import F, Sum
+from django.db.models import Exists, F, OuterRef, Sum
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -39,16 +39,36 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
         ],
       }
     """
-    from base.models import OrderItem, OrderRefund
+    from base.models import Order, OrderItem, OrderRefund
     cutoff = timezone.now() - timedelta(days=days)
+
+    # Prep demand follows the original paid-sale cohort, not the dated refund
+    # ledger used by revenue reports. A terminal cancellation removes the
+    # original basket at its paid_at clock. Subtracting it at refunded_at moved
+    # Friday lunch demand into a negative Monday-evening bucket and made the
+    # 30-day boundary asymmetric. Provider/tender refunds remain money-only.
+    terminal_cancellation = OrderRefund.objects.filter(
+        order_id=OuterRef('order_id'),
+        is_deleted=False,
+        source=OrderRefund.Source.ORDER_CANCEL,
+    )
+    demand_items = (
+        OrderItem.objects.filter(
+            is_deleted=False,
+            order__is_deleted=False,
+            order__is_paid=True,
+            order__paid_at__gte=cutoff,
+        )
+        .annotate(_terminally_cancelled=Exists(terminal_cancellation))
+        .filter(_terminally_cancelled=False)
+        # Legacy paid cancellations may predate the immutable refund ledger.
+        .exclude(order__status=Order.Status.CANCELED)
+    )
 
     # Top-N products by total quantity in the window — keeps the prompt
     # bounded and focuses Gemini on the products that actually drive prep.
     top = (
-        OrderItem.objects.filter(
-            is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__paid_at__gte=cutoff,
-        )
+        demand_items
         # Cancelled orders never actually sold — counting them biases the prep
         # forecast upward.
         .values('product_id', 'product__name')
@@ -58,19 +78,6 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
     top_ids = [row['product_id'] for row in top]
     name_by_id = {row['product_id']: row['product__name'] for row in top}
     totals_by_id = {row['product_id']: int(row['total_qty'] or 0) for row in top}
-    from base.services.refund_lines import (
-        REFUND_EVENT_ALIAS, refund_item_events,
-    )
-    cancelled_items = refund_item_events(
-        source=OrderRefund.Source.ORDER_CANCEL,
-        refunded_at__gte=cutoff,
-    )
-    for row in cancelled_items.values(
-        'product_id', 'product__name',
-    ).annotate(total_qty=Sum('quantity')):
-        pid = row['product_id']
-        totals_by_id[pid] = totals_by_id.get(pid, 0) - int(row['total_qty'] or 0)
-        name_by_id.setdefault(pid, row['product__name'])
     top_ids = [
         pid for pid, qty in sorted(
             totals_by_id.items(), key=lambda item: (-item[1], item[0]),
@@ -82,11 +89,7 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
     # One aggregate keyed on (product, weekday, hour) instead of N+1 fan-out.
     # Previously this fired top_n+1 queries; now it's 2.
     breakdown_rows = (
-        OrderItem.objects.filter(
-            product_id__in=top_ids,
-            is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__paid_at__gte=cutoff,
-        )
+        demand_items.filter(product_id__in=top_ids)
         .values(
             'product_id',
             weekday=F('order__paid_at__week_day'),
@@ -106,22 +109,6 @@ def gather_history(days=WINDOW_DAYS, top_n=DEFAULT_TOP_N):
         per_product_weekday[pid][wd] = per_product_weekday[pid].get(wd, 0) + qty
         hr = str(cell['hour'])
         per_product_hour[pid][hr] = per_product_hour[pid].get(hr, 0) + qty
-    refund_breakdown_rows = (
-        cancelled_items.filter(product_id__in=top_ids)
-        .values(
-            'product_id',
-            weekday=F(f'{REFUND_EVENT_ALIAS}__refunded_at__week_day'),
-            hour=F(f'{REFUND_EVENT_ALIAS}__refunded_at__hour'),
-        )
-        .annotate(qty=Sum('quantity'))
-    ) if top_ids else []
-    for cell in refund_breakdown_rows:
-        pid = cell['product_id']
-        qty = int(cell['qty'] or 0)
-        wd = weekday_map.get(cell['weekday'], str(cell['weekday']))
-        per_product_weekday[pid][wd] = per_product_weekday[pid].get(wd, 0) - qty
-        hr = str(cell['hour'])
-        per_product_hour[pid][hr] = per_product_hour[pid].get(hr, 0) - qty
 
     products = [
         {
@@ -176,13 +163,18 @@ def forecast_tomorrow():
     if not history['products']:
         return {'predictions': [], 'reason': 'no_history'}, None
 
-    tomorrow = timezone.now() + timedelta(days=1)
+    # Forecast the next operating day, not ``UTC now + 24h``. Around midnight
+    # in Tashkent the UTC calendar date can still be yesterday, and before the
+    # restaurant cutover the current operating day is intentionally still the
+    # previous date.
+    from base.services.business_day import business_date
+    tomorrow = business_date() + timedelta(days=1)
     weekday_name = tomorrow.strftime('%A')
 
     prompt = _PROMPT.format(
         days=WINDOW_DAYS,
         weekday_name=weekday_name,
-        tomorrow_iso=tomorrow.date().isoformat(),
+        tomorrow_iso=tomorrow.isoformat(),
         data_json=json.dumps(history, ensure_ascii=False),
     )
 

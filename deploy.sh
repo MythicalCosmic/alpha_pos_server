@@ -72,6 +72,11 @@ DB_PASSWORD=${DBPASS}
 DB_HOST=db
 DB_PORT=5432
 WEB_PORT=127.0.0.1:8000
+# Make a later bare `docker compose up` retain the Caddy edge attachment.
+# Without this, Compose recreates `web` from only docker-compose.yaml and the
+# healthy app becomes publicly unreachable with a 502 until the overlay is
+# supplied again.
+COMPOSE_FILE=docker-compose.yaml:docker-compose.edge.yml
 REDIS_URL=redis://redis:6379/0
 USE_REDIS=True
 DEPLOYMENT_MODE=cloud

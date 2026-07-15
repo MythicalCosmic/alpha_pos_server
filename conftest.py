@@ -29,6 +29,22 @@ def _single_branch_cloud_target(settings):
 
 
 @pytest.fixture(autouse=True)
+def _inmemory_channel_layer(settings):
+    """Keep unit tests off the production Redis transport.
+
+    The server settings intentionally use Redis, but a developer test run has
+    no Redis container by default.  Every realtime publish otherwise waits for
+    the network timeout before the best-effort funnel can swallow the error,
+    turning a sub-second money test into a 20-second test and obscuring genuine
+    deadlocks.  The in-memory backend preserves Channels semantics without an
+    external service; websocket tests may still override it explicitly.
+    """
+    settings.CHANNEL_LAYERS = {
+        'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},
+    }
+
+
+@pytest.fixture(autouse=True)
 def _clear_caches():
     """LocMemCache is process-wide and survives across tests; explicitly
     purge it so cached settings singletons (NotificationSettings,

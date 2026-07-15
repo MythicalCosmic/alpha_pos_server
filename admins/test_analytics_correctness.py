@@ -47,7 +47,15 @@ def test_leaderboard_aov_uses_paid_denominator():
     _order(c, 100000, mid, is_paid=True, status='COMPLETED')   # paid  -> revenue 200000, paid=2
     _order(c, 100000, mid, is_paid=False, status='OPEN')       # unpaid
     _order(c, 100000, mid, is_paid=False, status='OPEN')       # unpaid -> total orders = 5
-    _order(c, 100000, mid, is_paid=True, status='CANCELED')    # cancelled (excluded from revenue)
+    cancelled = _order(c, 100000, mid, is_paid=True, status='CANCELED')
+    from base.models import OrderRefund
+    OrderRefund.objects.create(
+        order=cancelled, shift=s, cashier=c, branch_id=cancelled.branch_id,
+        amount=Decimal('100000'), cash_amount=Decimal('100000'),
+        drawer_cash_amount=Decimal('100000'),
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id='leaderboard-cancel', refunded_at=mid,
+    )
 
     row = _cashier_shift_row(s, {})
     board = _cashier_leaderboard([row])
@@ -71,6 +79,14 @@ def test_top_products_excludes_unpaid_and_cancelled():
     _item(unpaid, p, 3, 10000)        # must NOT count
     cancelled = _order(c, 50000, now, is_paid=True, status='CANCELED')
     _item(cancelled, p, 5, 10000)     # must NOT count
+    from base.models import OrderRefund
+    OrderRefund.objects.create(
+        order=cancelled, branch_id=cancelled.branch_id,
+        amount=Decimal('50000'), cash_amount=Decimal('50000'),
+        drawer_cash_amount=Decimal('50000'),
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id='top-products-cancel', refunded_at=now,
+    )
 
     rows = OrderItemRepository.get_top_products(
         date_from=now - timedelta(hours=1), date_to=now + timedelta(hours=1))

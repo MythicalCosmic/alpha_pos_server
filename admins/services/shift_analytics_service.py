@@ -158,7 +158,8 @@ def _cashier_shift_row(shift, att_map):
     # Volume by created_at; money by paid_at — same split end_shift uses.
     taken = Order.objects.filter(
         is_deleted=False, cashier_id=shift.user_id,
-        created_at__gte=start, created_at__lte=end,
+        branch_id=shift.branch_id,
+        created_at__gte=start, created_at__lt=end,
     )
     vol = taken.aggregate(
         total=Count('id'),
@@ -181,9 +182,10 @@ def _cashier_shift_row(shift, att_map):
         is_deleted=False,
         order__is_deleted=False,
         order__cashier_id=shift.user_id,
+        order__branch_id=shift.branch_id,
         order__is_paid=True,
         order__paid_at__gte=start,
-        order__paid_at__lte=end,
+        order__paid_at__lt=end,
     ).aggregate(
         units=Coalesce(Sum('quantity'), 0),
         lines=Count('id'),
@@ -191,7 +193,9 @@ def _cashier_shift_row(shift, att_map):
     from base.services.refund_lines import (
         REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
     )
-    refunded_items = refund_item_events(shift=shift)
+    refunded_items = refund_item_events(
+        shift=shift, branch_id=shift.branch_id,
+    )
     refunded_item_totals = refunded_items.aggregate(
         units=Coalesce(
             Sum(refund_line_quantity(REFUND_EVENT_ALIAS)), 0,
@@ -203,7 +207,8 @@ def _cashier_shift_row(shift, att_map):
 
     paid = Order.objects.filter(
         is_deleted=False, cashier_id=shift.user_id, is_paid=True,
-        paid_at__gte=start, paid_at__lte=end,
+        branch_id=shift.branch_id,
+        paid_at__gte=start, paid_at__lt=end,
     )
     money = paid.aggregate(
         revenue=Coalesce(Sum('total_amount'), Decimal('0'), output_field=_DEC),
@@ -212,11 +217,20 @@ def _cashier_shift_row(shift, att_map):
         discounted_orders=Count('id', filter=Q(discount_amount__gt=0) | Q(discount_percent__gt=0)),
         avg_discount_pct=Avg('discount_percent', filter=Q(discount_percent__gt=0)),
     )
-    refunds = OrderRefund.objects.filter(is_deleted=False, shift=shift)
+    refunds = OrderRefund.objects.filter(
+        is_deleted=False, shift=shift, branch_id=shift.branch_id,
+    )
     from base.services.order_refund import refund_totals
     refunded = refund_totals(refunds)
     revenue = (money['revenue'] or Decimal('0')) - refunded['amount']
-    paid_count = money['paid_count'] or 0
+    # A terminal cancellation reverses a completed basket while preserving its
+    # immutable paid header.  Net AOV and net paid-order counts must therefore
+    # remove those baskets exactly once; provider/partial refunds remain paid
+    # demand and do not change the receipt denominator.
+    terminal_cancelled = refunds.filter(
+        source=OrderRefund.Source.ORDER_CANCEL,
+    ).values('order_id').distinct().count()
+    paid_count = max((money['paid_count'] or 0) - terminal_cancelled, 0)
     # Tender split comes from base.services.tender, not from Order.payment_method:
     # a MIXED order used to contribute NOTHING to cash or card (its whole total sat
     # in a `MIXED` bucket), so cash+card never reconciled to revenue for any shift
@@ -316,7 +330,8 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds):
     # the shift. Per-item chef attribution isn't tracked (no prepared_by FK),
     # so this measures the kitchen's throughput while this person was on.
     orders = Order.objects.filter(
-        is_deleted=False, created_at__gte=start, created_at__lte=end,
+        is_deleted=False, branch_id=shift.branch_id,
+        created_at__gte=start, created_at__lt=end,
     ).exclude(status='CANCELED')
     total = orders.count()
     readied = orders.filter(ready_at__isnull=False)
@@ -333,7 +348,8 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds):
 
     items = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False,
-        order__created_at__gte=start, order__created_at__lte=end,
+        order__branch_id=shift.branch_id,
+        order__created_at__gte=start, order__created_at__lt=end,
         ready_at__isnull=False,
     ).exclude(order__status='CANCELED').aggregate(
         units=Coalesce(Sum('quantity'), 0), lines=Count('id'))
@@ -370,7 +386,7 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds):
 
 # ───────────────────── distribution / leaderboard ─────────────────────
 
-def _hourly_daily(shifts):
+def _hourly_daily(shifts, *, cashier_owned=True):
     """Operational orders by created_at; realized revenue by paid_at.
 
     Keeping two event streams is essential around shift/cutoff boundaries: a
@@ -380,52 +396,131 @@ def _hourly_daily(shifts):
     if not shifts:
         return {'by_hour': [], 'by_date': [], 'peak_hour': None}
 
-    user_ids = {s.user_id for s in shifts}
-    window_start = min(s.start_time for s in shifts)
-    window_end = max((s.end_time or timezone.now()) for s in shifts)
+    from bisect import bisect_right
+    from collections import defaultdict
 
-    operational_rows = Order.objects.filter(
-        is_deleted=False, cashier_id__in=list(user_ids),
-        created_at__gte=window_start, created_at__lte=window_end,
-    ).exclude(status='CANCELED').values_list('created_at', flat=True)
+    now = timezone.now()
+    raw_windows = defaultdict(list)
+    shift_windows = {}
+    for shift in shifts:
+        end = shift.end_time or now
+        if end <= shift.start_time:
+            continue
+        owner = (
+            shift.branch_id,
+            shift.user_id if cashier_owned else None,
+        )
+        raw_windows[owner].append((shift.start_time, end))
+        shift_windows[shift.id] = (shift.branch_id, shift.start_time, end)
+
+    if not raw_windows:
+        return {'by_hour': [], 'by_date': [], 'peak_hour': None}
+
+    # Merge overlapping/adjacent windows, then binary-search them in Python.
+    # SQL stays a constant-size broad envelope even for hundreds of shifts,
+    # while the membership check preserves gaps and exact half-open handoffs.
+    windows = {}
+    for owner, intervals in raw_windows.items():
+        merged = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        windows[owner] = ([start for start, _ in merged], merged)
+
+    def belongs(branch_id, cashier_id, moment):
+        if moment is None:
+            return False
+        owner = (branch_id, cashier_id if cashier_owned else None)
+        starts_intervals = windows.get(owner)
+        if not starts_intervals:
+            return False
+        starts, intervals = starts_intervals
+        index = bisect_right(starts, moment) - 1
+        return index >= 0 and moment < intervals[index][1]
+
+    branch_ids = list({owner[0] for owner in windows})
+    min_start = min(start for intervals in raw_windows.values() for start, _ in intervals)
+    max_end = max(end for intervals in raw_windows.values() for _, end in intervals)
+    order_scope = {
+        'branch_id__in': branch_ids,
+    }
+    if cashier_owned:
+        order_scope['cashier_id__in'] = list({owner[1] for owner in windows})
+
+    operational_rows = (
+        Order.objects.filter(
+            is_deleted=False,
+            created_at__gte=min_start,
+            created_at__lt=max_end,
+            **order_scope,
+        )
+        .exclude(status='CANCELED')
+        .values_list('branch_id', 'cashier_id', 'created_at')
+    )
     settled_rows = (
         Order.objects.filter(
             is_deleted=False,
-            cashier_id__in=list(user_ids),
             is_paid=True,
-            paid_at__gte=window_start,
-            paid_at__lte=window_end,
+            paid_at__gte=min_start,
+            paid_at__lt=max_end,
+            **order_scope,
         )
-        .values_list('paid_at', 'total_amount')
+        .values_list('branch_id', 'cashier_id', 'paid_at', 'total_amount')
     )
-    refunded_rows = OrderRefund.objects.filter(
-        is_deleted=False,
-        shift_id__in=[s.id for s in shifts],
-    ).values_list('refunded_at', 'amount')
+    refund_filters = {
+        'is_deleted': False,
+        'branch_id__in': branch_ids,
+    }
+    if cashier_owned:
+        refund_filters['shift_id__in'] = list(shift_windows)
+    else:
+        refund_filters.update({
+            'refunded_at__gte': min_start,
+            'refunded_at__lt': max_end,
+        })
+    refunded_rows = OrderRefund.objects.filter(**refund_filters).values_list(
+        'shift_id', 'branch_id', 'cashier_id', 'refunded_at', 'amount',
+    )
 
     by_hour = {h: {'orders': 0, 'revenue': Decimal('0')} for h in range(24)}
     by_date = {}
-    for created_at in operational_rows:
+    from base.services.business_day import business_date, business_day_start
+    cutover = business_day_start()
+
+    for branch_id, cashier_id, created_at in operational_rows:
+        if not belongs(branch_id, cashier_id, created_at):
+            continue
         local = timezone.localtime(created_at)
         h = local.hour
         by_hour[h]['orders'] += 1
-        d = local.date().isoformat()
+        d = business_date(created_at, cutover).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         slot['orders'] += 1
 
-    for paid_at, total_amount in settled_rows:
+    for branch_id, cashier_id, paid_at, total_amount in settled_rows:
+        if not belongs(branch_id, cashier_id, paid_at):
+            continue
         local = timezone.localtime(paid_at)
         h = local.hour
-        d = local.date().isoformat()
+        d = business_date(paid_at, cutover).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         if total_amount:
             by_hour[h]['revenue'] += total_amount
             slot['revenue'] += total_amount
 
-    for refunded_at, amount in refunded_rows:
+    for shift_id, branch_id, cashier_id, refunded_at, amount in refunded_rows:
+        if cashier_owned:
+            expected = shift_windows.get(shift_id)
+            if not expected or expected[0] != branch_id \
+                    or not (expected[1] <= refunded_at < expected[2]):
+                continue
+        elif not belongs(branch_id, cashier_id, refunded_at):
+            continue
         local = timezone.localtime(refunded_at)
         h = local.hour
-        d = local.date().isoformat()
+        d = business_date(refunded_at, cutover).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         if amount:
             by_hour[h]['revenue'] -= amount
@@ -499,11 +594,13 @@ def _cashier_leaderboard(rows):
 
 def _shifts_in_range(date_from, date_to, role, user_id=None):
     from base.models import Shift
+    from base.services.business_day import range_window
+    lo, hi = range_window(date_from, date_to)
     qs = (
         Shift.objects.filter(
             is_deleted=False,
-            start_time__date__gte=date_from,
-            start_time__date__lte=date_to,
+            start_time__gte=lo,
+            start_time__lt=hi,
         )
         .select_related('user', 'shift_template', 'reconciliation')
         .order_by('start_time')
@@ -661,18 +758,22 @@ def shift_handover_report(shift):
 
     base_qs = Order.objects.filter(
         is_deleted=False, cashier_id=shift.user_id,
-        created_at__gte=start, created_at__lte=end,
+        branch_id=shift.branch_id,
+        created_at__gte=start, created_at__lt=end,
     )
     paid_qs = (
         Order.objects.filter(
             is_deleted=False,
             cashier_id=shift.user_id,
+            branch_id=shift.branch_id,
             is_paid=True,
             paid_at__gte=start,
-            paid_at__lte=end,
+            paid_at__lt=end,
         )
     )
-    refund_qs = OrderRefund.objects.filter(is_deleted=False, shift=shift)
+    refund_qs = OrderRefund.objects.filter(
+        is_deleted=False, shift=shift, branch_id=shift.branch_id,
+    )
 
     # Every receipt taken during the shift.
     receipts = []
@@ -785,12 +886,16 @@ def shift_handover_report(shift):
         'counted': _money(spt.counted_amount),
         'confirmed': _money(spt.confirmed_amount),
         'difference': _money(spt.difference),
-    } for spt in ShiftPaymentTotal.objects.filter(shift=shift, is_deleted=False)]
+    } for spt in ShiftPaymentTotal.objects.filter(
+        shift=shift, branch_id=shift.branch_id, is_deleted=False,
+    )]
 
     # Cash paid OUT of the drawer this shift, grouped by category (P4).
     from cashbox.models import CashboxExpense
     exp_rows = (
-        CashboxExpense.objects.filter(shift=shift, is_deleted=False)
+        CashboxExpense.objects.filter(
+            shift=shift, branch_id=shift.branch_id, is_deleted=False,
+        )
         .values('category__name')
         .annotate(total=Coalesce(Sum('amount'), Decimal('0'), output_field=_DEC),
                   count=Count('id'))
@@ -900,6 +1005,6 @@ def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
         'date_to': date_to.isoformat(),
         'filtered_user_id': user_id,
         'summary': summary,
-        'distribution': _hourly_daily(shifts),
+        'distribution': _hourly_daily(shifts, cashier_owned=False),
         'shifts': rows,
     }

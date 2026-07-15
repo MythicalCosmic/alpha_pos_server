@@ -52,9 +52,10 @@ def test_courier_cash_never_enters_or_leaves_pos_drawer(cashier_user):
         branch_id='branch-a',
         paid_at=order.paid_at,
     )
-    register = CashRegister.objects.create(
-        branch_id='branch-a', current_balance='0.00',
-    )
+    # Paying the order creates the per-branch register as the accounting lock.
+    # Reuse that exact drawer instead of attempting a second live register.
+    register = CashRegister.objects.get(branch_id='branch-a')
+    assert register.current_balance == Decimal('0.00')
 
     assert expected_payment_totals(shift)['CASH'] == Decimal('0.00')
     refund, created = record_external_provider_refund(
@@ -117,9 +118,11 @@ def test_mixed_till_and_courier_cash_reconciles_only_till_residual(
         branch_id='branch-a',
         paid_at=sale_time,
     )
-    register = CashRegister.objects.create(
-        branch_id='branch-a', current_balance='60.00',
-    )
+    # Paying the order creates the per-branch register as the accounting lock.
+    # Seed the till portion on that same drawer; the courier's 40 never enters it.
+    register = CashRegister.objects.get(branch_id='branch-a')
+    register.current_balance = Decimal('60.00')
+    register.save(update_fields=['current_balance'])
 
     assert expected_payment_totals(sale_shift)['CASH'] == Decimal('60.00')
     sale_stats = ShiftService._shift_stats(sale_shift, sale_shift.end_time)

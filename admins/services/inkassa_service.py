@@ -50,9 +50,11 @@ def _resolve_register(branch_id=None, *, for_update=False):
             else:
                 requested = node_branch or 'cloud'
 
-    register = CashRegisterRepository.get_or_create_current(
-        requested, for_update=for_update,
-    )
+    if for_update:
+        from base.services.accounting_cursor import lock_branch_accounting
+        register = lock_branch_accounting(requested)
+    else:
+        register = CashRegisterRepository.get_or_create_current(requested)
     return register, None
 
 
@@ -350,17 +352,20 @@ class AdminInkassaService:
             is_deleted=False, branch_id=register.branch_id,
         ).exclude(
             notes__startswith=Inkassa.refund_command_prefix(),
-        ).order_by('-created_at').first()
+        ).order_by('-period_end', '-pk').first()
         # Chain the period to the previous inkassa's end. Previously period_end
         # was never set on creation, so this always fell back to today_start and
         # every partial inkassa re-counted the WHOLE day's revenue/orders —
         # double-reporting across multiple same-day collections. We now stamp
         # period_end=now below so the next collection starts where this one ends.
+        # Accounting queries below are uniformly half-open [start, end). Their
+        # cursor is local receipt time, so late offline events roll forward.
         period_start = last_inkassa.period_end if (last_inkassa and last_inkassa.period_end) else today_start
 
         period_orders = Order.objects.filter(
             is_deleted=False, is_paid=True, branch_id=register.branch_id,
-            paid_at__gte=period_start, paid_at__lte=now,
+            accounting_recorded_at__gte=period_start,
+            accounting_recorded_at__lt=now,
         )
         today_agg = period_orders.aggregate(
             total_revenue=Sum('total_amount'),
@@ -370,8 +375,8 @@ class AdminInkassaService:
         period_refunds = refund_totals(OrderRefund.objects.filter(
             is_deleted=False,
             branch_id=register.branch_id,
-            refunded_at__gte=period_start,
-            refunded_at__lte=now,
+            accounting_recorded_at__gte=period_start,
+            accounting_recorded_at__lt=now,
         ))
         period_revenue = (
             today_agg['total_revenue'] or Decimal('0')

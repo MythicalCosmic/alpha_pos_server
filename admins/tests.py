@@ -257,13 +257,24 @@ class TestAdminInstantOrderParity:
     """is_instant must short-circuit the chef queue on the admin order path too
     (previously only the customer path honoured it)."""
 
-    def test_admin_instant_only_order_born_ready(self, regular_user, category):
-        from base.models import Product, Order
+    def test_admin_instant_only_order_born_ready(
+        self, regular_user, cashier_user, category,
+    ):
+        from django.conf import settings
+        from django.utils import timezone
+        from base.models import Product, Order, Shift
         from admins.services.order_service import AdminOrderService
+        Shift.objects.create(
+            user=cashier_user,
+            status=Shift.Status.ACTIVE,
+            start_time=timezone.now(),
+            branch_id=settings.BRANCH_ID,
+        )
         instant = Product.objects.create(
             name='Cola', price='5.00', category=category, is_instant=True)
         res, st = AdminOrderService.create_order(
             user_id=regular_user.id,
+            cashier_id=cashier_user.id,
             items=[{'product_id': instant.id, 'quantity': 1}],
         )
         assert st == 201
@@ -300,12 +311,13 @@ class TestShiftListExtras:
         return {r['id']: r for r in res['data']['shifts']}
 
     def _active_shift(self, user, hours_ago=2):
+        from django.conf import settings
         from datetime import timedelta
         from django.utils import timezone
         from base.models import Shift
         return Shift.objects.create(
             user=user, start_time=timezone.now() - timedelta(hours=hours_ago),
-            status='ACTIVE')
+            status='ACTIVE', branch_id=settings.BRANCH_ID)
 
     def test_row_has_all_fields_and_correct_values(self, cashier_user, regular_user, category):
         from datetime import timedelta
@@ -332,8 +344,11 @@ class TestShiftListExtras:
         # a cancelled order (lost value) + a drawer expense
         Order.objects.create(
             user=regular_user, cashier=cashier_user, status='CANCELED',
-            is_paid=False, display_id=3, subtotal='30.00', total_amount='30.00')
-        CashboxExpense.objects.create(shift=s, amount='20.00')
+            is_paid=False, display_id=3, subtotal='30.00', total_amount='30.00',
+            branch_id=s.branch_id)
+        CashboxExpense.objects.create(
+            shift=s, amount='20.00', branch_id=s.branch_id,
+        )
 
         row = self._list_rows(cashier_user)[s.id]
         for k in self.LIST_KEYS:
@@ -352,7 +367,9 @@ class TestShiftListExtras:
         assert row['cancelled_orders_value'] == '30.00'
         assert row['expenses_total'] == '20.00'
         assert row['total_revenue'] == '150.00'        # live: two paid orders
-        assert row['net_revenue'] == '100.00'          # 150 - 20 expenses - 30 cancelled
+        # The cancelled ticket was never paid, so it is operational lost value,
+        # not money to subtract a second time from realized revenue.
+        assert row['net_revenue'] == '130.00'          # 150 - 20 expenses
         # item 11 FE-named fields:
         assert row['gross_revenue'] == '150.00'
         assert row['card_collected'] == '50.00'        # 150 total - 100 cash (UZCARD)
@@ -408,15 +425,18 @@ class TestShiftListExtras:
         from datetime import timedelta
         from django.utils import timezone
         from base.models import Order, Shift
+        from django.conf import settings
         t0 = timezone.now() - timedelta(hours=4)
         t1 = timezone.now() - timedelta(hours=2)
         t2 = timezone.now() - timedelta(minutes=1)
         s1 = Shift.objects.create(user=cashier_user, start_time=t0, end_time=t1,
                                   status='COMPLETED', total_revenue='100.00',
-                                  total_orders=1, cash_collected='100.00')
+                                  total_orders=1, cash_collected='100.00',
+                                  branch_id=settings.BRANCH_ID)
         s2 = Shift.objects.create(user=cashier_user, start_time=t1, end_time=t2,
                                   status='COMPLETED', total_revenue='200.00',
-                                  total_orders=2, cash_collected='200.00')
+                                  total_orders=2, cash_collected='200.00',
+                                  branch_id=settings.BRANCH_ID)
 
         def mkorder(display_id, when):
             o = Order.objects.create(

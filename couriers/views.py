@@ -158,13 +158,21 @@ def stats_today(request):
     # Cash actually collected today = PAID CASH payment rows (consistent with the
     # balance/reconciliation ledger), not inferred from order paid-state.
     cash_collected = (CourierPayment.objects.filter(
-        courier=request.courier, status=CourierPayment.Status.PAID,
+        courier=request.courier,
+        status__in=(
+            CourierPayment.Status.PAID,
+            CourierPayment.Status.REFUNDED,
+        ),
+        paid_at__isnull=False,
         provider=CourierPayment.Provider.CASH,
         paid_at__gte=start, paid_at__lt=end)
         .aggregate(s=Sum('amount'))['s'] or 0)
-    cash_refunded = services.courier_refund_events(
-        request.courier, start=start, end=end,
-    ).aggregate(s=Sum('cash_amount'))['s'] or 0
+    cash_refunded = sum(
+        entry['cash_amount']
+        for entry in services.courier_refund_entries(
+            request.courier, start=start, end=end,
+        )
+    )
     cash_collected -= cash_refunded
     started = request.courier.shift_started_at
     active_hours = ''
@@ -198,8 +206,14 @@ def balance(request):
         rows.append((s.at, presenters.ledger_row(
             at=s.at, kind='settlement', amount=s.net_payout,
             label=f'Shift settled · {s.deliveries} deliveries')))
-    for p in (CourierPayment.objects.filter(courier=courier)
-              .exclude(status=CourierPayment.Status.PENDING)
+    for p in (CourierPayment.objects.filter(
+                  courier=courier,
+                  status__in=(
+                      CourierPayment.Status.PAID,
+                      CourierPayment.Status.REFUNDED,
+                  ),
+                  paid_at__isnull=False,
+              )
               .order_by('-created_at')[:20]):
         signed = int(p.amount)
         verb = 'Collected'
@@ -207,26 +221,18 @@ def balance(request):
         rows.append((when, presenters.ledger_row(
             at=when, kind='payment', amount=signed, order=p.order_id,
             label=f'{verb} · {p.get_provider_display()} · order #{p.order_id}')))
-    refund_rows = list(
-        services.courier_refund_events(courier)
-        .order_by('-refunded_at', '-pk')[:20]
-    )
-    providers = {
-        external_id: provider
-        for external_id, provider in CourierPayment.objects.filter(
-            courier=courier,
-            external_id__in=[refund.source_id for refund in refund_rows],
-        ).values_list('external_id', 'provider')
-    }
-    provider_labels = dict(CourierPayment.Provider.choices)
+    refund_rows = sorted(
+        services.courier_refund_entries(courier),
+        key=lambda entry: entry['refunded_at'], reverse=True,
+    )[:20]
     for refund in refund_rows:
-        provider = provider_labels.get(providers.get(refund.source_id), 'Provider')
-        rows.append((refund.refunded_at, presenters.ledger_row(
-            at=refund.refunded_at,
+        rows.append((refund['refunded_at'], presenters.ledger_row(
+            at=refund['refunded_at'],
             kind='refund',
-            amount=-int(refund.amount),
-            order=refund.order_id,
-            label=f'Refund - {provider} - order #{refund.order_id}',
+            amount=-int(refund['amount']),
+            order=refund['order_id'],
+            label=(f"Refund - {refund['label']} - "
+                   f"order #{refund['order_id']}"),
         )))
     rows.sort(key=lambda r: r[0] or timezone.now(), reverse=True)
     ledger = [row for _, row in rows[:30]]
