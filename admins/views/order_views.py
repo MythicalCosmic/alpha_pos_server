@@ -26,6 +26,37 @@ def _check_permission(request, perm):
     return None
 
 
+def _order_filter_kwargs(request):
+    """One HTTP contract for the Orders rows and their global statistics."""
+    return {
+        'statuses': request.GET.get('statuses') or request.GET.get('status'),
+        'payment_status': request.GET.get('payment_status'),
+        'payment_method': (
+            request.GET.get('payment_method')
+            or request.GET.get('payment_methods')
+        ),
+        'category_ids': (
+            request.GET.get('category_ids')
+            or request.GET.get('category_id')
+        ),
+        'product_ids': (
+            request.GET.get('product_ids')
+            or request.GET.get('product_id')
+        ),
+        'user_id': request.GET.get('user_id'),
+        'cashier_id': request.GET.get('cashier_id'),
+        'order_type': request.GET.get('order_type'),
+        'date_from': request.GET.get('date_from') or request.GET.get('from'),
+        'date_to': request.GET.get('date_to') or request.GET.get('to'),
+        'tod_from': request.GET.get('tod_from'),
+        'tod_to': request.GET.get('tod_to'),
+        'search': request.GET.get('search') or request.GET.get('q'),
+        'include_deleted': (
+            request.GET.get('include_deleted', '').lower() == 'true'
+        ),
+    }
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 @admin_required
@@ -34,30 +65,17 @@ def orders(request):
     if request.method == "GET":
         page = safe_page(request)
         per_page = safe_per_page(request, 20)
-        statuses = request.GET.get('statuses')
-        payment_status = request.GET.get('payment_status')
-        category_ids = request.GET.get('category_ids')
-        user_id = request.GET.get('user_id')
-        cashier_id = request.GET.get('cashier_id')
-        order_type = request.GET.get('order_type')
-        date_from = request.GET.get('date_from')
-        date_to = request.GET.get('date_to')
         order_by = request.GET.get('order_by', '-created_at')
-        include_deleted = request.GET.get('include_deleted', '').lower() == 'true'
         # Default true (back-compat: item 5 inline items); ?include_items=false
         # drops items[] from the list payload for lighter list-view fetches (item 14).
         include_items = request.GET.get('include_items', 'true').lower() != 'false'
-        product_ids = request.GET.get('product_ids')
-        tod_from = request.GET.get('tod_from')
-        tod_to = request.GET.get('tod_to')
 
         result, status_code = AdminOrderService.get_all_orders(
-            page=page, per_page=per_page, statuses=statuses,
-            payment_status=payment_status, category_ids=category_ids,
-            product_ids=product_ids, user_id=user_id, cashier_id=cashier_id,
-            order_type=order_type, date_from=date_from, date_to=date_to,
-            order_by=order_by, include_deleted=include_deleted,
-            include_items=include_items, tod_from=tod_from, tod_to=tod_to,
+            page=page,
+            per_page=per_page,
+            order_by=order_by,
+            include_items=include_items,
+            **_order_filter_kwargs(request),
         )
         return JsonResponse(result, status=status_code)
 
@@ -291,13 +309,9 @@ def restore_order(request, order_id):
 @admin_required
 @permission_required('order.stats')
 def order_stats(request):
-    date_from = request.GET.get('date_from')
-    date_to = request.GET.get('date_to')
-    cashier_id = request.GET.get('cashier_id')
     result, status_code = AdminOrderService.get_order_stats(
-        date_from, date_to, cashier_id,
-        product_ids=request.GET.get('product_ids'),
-        tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))
+        **_order_filter_kwargs(request),
+    )
     return JsonResponse(result, status=status_code)
 
 

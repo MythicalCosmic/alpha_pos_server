@@ -1,7 +1,6 @@
 """Focused regressions for settlement-ledger and shift-window analytics."""
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-import json
 from uuid import uuid4
 
 import pytest
@@ -276,25 +275,26 @@ def test_forecast_targets_next_local_business_date(monkeypatch):
     from admins.services import forecast_service
 
     local_now = _at(date(2026, 7, 14), 4)
-    prompts = []
     monkeypatch.setattr(forecast_service.timezone, 'now', lambda: local_now)
     monkeypatch.setattr(
         forecast_service,
-        'gather_history',
-        lambda: {'window_days': 30, 'products': [{'id': 1, 'name': 'Meal'}]},
+        'gather_history', lambda: {
+            'window_days': 30,
+            'products': [{
+                'id': 1,
+                'name': 'Meal',
+                'total_qty': 30,
+                'by_weekday': {'Wed': 10},
+            }],
+        },
     )
-
-    def fake_llm(prompt):
-        prompts.append(prompt)
-        return json.dumps({'tomorrow': '2026-07-15', 'predictions': []}), None
-
-    monkeypatch.setattr(forecast_service, '_call_llm', fake_llm)
     data, error = forecast_service.forecast_tomorrow()
 
     assert error is None
     assert data['tomorrow'] == '2026-07-15'
-    assert 'Tomorrow is a Wednesday' in prompts[0]
-    assert '"tomorrow": "2026-07-15"' in prompts[0]
+    assert data['method'] == 'historical_weekday_blend'
+    assert data['predictions'][0]['suggested_qty'] >= 1
+    assert 'Wed average' in data['predictions'][0]['reason']
 
 
 def test_forecast_uses_original_sale_cohort_not_refund_clock(monkeypatch):

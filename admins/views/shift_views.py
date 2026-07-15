@@ -11,6 +11,10 @@ from base.models import AuditLog
 from admins.services.shift_service import ShiftTemplateService, ShiftService
 
 
+def _truthy(value):
+    return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 @manager_required
@@ -70,10 +74,22 @@ def shifts(request):
     per_page = safe_per_page(request, 20)
     # cashier_id is the v3 Shifts-page filter name; user_id kept as an alias.
     user_id = request.GET.get('cashier_id') or request.GET.get('user_id')
-    status = request.GET.get('status')
-    date_from = request.GET.get('date_from')
-    date_to = request.GET.get('date_to')
-    live_only = (request.GET.get('live_only') or '').strip().lower() in ('1', 'true', 'yes')
+    status = request.GET.get('statuses') or request.GET.get('status')
+    date_from = request.GET.get('date_from') or request.GET.get('from')
+    date_to = request.GET.get('date_to') or request.GET.get('to')
+    live_only = _truthy(request.GET.get('live_only'))
+    closed_only = _truthy(request.GET.get('closed_only'))
+    state = (request.GET.get('state') or '').strip().lower()
+    if state == 'live':
+        live_only, closed_only = True, False
+    elif state == 'closed':
+        live_only, closed_only = False, True
+
+    order_by = request.GET.get('order_by')
+    if not order_by:
+        sort_by = (request.GET.get('sort_by') or 'start_time').strip()
+        sort_order = (request.GET.get('sort_order') or 'desc').strip().lower()
+        order_by = f'-{sort_by}' if sort_order == 'desc' else sort_by
 
     result, status_code = ShiftService.list(
         page=page,
@@ -83,6 +99,8 @@ def shifts(request):
         date_from=date_from,
         date_to=date_to,
         live_only=live_only,
+        closed_only=closed_only,
+        order_by=order_by,
     )
     return JsonResponse(result, status=status_code)
 

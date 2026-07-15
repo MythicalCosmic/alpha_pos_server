@@ -103,6 +103,7 @@ def _serialize_order_list(order, include_items=True):
         'order_number': order.order_number,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
+        'delivery_address': getattr(order, 'delivery_address', '') or '',
         'description': order.description,
         'user': {
             'id': order.user.id,
@@ -188,6 +189,7 @@ def _serialize_order_detail(order):
         'order_number': order.order_number,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
+        'delivery_address': getattr(order, 'delivery_address', '') or '',
         'description': order.description,
         'user': {
             'id': order.user.id,
@@ -247,6 +249,121 @@ def _parse_int_list(param):
         if item.isdigit():
             result.append(int(item))
     return result or None
+
+
+def _parse_string_list(param):
+    if not param:
+        return None
+    value = str(param).strip().strip('[]')
+    if not value:
+        return None
+    result = [
+        item.strip().strip('"\'').upper()
+        for item in value.split(',')
+        if item.strip().strip('"\'')
+    ]
+    return result or None
+
+
+def _build_filtered_order_queryset(
+        *, statuses=None, payment_status=None, category_ids=None,
+        product_ids=None, user_id=None, cashier_id=None, order_type=None,
+        date_from=None, date_to=None, payment_method=None, search=None,
+        order_by='-created_at', include_deleted=False, tod_from=None,
+        tod_to=None):
+    """Build the canonical Orders-page population.
+
+    Both the paginated list and its global KPI endpoint call this function.
+    Pagination and ordering are deliberately applied *after* this membership
+    query, so `/orders/stats` can never become page-scoped or silently omit a
+    list filter.
+    """
+    from django.db.models import Q
+    from base.models import Order
+    from base.services.business_day import parse_hhmm
+
+    statuses_list = _parse_statuses(statuses)
+    category_ids_list = _parse_int_list(category_ids)
+    product_ids_list = _parse_int_list(product_ids)
+    date_from_dt = _parse_date(date_from)
+    date_to_dt = _parse_date_to(date_to)
+    tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
+
+    qs = OrderRepository.build_filtered_queryset(
+        statuses=statuses_list,
+        payment_status=payment_status,
+        category_ids=category_ids_list,
+        product_ids=product_ids_list,
+        user_id=user_id,
+        cashier_id=cashier_id,
+        order_type=order_type,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        order_by=(order_by if order_by in ALLOWED_ORDER_FIELDS else '-created_at'),
+        include_deleted=include_deleted,
+        tod_from=tod_from_t,
+        tod_to=tod_to_t,
+    )
+
+    requested_methods = _parse_string_list(payment_method)
+    if requested_methods:
+        valid = set(Order.PaymentMethod.values)
+        methods = set()
+        for method in requested_methods:
+            if method == 'CARD':
+                methods.update({'CARD', 'UZCARD', 'HUMO'})
+            elif method in valid:
+                methods.add(method)
+        if methods:
+            tender_q = Q(payment_method__in=methods) | Q(
+                payments__is_deleted=False,
+                payments__method__in=methods,
+            )
+            # Legacy paid rows with no stored method are canonically cash.
+            if 'CASH' in methods:
+                tender_q |= Q(is_paid=True, payment_method__isnull=True)
+            qs = qs.filter(tender_q).distinct()
+
+    search_term = (search or '').strip()[:200]
+    if search_term:
+        search_q = (
+            Q(phone_number__icontains=search_term)
+            | Q(description__icontains=search_term)
+            | Q(user__first_name__icontains=search_term)
+            | Q(user__last_name__icontains=search_term)
+            | Q(user__email__icontains=search_term)
+            | Q(cashier__first_name__icontains=search_term)
+            | Q(cashier__last_name__icontains=search_term)
+            | Q(cashier__email__icontains=search_term)
+            | Q(customer__name__icontains=search_term)
+            | Q(customer__phone_number__icontains=search_term)
+            | Q(items__is_deleted=False, items__product__name__icontains=search_term)
+        )
+        if search_term.isdigit():
+            number = int(search_term)
+            search_q |= (
+                Q(pk=number)
+                | Q(display_id=number)
+                | Q(order_number=number)
+            )
+        qs = qs.filter(search_q).distinct()
+
+    return qs, {
+        'statuses': statuses_list,
+        'category_ids': category_ids_list,
+        'product_ids': product_ids_list,
+        'payment_status': payment_status,
+        'payment_method': requested_methods,
+        'user_id': user_id,
+        'cashier_id': cashier_id,
+        'order_type': order_type,
+        'date_from': date_from,
+        'date_to': date_to,
+        'tod_from': tod_from,
+        'tod_to': tod_to,
+        'search': search_term or None,
+        'include_deleted': bool(include_deleted),
+    }
 
 
 def _business_start():
@@ -409,32 +526,24 @@ class AdminOrderService:
                        order_type=None, date_from=None, date_to=None,
                        order_by='-created_at', include_deleted=False,
                        include_items=True, product_ids=None,
-                       tod_from=None, tod_to=None):
-        from base.services.business_day import parse_hhmm
-        statuses_list = _parse_statuses(statuses)
-        category_ids_list = _parse_int_list(category_ids)
-        product_ids_list = _parse_int_list(product_ids)
-        date_from_dt = _parse_date(date_from)
-        date_to_dt = _parse_date_to(date_to)
-        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
-
-        if order_by not in ALLOWED_ORDER_FIELDS:
-            order_by = '-created_at'
-
-        qs = OrderRepository.build_filtered_queryset(
-            statuses=statuses_list,
+                       tod_from=None, tod_to=None, payment_method=None,
+                       search=None):
+        qs, applied_filters = _build_filtered_order_queryset(
+            statuses=statuses,
             payment_status=payment_status,
-            category_ids=category_ids_list,
-            product_ids=product_ids_list,
+            category_ids=category_ids,
+            product_ids=product_ids,
             user_id=user_id,
             cashier_id=cashier_id,
             order_type=order_type,
-            date_from=date_from_dt,
-            date_to=date_to_dt,
+            date_from=date_from,
+            date_to=date_to,
+            payment_method=payment_method,
+            search=search,
             order_by=order_by,
             include_deleted=include_deleted,
-            tod_from=tod_from_t,
-            tod_to=tod_to_t,
+            tod_from=tod_from,
+            tod_to=tod_to,
         )
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
@@ -443,17 +552,7 @@ class AdminOrderService:
 
         return ServiceResponse.success(data={
             'orders': orders,
-            'filters': {
-                'statuses': statuses_list,
-                'category_ids': category_ids_list,
-                'product_ids': product_ids_list,
-                'payment_status': payment_status,
-                'order_type': order_type,
-                'date_from': date_from,
-                'date_to': date_to,
-                'tod_from': tod_from,
-                'tod_to': tod_to,
-            },
+            'filters': applied_filters,
             'pagination': {
                 'current_page': page_obj.number,
                 'total_pages': paginator.num_pages,
@@ -1228,45 +1327,100 @@ class AdminOrderService:
 
     @staticmethod
     def get_order_stats(date_from=None, date_to=None, cashier_id=None,
-                        product_ids=None, tod_from=None, tod_to=None):
-        from base.services.business_day import parse_hhmm, tod_filter
-        date_from_dt = _parse_date(date_from)
-        date_to_dt = _parse_date_to(date_to)
-        product_ids_list = _parse_int_list(product_ids)
-        tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
+                        product_ids=None, tod_from=None, tod_to=None,
+                        statuses=None, payment_status=None, category_ids=None,
+                        user_id=None, order_type=None, payment_method=None,
+                        search=None, include_deleted=False):
+        from django.db.models import (
+            Avg, Count, DecimalField, DurationField, ExpressionWrapper, F, Q,
+            Sum,
+        )
+        from django.db.models.functions import Coalesce
+        from base.models import Order, OrderRefund
 
-        stats = OrderRepository.get_stats_aggregate(
-            date_from_dt, date_to_dt, cashier_id,
-            product_ids=product_ids_list, tod_from=tod_from_t, tod_to=tod_to_t)
-        avg_prep = OrderRepository.get_avg_prep_time(date_from_dt, date_to_dt)
+        filtered, applied_filters = _build_filtered_order_queryset(
+            statuses=statuses,
+            payment_status=payment_status,
+            category_ids=category_ids,
+            product_ids=product_ids,
+            user_id=user_id,
+            cashier_id=cashier_id,
+            order_type=order_type,
+            date_from=date_from,
+            date_to=date_to,
+            payment_method=payment_method,
+            search=search,
+            include_deleted=include_deleted,
+            tod_from=tod_from,
+            tod_to=tod_to,
+        )
+        # Collapse relation joins (product/category/search/tender) to one stable
+        # Order membership subquery before aggregating. This prevents fan-out and
+        # makes the figures global across every matching row, never the list page.
+        order_ids = filtered.order_by().values('pk')
+        population = Order.objects.filter(pk__in=order_ids)
+        # Payment status is a row-membership property on the Orders page. Do
+        # not require ``paid_at`` here: a legacy/synced paid row with a missing
+        # event timestamp must still land in PAID (and its amount), otherwise
+        # PAID + UNPAID can be smaller than the filtered list itself.
+        paid = population.filter(is_paid=True)
+        refunds = OrderRefund.objects.filter(
+            is_deleted=False,
+            order_id__in=population.order_by().values('pk'),
+        )
 
-        # Paid revenue split by CANONICAL tender over the SAME filters: cash / card
-        # (Uzcard+Humo+Card) / payme. Previously this bucketed by Order.payment_method
-        # and folded the WHOLE of a MIXED order (materially part cash) into CARD.
-        # Best-effort so a breakdown error never blanks the whole stats.
+        stats = population.aggregate(
+            total=Count('id'),
+            open=Count('id', filter=Q(status='OPEN')),
+            preparing=Count('id', filter=Q(status='PREPARING')),
+            ready=Count('id', filter=Q(status='READY')),
+            completed=Count('id', filter=Q(status='COMPLETED')),
+            cancelled=Count('id', filter=Q(status='CANCELED')),
+            paid_membership=Count('id', filter=Q(is_paid=True)),
+            # Historical API contract: UNPAID is the actionable settlement
+            # queue. OPEN tickets and cancelled rows remain visible in
+            # status_counts, but are not work waiting at the cashier.
+            unpaid=Count(
+                'id',
+                filter=Q(
+                    is_paid=False,
+                    status__in=['PREPARING', 'READY', 'COMPLETED'],
+                ),
+            ),
+        )
+        money = paid.aggregate(
+            gross_revenue=Coalesce(
+                Sum('total_amount'), Decimal('0.00'),
+                output_field=DecimalField(max_digits=18, decimal_places=2),
+            ),
+            avg_order_value=Coalesce(
+                Avg('total_amount'), Decimal('0.00'),
+                output_field=DecimalField(max_digits=18, decimal_places=2),
+            ),
+            paid=Count('id'),
+        )
+        refund_totals = refunds.aggregate(
+            amount=Coalesce(
+                Sum('amount'), Decimal('0.00'),
+                output_field=DecimalField(max_digits=18, decimal_places=2),
+            ),
+            count=Count('id'),
+        )
+        total_revenue = money['gross_revenue'] - refund_totals['amount']
+        prep = population.filter(
+            ready_at__isnull=False,
+            status__in=['READY', 'COMPLETED'],
+        ).aggregate(avg=Avg(ExpressionWrapper(
+            F('ready_at') - F('created_at'),
+            output_field=DurationField(),
+        )))['avg']
+        avg_prep = int(prep.total_seconds()) if prep else None
+
+        # Canonical tender over that exact membership. A MIXED order contributes
+        # to its real cash/card/Payme lines, with refunds netted once.
         try:
-            from base.models import Order, OrderItem, OrderRefund
             from base.services.tender import net_breakdown
-            pq = Order.objects.filter(is_deleted=False, is_paid=True)
-            rq = OrderRefund.objects.filter(is_deleted=False)
-            if date_from_dt:
-                pq = pq.filter(paid_at__gte=date_from_dt)
-                rq = rq.filter(refunded_at__gte=date_from_dt)
-            if date_to_dt:
-                pq = pq.filter(paid_at__lte=date_to_dt)
-                rq = rq.filter(refunded_at__lte=date_to_dt)
-            if cashier_id:
-                pq = pq.filter(cashier_id=cashier_id)
-                rq = rq.filter(cashier_id=cashier_id)
-            if product_ids_list:
-                product_orders = OrderItem.objects.filter(
-                    is_deleted=False, product_id__in=product_ids_list,
-                ).values('order_id')
-                pq = pq.filter(id__in=product_orders)
-                rq = rq.filter(order_id__in=product_orders)
-            pq = tod_filter(pq, tod_from_t, tod_to_t, field='paid_at')
-            rq = tod_filter(rq, tod_from_t, tod_to_t, field='refunded_at')
-            _split, _detail = net_breakdown(pq, rq)
+            _split, _detail = net_breakdown(paid, refunds)
             payment_breakdown = {k: str(_split[k]) for k in ('cash', 'card', 'payme')}
             if _split['unknown']:
                 payment_breakdown['unknown'] = str(_split['unknown'])
@@ -1286,7 +1440,7 @@ class AdminOrderService:
             'CANCELED': stats['cancelled'],
         }
         payment_counts = {
-            'PAID': stats['paid'],
+            'PAID': stats['paid_membership'],
             'UNPAID': stats['unpaid'],
         }
 
@@ -1296,15 +1450,19 @@ class AdminOrderService:
             'ready_orders': stats['ready'],
             'completed_orders': stats['completed'],
             'cancelled_orders': stats['cancelled'],
-            'paid_orders': stats['paid'],
+            'paid_orders': stats['paid_membership'],
             'unpaid_orders': stats['unpaid'],
-            'total_revenue': str(stats['total_revenue']),
-            'avg_order_value': str(stats['avg_order_value']),
+            'total_revenue': str(total_revenue),
+            'gross_revenue': str(money['gross_revenue']),
+            'refund_amount': str(refund_totals['amount']),
+            'refunded_orders': refund_totals['count'],
+            'avg_order_value': str(money['avg_order_value']),
             'payment_breakdown': payment_breakdown,
             'status_counts': status_counts,
             'payment_counts': payment_counts,
             'average_preparation_time_seconds': avg_prep,
             'average_preparation_time_formatted': _format_duration(avg_prep) if avg_prep else None,
+            'filters': applied_filters,
         })
 
     @staticmethod

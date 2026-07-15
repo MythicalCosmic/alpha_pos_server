@@ -23,7 +23,7 @@ DEFAULT_COGS_FRACTION = Decimal('0.35')
 
 def shift_performance(shift):
     """Return per-shift KPIs derived from orders during the shift window."""
-    from base.models import Order, OrderRefund
+    from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
     end = shift.end_time or timezone.now()
@@ -83,6 +83,41 @@ def shift_performance(shift):
     orders_per_hour = round(total / hours, 2) if hours else 0.0
     revenue_per_hour = (revenue / Decimal(hours)).quantize(Decimal('0.01')) if hours else Decimal('0')
 
+    # Shift-detail "top products" must use the selected shift's cashier and its
+    # real half-open settlement window. The previous client fallback queried a
+    # broad date range, so another cashier's products (and unpaid/cancelled
+    # baskets) could appear on this shift.
+    from base.services.revenue import net_line_revenue
+    top_rows = list(
+        OrderItem.objects.filter(
+            is_deleted=False,
+            order__is_deleted=False,
+            order__cashier_id=shift.user_id,
+            order__branch_id=shift.branch_id,
+            order__is_paid=True,
+            order__paid_at__gte=start,
+            order__paid_at__lt=end,
+        )
+        .exclude(order__status=Order.Status.CANCELED)
+        .values('product_id', 'product__name')
+        .annotate(
+            total_quantity=Sum('quantity'),
+            total_revenue=Sum(net_line_revenue()),
+            order_count=Count('order_id', distinct=True),
+        )
+        .order_by('-total_quantity', 'product__name', 'product_id')[:5]
+    )
+    top_products = [{
+        'product_id': row['product_id'],
+        'product_name': row['product__name'],
+        'name': row['product__name'],
+        'total_quantity': int(row['total_quantity'] or 0),
+        'quantity': int(row['total_quantity'] or 0),
+        'total_revenue': str(row['total_revenue'] or 0),
+        'revenue': str(row['total_revenue'] or 0),
+        'order_count': row['order_count'],
+    } for row in top_rows]
+
     return {
         'shift_id': shift.id,
         'user_id': shift.user_id,
@@ -106,6 +141,7 @@ def shift_performance(shift):
         'avg_prep_seconds': avg_prep_seconds,
         'orders_per_hour': orders_per_hour,
         'revenue_per_hour': str(revenue_per_hour),
+        'top_products': top_products,
     }
 
 

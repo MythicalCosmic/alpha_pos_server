@@ -1,10 +1,4 @@
-"""Demand forecast service + endpoint tests.
-
-Gemini is monkeypatched so the suite never makes real API calls. We
-exercise the history aggregation, the parse path (including ``` fences),
-and the endpoint's error mapping.
-"""
-import json
+"""Demand forecast aggregation, deterministic model, and endpoint tests."""
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -91,61 +85,46 @@ class TestForecastTomorrow:
         assert err is None
         assert data['predictions'] == []
         assert data['reason'] == 'no_history'
+        assert data['method'] == 'historical_weekday_blend'
 
-    def test_calls_llm_and_parses_response(
-        self, monkeypatch, regular_user,
-    ):
+    def test_returns_local_prediction(self, regular_user):
         p = _make_product()
         _add_history(regular_user, p, 5, hours_ago=2)
-
-        fake_response = json.dumps({
-            'tomorrow': '2026-05-18',
-            'predictions': [
-                {'product_id': p.id, 'product_name': p.name,
-                 'suggested_qty': 8, 'reason': 'Friday demand'},
-            ],
-        })
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: (fake_response, None),
-        )
         data, err = forecast_service.forecast_tomorrow()
         assert err is None
-        assert data['predictions'][0]['suggested_qty'] == 8
+        assert data['method'] == 'historical_weekday_blend'
+        assert data['predictions'][0]['product_id'] == p.id
+        assert data['predictions'][0]['suggested_qty'] >= 1
 
-    def test_strips_markdown_code_fence(self, monkeypatch, regular_user):
-        p = _make_product()
-        _add_history(regular_user, p, 1, hours_ago=1)
-        fake = '```json\n{"predictions": [{"product_id": 1, "suggested_qty": 3, "product_name": "X", "reason": "y"}]}\n```'
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: (fake, None),
-        )
-        data, err = forecast_service.forecast_tomorrow()
-        assert err is None
-        assert data['predictions'][0]['suggested_qty'] == 3
+    def test_tomorrow_weekday_history_is_weighted(self):
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        weekday = tomorrow.strftime('%a')
+        history = {
+            'window_days': 28,
+            'products': [{
+                'id': 1,
+                'name': 'Burger',
+                'total_qty': 28,
+                'by_weekday': {weekday: 20},
+            }],
+        }
+        prediction = forecast_service._local_predictions(history, tomorrow)[0]
+        # Four matching weekdays average 5; blended with daily average 1.
+        assert prediction['suggested_qty'] == 5
+        assert weekday in prediction['reason']
 
-    def test_non_json_response_returns_parse_error(
-        self, monkeypatch, regular_user,
-    ):
-        p = _make_product()
-        _add_history(regular_user, p, 1, hours_ago=1)
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: ('not json at all', None),
-        )
-        data, err = forecast_service.forecast_tomorrow()
-        assert err == 'parse_error'
-
-    def test_llm_error_propagated(self, monkeypatch, regular_user):
-        p = _make_product()
-        _add_history(regular_user, p, 1, hours_ago=1)
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: (None, 'llm_key_missing'),
-        )
-        data, err = forecast_service.forecast_tomorrow()
-        assert err == 'llm_key_missing'
+    def test_old_history_payload_without_total_is_tolerated(self):
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        history = {
+            'window_days': 30,
+            'products': [{
+                'id': 1,
+                'name': 'Burger',
+                'by_weekday': {'Mon': 3, 'Tue': 2},
+            }],
+        }
+        prediction = forecast_service._local_predictions(history, tomorrow)[0]
+        assert prediction['suggested_qty'] >= 1
 
 
 @pytest.fixture
@@ -170,37 +149,18 @@ class TestForecastEndpoint:
         data = resp.json()['data']
         assert data['predictions'] == []
 
-    def test_llm_key_missing_returns_503(
-        self, monkeypatch, admin_session, regular_user,
+    def test_forecast_does_not_require_llm_configuration(
+        self, admin_session, regular_user,
     ):
         p = _make_product()
         _add_history(regular_user, p, 1, hours_ago=1)
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: (None, 'llm_key_missing'),
-        )
         client = Client()
         resp = client.get(
             '/api/admins/forecast/tomorrow',
             HTTP_AUTHORIZATION=f'Bearer {admin_session}',
         )
-        assert resp.status_code == 503
-
-    def test_parse_error_returns_502(
-        self, monkeypatch, admin_session, regular_user,
-    ):
-        p = _make_product()
-        _add_history(regular_user, p, 1, hours_ago=1)
-        monkeypatch.setattr(
-            forecast_service, '_call_llm',
-            lambda prompt: ('garbage', None),
-        )
-        client = Client()
-        resp = client.get(
-            '/api/admins/forecast/tomorrow',
-            HTTP_AUTHORIZATION=f'Bearer {admin_session}',
-        )
-        assert resp.status_code == 502
+        assert resp.status_code == 200
+        assert resp.json()['data']['method'] == 'historical_weekday_blend'
 
     def test_requires_admin(self):
         client = Client()
