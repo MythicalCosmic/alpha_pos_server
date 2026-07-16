@@ -270,7 +270,8 @@ def _build_filtered_order_queryset(
         product_ids=None, user_id=None, cashier_id=None, order_type=None,
         date_from=None, date_to=None, payment_method=None, search=None,
         order_by='-created_at', include_deleted=False, tod_from=None,
-        tod_to=None):
+        tod_to=None, datetime_from=None, datetime_to=None,
+        from_at=None, to_at=None):
     """Build the canonical Orders-page population.
 
     Both the paginated list and its global KPI endpoint call this function.
@@ -280,14 +281,21 @@ def _build_filtered_order_queryset(
     """
     from django.db.models import Q
     from base.models import Order
-    from base.services.business_day import parse_hhmm
+    from base.services.business_day import resolve_reporting_window
 
     statuses_list = _parse_statuses(statuses)
     category_ids_list = _parse_int_list(category_ids)
     product_ids_list = _parse_int_list(product_ids)
-    date_from_dt = _parse_date(date_from)
-    date_to_dt = _parse_date_to(date_to)
-    tod_from_t, tod_to_t = parse_hhmm(tod_from), parse_hhmm(tod_to)
+    has_window = any(value not in (None, '') for value in (
+        date_from, date_to, tod_from, tod_to,
+        datetime_from, datetime_to, from_at, to_at,
+    ))
+    window = resolve_reporting_window(
+        date_from, date_to,
+        tod_from=tod_from, tod_to=tod_to,
+        datetime_from=datetime_from, datetime_to=datetime_to,
+        from_at=from_at, to_at=to_at,
+    ) if has_window else None
 
     qs = OrderRepository.build_filtered_queryset(
         statuses=statuses_list,
@@ -297,13 +305,15 @@ def _build_filtered_order_queryset(
         user_id=user_id,
         cashier_id=cashier_id,
         order_type=order_type,
-        date_from=date_from_dt,
-        date_to=date_to_dt,
+        date_from=None,
+        date_to=None,
         order_by=(order_by if order_by in ALLOWED_ORDER_FIELDS else '-created_at'),
         include_deleted=include_deleted,
-        tod_from=tod_from_t,
-        tod_to=tod_to_t,
+        tod_from=None,
+        tod_to=None,
     )
+    if window is not None:
+        qs = window.filter(qs, 'created_at')
 
     requested_methods = _parse_string_list(payment_method)
     if requested_methods:
@@ -361,6 +371,10 @@ def _build_filtered_order_queryset(
         'date_to': date_to,
         'tod_from': tod_from,
         'tod_to': tod_to,
+        'datetime_from': datetime_from or from_at,
+        'datetime_to': datetime_to or to_at,
+        'start_at': window.start_at.isoformat() if window else None,
+        'end_at': window.end_at.isoformat() if window else None,
         'search': search_term or None,
         'include_deleted': bool(include_deleted),
     }
@@ -404,7 +418,10 @@ def _parse_date_to(date_str):
     except (ValueError, TypeError):
         # Not a bare date — an explicit timestamp (or junk); honor via _parse_date.
         return _parse_date(date_str)
-    nxt = timezone.make_aware(datetime.combine(d + timedelta(days=1), _business_start()))
+    from base.services.business_day import business_day_end
+    nxt = timezone.make_aware(
+        datetime.combine(d + timedelta(days=1), business_day_end()),
+    )
     return nxt - timedelta(microseconds=1)
 
 
@@ -527,7 +544,8 @@ class AdminOrderService:
                        order_by='-created_at', include_deleted=False,
                        include_items=True, product_ids=None,
                        tod_from=None, tod_to=None, payment_method=None,
-                       search=None):
+                       search=None, datetime_from=None, datetime_to=None,
+                       from_at=None, to_at=None):
         qs, applied_filters = _build_filtered_order_queryset(
             statuses=statuses,
             payment_status=payment_status,
@@ -544,6 +562,10 @@ class AdminOrderService:
             include_deleted=include_deleted,
             tod_from=tod_from,
             tod_to=tod_to,
+            datetime_from=datetime_from,
+            datetime_to=datetime_to,
+            from_at=from_at,
+            to_at=to_at,
         )
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
@@ -1330,7 +1352,9 @@ class AdminOrderService:
                         product_ids=None, tod_from=None, tod_to=None,
                         statuses=None, payment_status=None, category_ids=None,
                         user_id=None, order_type=None, payment_method=None,
-                        search=None, include_deleted=False):
+                        search=None, include_deleted=False,
+                        datetime_from=None, datetime_to=None,
+                        from_at=None, to_at=None):
         from django.db.models import (
             Avg, Count, DecimalField, DurationField, ExpressionWrapper, F, Q,
             Sum,
@@ -1353,6 +1377,10 @@ class AdminOrderService:
             include_deleted=include_deleted,
             tod_from=tod_from,
             tod_to=tod_to,
+            datetime_from=datetime_from,
+            datetime_to=datetime_to,
+            from_at=from_at,
+            to_at=to_at,
         )
         # Collapse relation joins (product/category/search/tender) to one stable
         # Order membership subquery before aggregating. This prevents fan-out and

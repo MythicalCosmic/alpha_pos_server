@@ -79,18 +79,25 @@ def shift_perf_view(request, shift_id):
 def menu_engineering_view(request):
     df_str = request.GET.get('from')
     dt_str = request.GET.get('to')
+    has_custom = any(request.GET.get(name) for name in (
+        'datetime_from', 'datetime_to', 'from_at', 'to_at',
+    ))
     df = parse_date(df_str) if df_str else None
     dt = parse_date(dt_str) if dt_str else None
-    if not df or not dt:
+    if not has_custom and (not df or not dt):
         return JsonResponse(
             {'success': False, 'message': 'from and to (YYYY-MM-DD) are required'},
             status=422,
         )
-    if df > dt:
+    if not has_custom and df > dt:
         return JsonResponse(
             {'success': False, 'message': 'from must be on or before to'},
             status=422,
         )
+    if has_custom:
+        df, dt, error = _parse_range(request)
+        if error:
+            return error
 
     cogs_str = request.GET.get('cogs_fraction')
     cogs = None
@@ -108,9 +115,14 @@ def menu_engineering_view(request):
                 status=422,
             )
 
+    window, error = _window_or_error(request, df, dt)
+    if error:
+        return error
     kwargs = {'cogs_fraction': cogs} if cogs is not None else {}
     return JsonResponse(
-        {'success': True, 'data': menu_engineering(df, dt, **kwargs)},
+        {'success': True, 'data': menu_engineering(
+            window.date_from, window.date_to, window=window, **kwargs,
+        )},
     )
 
 
@@ -118,6 +130,26 @@ def _parse_range(request):
     """(date_from, date_to, error_response). Defaults `to` = `from` for a
     single-day query; both default to today when omitted."""
     from base.services.business_day import business_date
+    # ISO datetimes have canonical precedence, even when stale/invalid legacy
+    # date params are also present during a rolling FE deployment.
+    if any(request.GET.get(name) for name in (
+        'datetime_from', 'datetime_to', 'from_at', 'to_at',
+    )):
+        from base.services.business_day import resolve_reporting_window
+        try:
+            window = resolve_reporting_window(
+                datetime_from=request.GET.get('datetime_from'),
+                datetime_to=request.GET.get('datetime_to'),
+                from_at=request.GET.get('from_at'),
+                to_at=request.GET.get('to_at'),
+            )
+        except ValueError as exc:
+            return None, None, JsonResponse(
+                {'success': False, 'message': str(exc),
+                 'errors': {'range': str(exc)}}, status=422,
+            )
+        return window.date_from, window.date_to, None
+
     df_str = request.GET.get('from')
     dt_str = request.GET.get('to')
     # Default "today" = current BUSINESS day (03:00 cutover), matching
@@ -141,6 +173,32 @@ def _int_or_none(value):
         return None
 
 
+def _resolved_window(request, date_from, date_to):
+    """Resolve canonical ISO datetimes, aliases, or legacy date/clock inputs."""
+    from base.services.business_day import resolve_reporting_window
+    return resolve_reporting_window(
+        date_from,
+        date_to,
+        datetime_from=request.GET.get('datetime_from'),
+        datetime_to=request.GET.get('datetime_to'),
+        from_at=request.GET.get('from_at'),
+        to_at=request.GET.get('to_at'),
+        tod_from=request.GET.get('tod_from'),
+        tod_to=request.GET.get('tod_to'),
+    )
+
+
+def _window_or_error(request, date_from, date_to):
+    try:
+        return _resolved_window(request, date_from, date_to), None
+    except ValueError as exc:
+        return None, JsonResponse(
+            {'success': False, 'message': str(exc),
+             'errors': {'range': str(exc)}},
+            status=422,
+        )
+
+
 @require_GET
 @manager_required
 def cashier_shift_analytics_view(request):
@@ -148,7 +206,12 @@ def cashier_shift_analytics_view(request):
     if err:
         return err
     user_id = _int_or_none(request.GET.get('user_id'))
-    data = cashier_shift_analytics(df, dt, user_id=user_id)
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    data = cashier_shift_analytics(
+        window.date_from, window.date_to, user_id=user_id, window=window,
+    )
     return JsonResponse({'success': True, 'data': data})
 
 
@@ -206,7 +269,12 @@ def kitchen_shift_analytics_view(request):
     kwargs = {'user_id': user_id, 'role': role}
     if target_min and target_min > 0:
         kwargs['target_prep_seconds'] = target_min * 60
-    data = kitchen_shift_analytics(df, dt, **kwargs)
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    data = kitchen_shift_analytics(
+        window.date_from, window.date_to, window=window, **kwargs,
+    )
     return JsonResponse({'success': True, 'data': data})
 
 
@@ -219,7 +287,12 @@ def products_overview_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_overview(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_overview(
+        window.date_from, window.date_to, window=window,
+    )})
 
 
 @require_GET
@@ -228,7 +301,12 @@ def products_categories_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_categories(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_categories(
+        window.date_from, window.date_to, window=window,
+    )})
 
 
 @require_GET
@@ -237,7 +315,12 @@ def products_pareto_view(request):
     df, dt, err = _parse_range(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': products_pareto(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_pareto(
+        window.date_from, window.date_to, window=window,
+    )})
 
 
 @require_GET
@@ -248,7 +331,12 @@ def products_trends_view(request):
         return err
     top_n = _int_or_none(request.GET.get('top_n')) or 5
     top_n = max(1, min(top_n, 20))
-    return JsonResponse({'success': True, 'data': products_trends(df, dt, top_n=top_n, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_trends(
+        window.date_from, window.date_to, top_n=top_n, window=window,
+    )})
 
 
 def _parse_range_token(request):
@@ -282,7 +370,12 @@ def staff_performance_view(request):
     df, dt, err = _parse_range_token(request)
     if err:
         return err
-    return JsonResponse({'success': True, 'data': staff_performance(df, dt, tod_from=request.GET.get('tod_from'), tod_to=request.GET.get('tod_to'))})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': staff_performance(
+        window.date_from, window.date_to, window=window,
+    )})
 
 
 @require_GET
@@ -294,7 +387,12 @@ def products_affinity_view(request):
     if err:
         return err
     limit = _int_or_none(request.GET.get('limit')) or 10
-    return JsonResponse({'success': True, 'data': products_affinity(df, dt, limit=limit)})
+    window, err = _window_or_error(request, df, dt)
+    if err:
+        return err
+    return JsonResponse({'success': True, 'data': products_affinity(
+        window.date_from, window.date_to, limit=limit, window=window,
+    )})
 
 
 @require_GET

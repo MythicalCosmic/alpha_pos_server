@@ -28,7 +28,14 @@ def _window(date_from, date_to):
     return range_window(date_from, date_to)
 
 
-def _sold_items(date_from, date_to, tod_from=None, tod_to=None):
+def _range_payload(date_from, date_to, window=None):
+    return (
+        window.metadata() if window is not None
+        else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+    )
+
+
+def _sold_items(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Gross sale-line events in the paid_at business window."""
     from base.models import OrderItem
     from base.services.business_day import tod_filter
@@ -37,22 +44,35 @@ def _sold_items(date_from, date_to, tod_from=None, tod_to=None):
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__paid_at__gte=lo, order__paid_at__lt=hi,
     )
-    return tod_filter(qs, tod_from, tod_to, field='order__paid_at')
-
-
-def _refunded_items(date_from, date_to, tod_from=None, tod_to=None):
-    """Reversed sale-line events in the refunded_at business window."""
-    from admins.services.refund_reporting import refund_item_events
-    lo, hi = _window(date_from, date_to)
-    return refund_item_events(
-        lo, hi, tod_from=tod_from, tod_to=tod_to,
+    if window is not None:
+        return window.filter(qs, 'order__paid_at')
+    return tod_filter(
+        qs, tod_from, tod_to, field='order__paid_at',
     )
 
 
-def products_overview(date_from, date_to, tod_from=None, tod_to=None):
+def _refunded_items(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
+    """Reversed sale-line events in the refunded_at business window."""
+    from admins.services.refund_reporting import refund_item_events
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else _window(date_from, date_to)
+    )
+    qs = refund_item_events(
+        lo, hi,
+        tod_from=None if window is not None else tod_from,
+        tod_to=None if window is not None else tod_to,
+    )
+    return (
+        window.filter(qs, f'{REFUND_EVENT_ALIAS}__refunded_at')
+        if window is not None else qs
+    )
+
+
+def products_overview(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Headline product KPIs over the window + top sellers / slow movers."""
-    items = _sold_items(date_from, date_to, tod_from, tod_to)
-    refunds = _refunded_items(date_from, date_to, tod_from, tod_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to, window=window)
+    refunds = _refunded_items(date_from, date_to, tod_from, tod_to, window=window)
     from admins.services.refund_reporting import net_grouped_items
     ranked_list = net_grouped_items(
         items, refunds, ('product_id', 'product__name'),
@@ -96,7 +116,7 @@ def products_overview(date_from, date_to, tod_from=None, tod_to=None):
     revenue = gross_revenue - refund_amount
     lines = (gross['lines'] or 0) - (reversed_['lines'] or 0)
     return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'range': _range_payload(date_from, date_to, window),
         'window_days': (date_to - date_from).days + 1,
         'total_revenue': _uzs(revenue),
         'gross_revenue': _uzs(gross_revenue),
@@ -117,11 +137,11 @@ def products_overview(date_from, date_to, tod_from=None, tod_to=None):
     }
 
 
-def products_categories(date_from, date_to, tod_from=None, tod_to=None):
+def products_categories(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Units + revenue per category over the window, with each category's share
     of total revenue."""
-    items = _sold_items(date_from, date_to, tod_from, tod_to)
-    refunds = _refunded_items(date_from, date_to, tod_from, tod_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to, window=window)
+    refunds = _refunded_items(date_from, date_to, tod_from, tod_to, window=window)
     from admins.services.refund_reporting import net_grouped_items
     rows = net_grouped_items(
         items, refunds,
@@ -144,18 +164,18 @@ def products_categories(date_from, date_to, tod_from=None, tod_to=None):
             'pct_of_revenue': float((rev / total * 100).quantize(Decimal('0.1'))) if total else 0.0,
         })
     return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'range': _range_payload(date_from, date_to, window),
         'total_revenue': _uzs(total),
         'categories': out,
     }
 
 
-def products_pareto(date_from, date_to, tod_from=None, tod_to=None):
+def products_pareto(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Pareto (80/20) of products by revenue: rank descending with cumulative
     share, classifying the 'vital few' (A = up to 80% of revenue, B = next 15%,
     C = the long tail)."""
-    items = _sold_items(date_from, date_to, tod_from, tod_to)
-    refunds = _refunded_items(date_from, date_to, tod_from, tod_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to, window=window)
+    refunds = _refunded_items(date_from, date_to, tod_from, tod_to, window=window)
     from admins.services.refund_reporting import net_grouped_items
     rows = net_grouped_items(
         items, refunds, ('product_id', 'product__name'),
@@ -197,7 +217,7 @@ def products_pareto(date_from, date_to, tod_from=None, tod_to=None):
 
     n = len(products)
     return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'range': _range_payload(date_from, date_to, window),
         'total_revenue': _uzs(total),
         'products': products,
         'summary': {
@@ -209,12 +229,13 @@ def products_pareto(date_from, date_to, tod_from=None, tod_to=None):
     }
 
 
-def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None):
+def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None,
+                    *, window=None):
     """Daily sales trend (business-day buckets) for the window, plus a per-day
     series for the top-N products by revenue."""
     from base.services.business_day import business_day_date_expr
-    items = _sold_items(date_from, date_to, tod_from, tod_to)
-    refunds = _refunded_items(date_from, date_to, tod_from, tod_to)
+    items = _sold_items(date_from, date_to, tod_from, tod_to, window=window)
+    refunds = _refunded_items(date_from, date_to, tod_from, tod_to, window=window)
     from admins.services.refund_reporting import net_grouped_items
 
     # Completed product sales follow settlement, not ticket creation. The
@@ -275,14 +296,28 @@ def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None):
         'points': per_product.get(t['product_id'], []),
     } for t in top]
 
-    return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+    payload = {
+        'range': _range_payload(date_from, date_to, window),
         'daily': series,
         'top_products_trend': top_products_trend,
     }
+    if window is not None:
+        previous = window.previous()
+        # The FE can issue the exact same endpoint with this ISO pair. This is
+        # preferable to embedding a second independently-ranked top-N list,
+        # which would make product-by-product deltas ambiguous.
+        payload['previous_period'] = {
+            'range': previous.metadata(),
+            'query': {
+                'datetime_from': previous.start_at.isoformat(),
+                'datetime_to': previous.end_at.isoformat(),
+                'top_n': top_n,
+            },
+        }
+    return payload
 
 
-def products_affinity(date_from, date_to, limit=10):
+def products_affinity(date_from, date_to, limit=10, *, window=None):
     """Market-basket co-occurrence (item 16): which products are bought together.
 
     Returns the top-N products (by the number of PAID orders each appears in) and the
@@ -294,7 +329,10 @@ def products_affinity(date_from, date_to, limit=10):
     from base.models import OrderItem, Product
 
     limit = max(1, min(int(limit or 10), 25))
-    lo, hi = _window(date_from, date_to)
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else _window(date_from, date_to)
+    )
 
     # Sale baskets and refund baskets are distinct dated events. If both happen
     # inside the selected window they cancel without rewriting either fact.
@@ -306,7 +344,7 @@ def products_affinity(date_from, date_to, limit=10):
         .values_list('order_id', 'product_id')
     )
     refund_rows = (
-        _refunded_items(date_from, date_to)
+        _refunded_items(date_from, date_to, window=window)
         .filter(refund_event__source='ORDER_CANCEL')
         .values_list('order_id', 'product_id')
     )
@@ -369,7 +407,7 @@ def products_affinity(date_from, date_to, limit=10):
     pairs.sort(key=lambda p: (-p['count'], p['a'], p['b']))
 
     return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'range': _range_payload(date_from, date_to, window),
         'products': products,
         'pairs': pairs,
         'totalOrders': total_orders,

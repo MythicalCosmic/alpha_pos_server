@@ -9,8 +9,7 @@ from django.utils import timezone
 
 _ACTIVE = ('OPEN', 'PREPARING', 'READY')
 _FUNNEL = ('OPEN', 'PREPARING', 'READY', 'COMPLETED', 'CANCELED')
-HM_HOURS = ['09', '10', '11', '12', '13', '14', '15', '16',
-            '17', '18', '19', '20', '21', '22']
+OPERATING_HOURS = list(range(7, 24)) + [0, 1, 2]
 
 
 def _window(date_from, date_to):
@@ -25,20 +24,27 @@ def _window(date_from, date_to):
     return day_window(business_date())
 
 
-def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=None):
+def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=None,
+                         datetime_from=None, datetime_to=None,
+                         from_at=None, to_at=None):
     from base.models import Order, OrderItem, Table
-    from base.services.business_day import tod_filter, parse_hhmm
-    lo, hi = _window(date_from, date_to)
-    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
+    from base.services.business_day import resolve_reporting_window
+    window = resolve_reporting_window(
+        date_from, date_to,
+        tod_from=tod_from, tod_to=tod_to,
+        datetime_from=datetime_from, datetime_to=datetime_to,
+        from_at=from_at, to_at=to_at,
+    )
+    lo, hi = window.start_at, window.end_at
     # Base querysets for the window, restricted to the working-hours (tod) window
     # per day when tod_from/tod_to are given — every operations block derives from these.
-    _o = tod_filter(
-        Order.objects.filter(is_deleted=False, created_at__gte=lo, created_at__lt=hi),
-        tf, tt, field='created_at')
-    _oi = tod_filter(
-        OrderItem.objects.filter(is_deleted=False, order__is_deleted=False,
-                                 order__created_at__gte=lo, order__created_at__lt=hi),
-        tf, tt, field='order__created_at')
+    _o = window.filter(
+        Order.objects.filter(is_deleted=False), 'created_at',
+    )
+    _oi = window.filter(
+        OrderItem.objects.filter(is_deleted=False, order__is_deleted=False),
+        'order__created_at',
+    )
 
     # ── table grid: status DERIVED from this table's live orders in the window
     #    (ready if any READY, occupied if any OPEN/PREPARING, else free) ──
@@ -107,16 +113,20 @@ def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=Non
         })
 
     # ── orders by hour (09..22), localtime hour (matches the sales heatmap) ──
-    hour_counts = {h: 0 for h in range(9, 23)}
+    hour_counts = {hour: 0 for hour in OPERATING_HOURS}
     for (created,) in (
         _o.exclude(status='CANCELED').values_list('created_at')
     ):
         h = timezone.localtime(created).hour
-        if 9 <= h <= 22:
+        if h in hour_counts:
             hour_counts[h] += 1
-    orders_by_hour = [{'hour': f'{h:02d}', 'orders': hour_counts[h]} for h in range(9, 23)]
+    orders_by_hour = [
+        {'hour': f'{hour:02d}', 'orders': hour_counts[hour]}
+        for hour in OPERATING_HOURS
+    ]
 
     return {
+        'range': window.metadata(),
         'tableGrid': table_grid,
         'funnel': funnel,
         'prepByCategory': prep_by_category,

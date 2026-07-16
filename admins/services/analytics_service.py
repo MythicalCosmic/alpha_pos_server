@@ -145,7 +145,8 @@ def shift_performance(shift):
     }
 
 
-def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
+def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION,
+                     *, window=None):
     """Star/Plowhorse/Puzzle/Dog classification per product over a window.
 
     Popularity axis = total quantity sold over the window.
@@ -166,7 +167,10 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
         net_grouped_items, refund_item_events,
     )
 
-    lo, hi = range_window(date_from, date_to)
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else range_window(date_from, date_to)
+    )
 
     sale_items = (
         OrderItem.objects.filter(
@@ -176,9 +180,16 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
         # Exclude cancelled orders — they never sold, so they must not skew
         # menu-engineering quadrants (qty sold / revenue).
     )
+    refund_items = refund_item_events(lo, hi)
+    if window is not None:
+        from base.services.refund_lines import REFUND_EVENT_ALIAS
+        sale_items = window.filter(sale_items, 'order__paid_at')
+        refund_items = window.filter(
+            refund_items, f'{REFUND_EVENT_ALIAS}__refunded_at',
+        )
     rows = net_grouped_items(
         sale_items,
-        refund_item_events(lo, hi),
+        refund_items,
         ('product_id', 'product__name', 'product__price'),
     )
 
@@ -214,6 +225,10 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
 
     if not items:
         return {
+            'range': (
+                window.metadata() if window is not None
+                else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+            ),
             'items': [],
             'summary': {
                 'cogs_fraction': str(cogs_fraction),
@@ -249,6 +264,10 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     items.sort(key=lambda x: (x['class'] != 'Star', -int(x['qty_sold'])))
 
     return {
+        'range': (
+            window.metadata() if window is not None
+            else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+        ),
         'items': items,
         'summary': {
             'cogs_fraction': str(cogs_fraction),
@@ -263,7 +282,7 @@ def menu_engineering(date_from, date_to, cogs_fraction=DEFAULT_COGS_FRACTION):
     }
 
 
-def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
+def staff_performance(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Per-staff KPIs over the BUSINESS-day window [date_from, date_to]: order
     volume, completion/cancellation, paid revenue, units sold, and shifts/hours
     worked. Powers the admin-panel Staff dashboard (GET /staff/performance?range=).
@@ -271,13 +290,25 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     from base.models import Order, OrderItem, OrderRefund, Shift
     from base.services.business_day import range_window, tod_filter, parse_hhmm
 
-    lo, hi = range_window(date_from, date_to)
-    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else range_window(date_from, date_to)
+    )
+    tf, tt = (
+        (None, None) if window is not None
+        else (parse_hhmm(tod_from), parse_hhmm(tod_to))
+    )
+
+    def scoped(qs, field):
+        return (
+            window.filter(qs, field) if window is not None
+            else tod_filter(qs, tf, tt, field=field)
+        )
 
     operational_rows = list(
-        tod_filter(Order.objects.filter(
+        scoped(Order.objects.filter(
             is_deleted=False, cashier__isnull=False,
-            created_at__gte=lo, created_at__lt=hi), tf, tt)
+            created_at__gte=lo, created_at__lt=hi), 'created_at')
         .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
         .annotate(
             orders_total=Count('id'),
@@ -291,7 +322,7 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     # was opened, which breaks revenue, AOV and tender reconciliation around the
     # business-day cutover.
     paid_rows = list(
-        tod_filter(
+        scoped(
             Order.objects.filter(
                 is_deleted=False,
                 cashier__isnull=False,
@@ -299,25 +330,21 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
                 paid_at__gte=lo,
                 paid_at__lt=hi,
             ),
-            tf,
-            tt,
-            field='paid_at',
+            'paid_at',
         )
         .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
         .annotate(paid=Count('id'), revenue=Sum('total_amount'))
     )
 
     refund_rows = list(
-        tod_filter(
+        scoped(
             OrderRefund.objects.filter(
                 is_deleted=False,
                 cashier__isnull=False,
                 refunded_at__gte=lo,
                 refunded_at__lt=hi,
             ),
-            tf,
-            tt,
-            field='refunded_at',
+            'refunded_at',
         )
         .values('cashier_id', 'cashier__first_name', 'cashier__last_name', 'cashier__role')
         .annotate(refunded=Count('id'), refund_amount=Sum('amount'))
@@ -326,10 +353,10 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     units_map = {
         r['order__cashier_id']: int(r['u'] or 0)
         for r in (
-            tod_filter(OrderItem.objects.filter(
+            scoped(OrderItem.objects.filter(
                 is_deleted=False, order__is_deleted=False, order__is_paid=True,
                 order__paid_at__gte=lo, order__paid_at__lt=hi),
-                tf, tt, field='order__paid_at')
+                'order__paid_at')
             .values('order__cashier_id')
             .annotate(u=Sum('quantity'))
         )
@@ -342,9 +369,8 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
         refunded_at__gte=lo,
         refunded_at__lt=hi,
     )
-    refund_unit_items = tod_filter(
-        refund_unit_items, tf, tt,
-        field=f'{REFUND_EVENT_ALIAS}__refunded_at',
+    refund_unit_items = scoped(
+        refund_unit_items, f'{REFUND_EVENT_ALIAS}__refunded_at',
     )
     refund_units_map = {
         r[f'{REFUND_EVENT_ALIAS}__cashier_id']: int(r['u'] or 0)
@@ -418,7 +444,10 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None):
     total_revenue = sum((Decimal(s['revenue']) for s in staff), Decimal('0'))
     total_orders = sum(s['orders_total'] for s in staff)
     return {
-        'range': {'from': date_from.isoformat(), 'to': date_to.isoformat()},
+        'range': (
+            window.metadata() if window is not None
+            else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+        ),
         'window_days': (date_to - date_from).days + 1,
         'staff': staff,
         'summary': {

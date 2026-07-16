@@ -106,7 +106,7 @@ class TestOrderStatsParseDate:
         from admins.services.order_service import _parse_date, _parse_date_to
         d = _parse_date('2026-03-10')
         assert d.date() == date(2026, 3, 10)
-        assert (d.hour, d.minute) == (3, 0)
+        assert (d.hour, d.minute) == (7, 0)
         dt = _parse_date_to('2026-03-10')
         # inclusive end = last microsecond before the next 03:00 cutover.
         assert dt.date() == date(2026, 3, 11)
@@ -179,7 +179,7 @@ class TestBusinessDayStartExposed:
         from django.core.cache import cache
         res, status = AppSettingsService.get_all()
         assert status == 200
-        assert res['data']['settings']['business_day_start'] == '03:00'
+        assert res['data']['settings']['business_day_start'] == '07:00'
 
         res, status = AppSettingsService.update(business_day_start='05:30')
         assert status == 200
@@ -194,7 +194,7 @@ class TestBusinessDayStartExposed:
     def test_auth_me_includes_business_day_start(self, admin_session):
         resp = Client().get('/api/admins/auth-me', HTTP_AUTHORIZATION=f'Bearer {admin_session}')
         assert resp.status_code == 200
-        assert resp.json()['data']['business_day_start'] == '03:00'
+        assert resp.json()['data']['business_day_start'] == '07:00'
 
 
 # ── new endpoints wired + manager-gated (items 9 & 10) ─────────────────────

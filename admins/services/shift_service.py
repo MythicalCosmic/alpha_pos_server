@@ -10,7 +10,6 @@ from django.core.paginator import Paginator
 from django.db.models import Count, DecimalField, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
-from django.utils.dateparse import parse_date
 
 from base.helpers.response import ServiceResponse
 from base.models import Shift
@@ -50,7 +49,10 @@ class ShiftService(CoreShiftService):
     @staticmethod
     def _filtered_admin_queryset(*, user_id=None, status=None,
                                  date_from=None, date_to=None,
-                                 live_only=False, closed_only=False):
+                                 live_only=False, closed_only=False,
+                                 datetime_from=None, datetime_to=None,
+                                 from_at=None, to_at=None,
+                                 tod_from=None, tod_to=None):
         if live_only and closed_only:
             raise ValueError('live_only and closed_only cannot both be true')
 
@@ -76,22 +78,22 @@ class ShiftService(CoreShiftService):
                 )
             qs = qs.filter(status__in=requested_statuses)
 
-        parsed_from = parse_date(str(date_from)) if date_from else None
-        parsed_to = parse_date(str(date_to)) if date_to else None
-        if date_from and parsed_from is None:
-            raise ValueError('date_from must be YYYY-MM-DD')
-        if date_to and parsed_to is None:
-            raise ValueError('date_to must be YYYY-MM-DD')
-        if parsed_from and parsed_to and parsed_from > parsed_to:
-            raise ValueError('date_from must be on or before date_to')
-
-        from base.services.business_day import range_window
-        if parsed_from:
-            lower, _ = range_window(parsed_from, parsed_from)
-            qs = qs.filter(start_time__gte=lower)
-        if parsed_to:
-            _, upper = range_window(parsed_to, parsed_to)
-            qs = qs.filter(start_time__lt=upper)
+        has_window = any(value not in (None, '') for value in (
+            date_from, date_to, tod_from, tod_to,
+            datetime_from, datetime_to, from_at, to_at,
+        ))
+        window = None
+        if has_window:
+            from base.services.business_day import resolve_reporting_window
+            window = resolve_reporting_window(
+                date_from, date_to,
+                tod_from=tod_from, tod_to=tod_to,
+                datetime_from=datetime_from, datetime_to=datetime_to,
+                from_at=from_at, to_at=to_at,
+            )
+            qs = window.filter(qs, 'start_time')
+        parsed_from = window.date_from if window else None
+        parsed_to = window.date_to if window else None
 
         if live_only:
             qs = qs.filter(status=Shift.Status.ACTIVE, end_time__isnull=True)
@@ -100,7 +102,7 @@ class ShiftService(CoreShiftService):
                 status=Shift.Status.ACTIVE,
                 end_time__isnull=True,
             )
-        return qs, requested_statuses, parsed_from, parsed_to, user_id
+        return qs, requested_statuses, parsed_from, parsed_to, user_id, window
 
     @staticmethod
     def _global_summary(filtered, *, now):
@@ -162,9 +164,10 @@ class ShiftService(CoreShiftService):
     @staticmethod
     def list(page=1, per_page=20, user_id=None, status=None, date_from=None,
              date_to=None, live_only=False, closed_only=False,
-             order_by='-start_time'):
+             order_by='-start_time', datetime_from=None, datetime_to=None,
+             from_at=None, to_at=None, tod_from=None, tod_to=None):
         try:
-            filtered, statuses, parsed_from, parsed_to, parsed_user = (
+            filtered, statuses, parsed_from, parsed_to, parsed_user, window = (
                 ShiftService._filtered_admin_queryset(
                     user_id=user_id,
                     status=status,
@@ -172,6 +175,12 @@ class ShiftService(CoreShiftService):
                     date_to=date_to,
                     live_only=live_only,
                     closed_only=closed_only,
+                    datetime_from=datetime_from,
+                    datetime_to=datetime_to,
+                    from_at=from_at,
+                    to_at=to_at,
+                    tod_from=tod_from,
+                    tod_to=tod_to,
                 )
             )
         except ValueError as exc:
@@ -217,6 +226,9 @@ class ShiftService(CoreShiftService):
                 'statuses': statuses or None,
                 'date_from': parsed_from.isoformat() if parsed_from else None,
                 'date_to': parsed_to.isoformat() if parsed_to else None,
+                'start_at': window.start_at.isoformat() if window else None,
+                'end_at': window.end_at.isoformat() if window else None,
+                'range_mode': window.mode if window else None,
                 'live_only': bool(live_only),
                 'closed_only': bool(closed_only),
                 'order_by': order_by,

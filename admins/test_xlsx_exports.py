@@ -181,10 +181,12 @@ def test_dashboard_export_is_filter_consistent_xlsx_attachment(
     assert filtered_summary['Net revenue (UZS)'] == int(
         filtered_json['revenue']
     )
-    assert filtered_summary['Orders'] == filtered_json['orders'] == 1
+    # Legacy date+clock inputs now resolve to one exact continuous interval.
+    # No seeded receipt falls in 08:00-08:30.
+    assert filtered_summary['Orders'] == filtered_json['orders'] == 0
     assert filtered_payments['card'] == int(
         filtered_json['payment_breakdown']['card']
-    ) == 50000
+    ) == 0
 
 
 def test_dashboard_export_auth_method_and_empty_range(

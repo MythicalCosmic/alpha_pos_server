@@ -98,33 +98,35 @@ def _local_date(dt, tz):
 def _period_raw(start_date, end_date, branch_id, tz, granularity):
     """All per-period aggregates as plain dicts, ready to merge with the other
     period. Keeps every query DB-side; ~12 small aggregations."""
-    lo, hi = _window(start_date, end_date, tz)
+    from base.services.business_day import resolve_reporting_window
+    window = resolve_reporting_window(start_date, end_date)
+    lo, hi = window.start_at, window.end_at
 
-    settled_orders = Order.objects.filter(
-        _SALES,
-        paid_at__gte=lo,
-        paid_at__lt=hi,
+    settled_orders = window.filter(
+        Order.objects.filter(_SALES), 'paid_at',
     )
-    operational_orders = Order.objects.filter(
-        is_deleted=False,
-        created_at__gte=lo,
-        created_at__lt=hi,
+    operational_orders = window.filter(
+        Order.objects.filter(is_deleted=False), 'created_at',
     ).exclude(status='CANCELED')
     if branch_id:
         settled_orders = settled_orders.filter(branch_id=branch_id)
         operational_orders = operational_orders.filter(branch_id=branch_id)
 
-    refunds = refund_events(lo, hi)
+    refunds = window.filter(refund_events(lo, hi), 'refunded_at')
     if branch_id:
         refunds = refunds.filter(branch_id=branch_id)
 
-    items = OrderItem.objects.filter(
-        is_deleted=False, order__is_deleted=False, order__is_paid=True,
-        order__paid_at__gte=lo, order__paid_at__lt=hi,
+    items = window.filter(
+        OrderItem.objects.filter(
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
+        ),
+        'order__paid_at',
     )
     if branch_id:
         items = items.filter(order__branch_id=branch_id)
-    refund_items = refund_item_events(lo, hi)
+    refund_items = window.filter(
+        refund_item_events(lo, hi), f'{REFUND_EVENT_ALIAS}__refunded_at',
+    )
     if branch_id:
         refund_items = refund_items.filter(order__branch_id=branch_id)
 
@@ -267,6 +269,7 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
         'ts': ts, 'cat': cat, 'prod': prod,
         'by_hour': by_hour, 'by_wd': by_wd, 'hw': hw,
         'pay': pay, 'otype': otype, 'branch': branch, 'cashier': cashier,
+        'window': window.metadata(),
     }
 
 
@@ -420,10 +423,14 @@ def compare_periods(a_start, a_end, b_start, b_end, granularity='day',
     by_cashier.sort(key=lambda x: x['a'], reverse=True)
 
     return {
-        'period_a': {'start': a_start.isoformat(), 'end': a_end.isoformat(),
-                     'days': (a_end - a_start).days + 1},
-        'period_b': {'start': b_start.isoformat(), 'end': b_end.isoformat(),
-                     'days': (b_end - b_start).days + 1},
+        'period_a': {
+            'start': a_start.isoformat(), 'end': a_end.isoformat(),
+            'days': (a_end - a_start).days + 1, **A['window'],
+        },
+        'period_b': {
+            'start': b_start.isoformat(), 'end': b_end.isoformat(),
+            'days': (b_end - b_start).days + 1, **B['window'],
+        },
         'kpis': kpis,
         'revenue_timeseries': {
             'granularity': granularity,

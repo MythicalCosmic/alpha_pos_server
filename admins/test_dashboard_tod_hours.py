@@ -8,8 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.django_db
 
-# A fixed business date (03:00 cutover). Business window [08 03:00 +05, 09 03:00 +05)
-# = [2026-07-07 22:00 UTC, 2026-07-08 22:00 UTC).
+# A fixed operating date. Canonical window [08 07:00 +05, 09 03:00 +05).
 D = date(2026, 7, 8)
 
 
@@ -44,7 +43,7 @@ def _utc(y, mo, d, h):
 
 
 def _seed_tod_orders():
-    # local = UTC + 5h. All within business day 2026-07-08.
+    # local = UTC + 5h. The 04:00 row is in the excluded 03:00-07:00 gap.
     _order(100000, _utc(2026, 7, 8, 5))    # 10:00 local  (in 09-23)
     _order(50000, _utc(2026, 7, 8, 16))    # 21:00 local  (in 09-23)
     _order(30000, _utc(2026, 7, 7, 23))    # 04:00 local  (out: < 09:00)
@@ -55,7 +54,7 @@ def test_get_range_tod_filter():
     from admins.services.dashboard_service import get_range
     _seed_tod_orders()
     full = get_range('2026-07-08', '2026-07-08')
-    assert full['revenue'] == '200000', full          # whole business day
+    assert full['revenue'] == '170000', full          # 07:00 -> next-day 03:00
     win = get_range('2026-07-08', '2026-07-08', tod_from='09:00', tod_to='23:00')
     assert win['revenue'] == '150000', win            # only 10:00 + 21:00
     assert win['orders'] == 2
@@ -66,14 +65,14 @@ def test_sales_dashboard_hourly_granularity():
     _seed_tod_orders()
     data = sales_dashboard(date_from='2026-07-08', date_to='2026-07-08', granularity='hour')
     assert data['range']['granularity'] == 'hour'
-    assert len(data['dayLabels']) == 24
-    assert data['dayLabels'][0] == '03:00' and data['dayLabels'][-1] == '02:00'
-    assert len(data['revenue30']) == 24
-    # 10:00 local order -> hour 10 -> index 7 in [3,4,5,6,7,8,9,10,...]
-    assert data['dayLabels'][7] == '10:00'
-    assert data['revenue30'][7] == '100000'
-    # 21:00 local -> index 18
-    assert data['dayLabels'][18] == '21:00' and data['revenue30'][18] == '50000'
+    assert len(data['dayLabels']) == 20
+    assert data['dayLabels'][0] == '07:00' and data['dayLabels'][-1] == '02:00'
+    assert len(data['revenue30']) == 20
+    # 10:00 local order -> hour 10 -> index 3 in [7,8,9,10,...]
+    assert data['dayLabels'][3] == '10:00'
+    assert data['revenue30'][3] == '100000'
+    # 21:00 local -> index 14
+    assert data['dayLabels'][14] == '21:00' and data['revenue30'][14] == '50000'
 
 
 def test_product_ids_filter_orders_and_stats():
@@ -99,7 +98,7 @@ def test_product_ids_filter_orders_and_stats():
 def test_working_hours_settings_get_put():
     from admins.services.app_settings_service import AppSettingsService
     g = AppSettingsService.get_all()[0]['data']['settings']
-    assert g['business_open'] == '09:00' and g['business_close'] == '23:00'
+    assert g['business_open'] == '07:00' and g['business_close'] == '03:00'
     upd = AppSettingsService.update(business_open='08:30', business_close='22:00')
     s = upd[0]['data']['settings']
     assert s['business_open'] == '08:30' and s['business_close'] == '22:00'

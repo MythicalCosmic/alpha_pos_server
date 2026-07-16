@@ -223,8 +223,8 @@ class TestOperationsDashboard:
         from admins.services.operations_dashboard_service import operations_dashboard
         data = operations_dashboard()
         assert set(data) >= {'tableGrid', 'funnel', 'prepByCategory', 'ordersByHour'}
-        assert len(data['ordersByHour']) == 14
-        assert data['ordersByHour'][0]['hour'] == '09' and data['ordersByHour'][-1]['hour'] == '22'
+        assert len(data['ordersByHour']) == 20
+        assert data['ordersByHour'][0]['hour'] == '07' and data['ordersByHour'][-1]['hour'] == '02'
         assert [f['status'] for f in data['funnel']] == \
             ['OPEN', 'PREPARING', 'READY', 'COMPLETED', 'CANCELED']
 

@@ -351,40 +351,45 @@ def _range_window(date_from, date_to):
     return d_from, d_to, start, end
 
 
-def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
+def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None,
+              datetime_from=None, datetime_to=None, from_at=None, to_at=None,
+              *, _window=None, _include_related=True):
     """Date-range dashboard (GET /dashboard?from=&to=): the headline figures over
     an arbitrary [from, to] window (defaults to today). Optional tod_from/tod_to
     ("HH:MM") restrict to a working-hours window within each business day."""
     from base.models import Order, OrderItem
-    from base.services.business_day import tod_filter, parse_hhmm
+    from base.services.business_day import resolve_reporting_window
     from admins.services.refund_reporting import (
         net_grouped_items, refund_events, refund_item_events,
     )
-    d_from, d_to, start, end = _range_window(date_from, date_to)
-    tf, tt = parse_hhmm(tod_from), parse_hhmm(tod_to)
-    sold = Order.objects.filter(
-        is_deleted=False, created_at__gte=start, created_at__lt=end,
+    window = _window or resolve_reporting_window(
+        date_from, date_to,
+        tod_from=tod_from, tod_to=tod_to,
+        datetime_from=datetime_from, datetime_to=datetime_to,
+        from_at=from_at, to_at=to_at,
     )
-    sold = tod_filter(sold, tf, tt, field='created_at')
-    paid = Order.objects.filter(
-        is_deleted=False, is_paid=True, paid_at__gte=start, paid_at__lt=end,
+    d_from, d_to = window.date_from, window.date_to
+    start, end = window.start_at, window.end_at
+    sold = window.filter(
+        Order.objects.filter(is_deleted=False), 'created_at',
     )
-    paid = tod_filter(paid, tf, tt, field='paid_at')
+    paid = window.filter(
+        Order.objects.filter(is_deleted=False, is_paid=True), 'paid_at',
+    )
     rev = paid.aggregate(total=Sum('total_amount'), n=Count('id'))
-    refunds = refund_events(
-        start, end, tod_from=tf, tod_to=tt,
-    )
+    refunds = window.filter(refund_events(start, end), 'refunded_at')
     refund_agg = refunds.aggregate(total=Sum('amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
     pay = _tender_breakdown(paid, refunds)
-    items = OrderItem.objects.filter(
-        is_deleted=False, order__is_deleted=False, order__is_paid=True,
-        order__paid_at__gte=start, order__paid_at__lt=end,
+    items = window.filter(
+        OrderItem.objects.filter(
+            is_deleted=False, order__is_deleted=False, order__is_paid=True,
+        ),
+        'order__paid_at',
     )
-    items = tod_filter(items, tf, tt, field='order__paid_at')
-    refund_items = refund_item_events(
-        start, end, tod_from=tf, tod_to=tt,
+    refund_items = window.filter(
+        refund_item_events(start, end), 'refund_event__refunded_at',
     )
     top = net_grouped_items(
         items, refund_items, ('product_id', 'product__name'),
@@ -402,8 +407,8 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
     cat_rows.sort(key=lambda row: -(row['revenue'] or 0))
     gross_revenue = rev['total'] or Decimal('0')
     refund_amount = refund_agg['total'] or Decimal('0')
-    return {
-        'range': {'from': d_from.isoformat(), 'to': d_to.isoformat()},
+    payload = {
+        'range': window.metadata(),
         'revenue': _uzs(gross_revenue - refund_amount),
         'gross_revenue': _uzs(gross_revenue),
         'refund_amount': _uzs(refund_amount),
@@ -434,6 +439,46 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None):
             'refund_amount': _uzs(r['refund_revenue']),
         } for r in cat_rows],
     }
+    if _include_related:
+        previous_window = window.previous()
+        previous = get_range(
+            _window=previous_window,
+            _include_related=False,
+        )
+        payload['previous_period'] = {
+            'range': previous['range'],
+            'revenue': previous['revenue'],
+            'gross_revenue': previous['gross_revenue'],
+            'refund_amount': previous['refund_amount'],
+            'orders': previous['orders'],
+            'paid_orders': previous['paid_orders'],
+            'cancelled': previous['cancelled'],
+            'units_sold': previous['units_sold'],
+        }
+        # This feed is deliberately scoped to the resolved interval so an old
+        # historical selection never leaks today's live tickets into the view.
+        active = (
+            window.filter(Order.objects.filter(
+                is_deleted=False,
+                status__in=['PREPARING', 'READY'],
+            ), 'created_at')
+            .select_related('cashier', 'table')
+            .order_by('-created_at', '-id')[:20]
+        )
+        payload['live_order_feed'] = [{
+            'id': order.id,
+            'order_number': order.order_number or order.display_id,
+            'status': order.status,
+            'order_type': order.order_type,
+            'total_amount': _uzs(order.total_amount),
+            'created_at': order.created_at.isoformat(),
+            'table': str(order.table.number) if order.table_id else None,
+            'cashier_name': (
+                f'{order.cashier.first_name} {order.cashier.last_name}'.strip()
+                if order.cashier_id and order.cashier else None
+            ),
+        } for order in active]
+    return payload
 
 
 def get_sidebar_counts():

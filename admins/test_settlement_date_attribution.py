@@ -11,7 +11,9 @@ from django.utils import timezone
 pytestmark = pytest.mark.django_db
 TASHKENT = ZoneInfo('Asia/Tashkent')
 CREATED_AT = timezone.make_aware(datetime(2026, 7, 9, 23, 59), TASHKENT)
-PAID_AT = timezone.make_aware(datetime(2026, 7, 10, 3, 1), TASHKENT)
+# Settlement just after the canonical 07:00 opening boundary. The old 03:01
+# fixture now falls in the intentionally excluded 03:00-07:00 quiet gap.
+PAID_AT = timezone.make_aware(datetime(2026, 7, 10, 7, 1), TASHKENT)
 
 
 def _sale(*, discount_percent='0'):
@@ -239,7 +241,7 @@ def test_shift_distribution_handover_and_discount_use_settlement_clock():
     distribution = _hourly_daily([creation_shift, settlement_shift])
     by_hour = {row['hour']: row for row in distribution['by_hour']}
     assert by_hour[23] == {'hour': 23, 'orders': 1, 'revenue': '0.00'}
-    assert by_hour[3] == {'hour': 3, 'orders': 0, 'revenue': '100.00'}
+    assert by_hour[7] == {'hour': 7, 'orders': 0, 'revenue': '100.00'}
 
     created_handover = shift_handover_report(creation_shift)
     assert created_handover['receipt_count'] == 1

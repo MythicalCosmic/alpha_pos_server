@@ -592,10 +592,13 @@ def _cashier_leaderboard(rows):
 
 # ───────────────────────── public entry points ─────────────────────────
 
-def _shifts_in_range(date_from, date_to, role, user_id=None):
+def _shifts_in_range(date_from, date_to, role, user_id=None, *, window=None):
     from base.models import Shift
     from base.services.business_day import range_window
-    lo, hi = range_window(date_from, date_to)
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else range_window(date_from, date_to)
+    )
     qs = (
         Shift.objects.filter(
             is_deleted=False,
@@ -605,6 +608,8 @@ def _shifts_in_range(date_from, date_to, role, user_id=None):
         .select_related('user', 'shift_template', 'reconciliation')
         .order_by('start_time')
     )
+    if window is not None:
+        qs = window.filter(qs, 'start_time')
     if role:
         qs = qs.filter(user__role=role)
     if user_id:
@@ -612,9 +617,11 @@ def _shifts_in_range(date_from, date_to, role, user_id=None):
     return list(qs)
 
 
-def cashier_shift_analytics(date_from, date_to, user_id=None):
+def cashier_shift_analytics(date_from, date_to, user_id=None, *, window=None):
     """Everything about cashier shifts over [date_from, date_to]."""
-    shifts = _shifts_in_range(date_from, date_to, 'CASHIER', user_id)
+    shifts = _shifts_in_range(
+        date_from, date_to, 'CASHIER', user_id, window=window,
+    )
     att = _attendance_map({s.user_id for s in shifts}, date_from, date_to)
     rows = [_cashier_shift_row(s, att) for s in shifts]
 
@@ -730,6 +737,10 @@ def cashier_shift_analytics(date_from, date_to, user_id=None):
         'scope': 'cashier',
         'date_from': date_from.isoformat(),
         'date_to': date_to.isoformat(),
+        'range': (
+            window.metadata() if window is not None
+            else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+        ),
         'filtered_user_id': user_id,
         'summary': summary,
         'leaderboard': _cashier_leaderboard(rows),
@@ -931,14 +942,17 @@ def shift_handover_report(shift):
 
 
 def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
-                            target_prep_seconds=DEFAULT_TARGET_PREP_SECONDS):
+                            target_prep_seconds=DEFAULT_TARGET_PREP_SECONDS,
+                            *, window=None):
     """Everything about kitchen/chef shifts over [date_from, date_to].
 
     No dedicated chef role exists yet, so `role` selects which staff are
     treated as kitchen (default WAITER). Prep metrics are window-based since
     per-item chef attribution isn't tracked — see module docstring.
     """
-    shifts = _shifts_in_range(date_from, date_to, role, user_id)
+    shifts = _shifts_in_range(
+        date_from, date_to, role, user_id, window=window,
+    )
     att = _attendance_map({s.user_id for s in shifts}, date_from, date_to)
     rows = [_kitchen_shift_row(s, att, target_prep_seconds) for s in shifts]
 
@@ -1003,6 +1017,10 @@ def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
         'scope': 'kitchen',
         'date_from': date_from.isoformat(),
         'date_to': date_to.isoformat(),
+        'range': (
+            window.metadata() if window is not None
+            else {'from': date_from.isoformat(), 'to': date_to.isoformat()}
+        ),
         'filtered_user_id': user_id,
         'summary': summary,
         'distribution': _hourly_daily(shifts, cashier_owned=False),

@@ -50,6 +50,10 @@ def _order_filter_kwargs(request):
         'date_to': request.GET.get('date_to') or request.GET.get('to'),
         'tod_from': request.GET.get('tod_from'),
         'tod_to': request.GET.get('tod_to'),
+        'datetime_from': request.GET.get('datetime_from'),
+        'datetime_to': request.GET.get('datetime_to'),
+        'from_at': request.GET.get('from_at'),
+        'to_at': request.GET.get('to_at'),
         'search': request.GET.get('search') or request.GET.get('q'),
         'include_deleted': (
             request.GET.get('include_deleted', '').lower() == 'true'
@@ -70,13 +74,20 @@ def orders(request):
         # drops items[] from the list payload for lighter list-view fetches (item 14).
         include_items = request.GET.get('include_items', 'true').lower() != 'false'
 
-        result, status_code = AdminOrderService.get_all_orders(
-            page=page,
-            per_page=per_page,
-            order_by=order_by,
-            include_items=include_items,
-            **_order_filter_kwargs(request),
-        )
+        try:
+            result, status_code = AdminOrderService.get_all_orders(
+                page=page,
+                per_page=per_page,
+                order_by=order_by,
+                include_items=include_items,
+                **_order_filter_kwargs(request),
+            )
+        except ValueError as exc:
+            return JsonResponse(
+                {'success': False, 'message': str(exc),
+                 'errors': {'range': str(exc)}},
+                status=422,
+            )
         return JsonResponse(result, status=status_code)
 
     denied = _check_permission(request, 'order.create')
@@ -309,9 +320,16 @@ def restore_order(request, order_id):
 @admin_required
 @permission_required('order.stats')
 def order_stats(request):
-    result, status_code = AdminOrderService.get_order_stats(
-        **_order_filter_kwargs(request),
-    )
+    try:
+        result, status_code = AdminOrderService.get_order_stats(
+            **_order_filter_kwargs(request),
+        )
+    except ValueError as exc:
+        return JsonResponse(
+            {'success': False, 'message': str(exc),
+             'errors': {'range': str(exc)}},
+            status=422,
+        )
     return JsonResponse(result, status=status_code)
 
 
