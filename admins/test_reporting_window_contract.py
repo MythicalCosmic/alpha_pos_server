@@ -173,6 +173,8 @@ def test_iso_window_is_consistent_for_orders_stats_and_shift_summary(
         admin_user, regular_user, cashier_user):
     from base.models import Shift
 
+    admin_user.branch_id = 'cloud'
+    admin_user.save(update_fields=['branch_id'])
     day = date(2026, 7, 10)
     inside = _order(regular_user, cashier_user, _at(day, 12), '200')
     _order(regular_user, cashier_user, _at(day, 23), '900')

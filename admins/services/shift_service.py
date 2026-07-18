@@ -7,7 +7,7 @@ changing the shared POS core used by the desktop edition.
 from decimal import Decimal
 
 from django.core.paginator import Paginator
-from django.db.models import Count, DecimalField, Sum
+from django.db.models import Count, DecimalField, F, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -15,7 +15,8 @@ from base.helpers.response import ServiceResponse
 from base.models import Shift
 from core.shifts.service import (
     ShiftService as CoreShiftService,
-    ShiftTemplateService,
+    ShiftTemplateService,  # noqa: F401 - re-exported for shift_views
+    _scope_shift_queryset,
 )
 
 
@@ -52,7 +53,7 @@ class ShiftService(CoreShiftService):
                                  live_only=False, closed_only=False,
                                  datetime_from=None, datetime_to=None,
                                  from_at=None, to_at=None,
-                                 tod_from=None, tod_to=None):
+                                 tod_from=None, tod_to=None, actor=None):
         if live_only and closed_only:
             raise ValueError('live_only and closed_only cannot both be true')
 
@@ -60,6 +61,7 @@ class ShiftService(CoreShiftService):
             'user', 'shift_template',
             'reconciliation', 'reconciliation__reconciled_by',
         )
+        qs = _scope_shift_queryset(qs, actor)
 
         if user_id not in (None, ''):
             try:
@@ -146,6 +148,60 @@ class ShiftService(CoreShiftService):
         reconciled = base.filter(
             reconciliation__is_deleted=False,
         ).count()
+        from cashbox.models import ShiftPaymentTotal
+        tender_rows = (
+            ShiftPaymentTotal.objects.filter(
+                is_deleted=False,
+                shift__in=closed,
+                branch_id=F('shift__branch_id'),
+            )
+            .values('method')
+            .annotate(
+                expected=Coalesce(
+                    Sum('expected_amount'), Decimal('0.00'),
+                    output_field=DecimalField(max_digits=20, decimal_places=2),
+                ),
+                confirmed=Coalesce(
+                    Sum('confirmed_amount'), Decimal('0.00'),
+                    output_field=DecimalField(max_digits=20, decimal_places=2),
+                ),
+            )
+            .order_by('method')
+        )
+        expected_totals = {
+            row['method']: Decimal(row['expected'] or 0) for row in tender_rows
+        }
+        confirmed_totals = {
+            row['method']: Decimal(row['confirmed'] or 0) for row in tender_rows
+        }
+        # ACTIVE shifts have no frozen ShiftPaymentTotal rows yet. Derive their
+        # tender split in one batched pass so global summary money remains
+        # consistent with the visible live rows instead of silently omitting it.
+        live_extras = CoreShiftService._batch_list_extras(live_rows, now=now)
+        for shift in live_rows:
+            for method, amount in (
+                live_extras.get(shift.id, {}).get('expected_by_tender', {})
+            ).items():
+                expected_totals[method] = (
+                    expected_totals.get(method, Decimal('0.00'))
+                    + Decimal(amount)
+                )
+        expected_by_tender = {
+            method: _money(amount)
+            for method, amount in sorted(expected_totals.items())
+        }
+        confirmed_by_tender = {
+            method: _money(amount)
+            for method, amount in sorted(confirmed_totals.items())
+        }
+        total_expected = sum(
+            (Decimal(value) for value in expected_by_tender.values()),
+            Decimal('0.00'),
+        )
+        total_confirmed = sum(
+            (Decimal(value) for value in confirmed_by_tender.values()),
+            Decimal('0.00'),
+        )
         return {
             'shift_count': total,
             'live_count': len(live_rows),
@@ -156,6 +212,10 @@ class ShiftService(CoreShiftService):
             'total_orders': orders,
             'total_revenue': _money(revenue),
             'cash_collected': _money(cash),
+            'expected_by_tender': expected_by_tender,
+            'confirmed_by_tender': confirmed_by_tender,
+            'total_expected_to_receive': _money(total_expected),
+            'total_confirmed_received': _money(total_confirmed),
             'average_revenue_per_shift': _money(
                 revenue / total if total else Decimal('0')
             ),
@@ -165,7 +225,7 @@ class ShiftService(CoreShiftService):
     def list(page=1, per_page=20, user_id=None, status=None, date_from=None,
              date_to=None, live_only=False, closed_only=False,
              order_by='-start_time', datetime_from=None, datetime_to=None,
-             from_at=None, to_at=None, tod_from=None, tod_to=None):
+             from_at=None, to_at=None, tod_from=None, tod_to=None, actor=None):
         try:
             filtered, statuses, parsed_from, parsed_to, parsed_user, window = (
                 ShiftService._filtered_admin_queryset(
@@ -181,6 +241,7 @@ class ShiftService(CoreShiftService):
                     to_at=to_at,
                     tod_from=tod_from,
                     tod_to=tod_to,
+                    actor=actor,
                 )
             )
         except ValueError as exc:

@@ -7,7 +7,6 @@ from base.helpers.response import json_response
 from base.security.permissions import manager_required
 from base.security.auth import login_required
 from base.security.audit import audit
-from base.security.idempotency import idempotent
 from base.models import AuditLog
 from admins.services.inkassa_service import AdminInkassaService
 
@@ -18,6 +17,7 @@ from admins.services.inkassa_service import AdminInkassaService
 def inkassa_balance(request):
     result, status_code = AdminInkassaService.get_balance(
         branch_id=(request.GET.get('branch_id') or '').strip() or None,
+        actor=request.user,
     )
     return JsonResponse(result, status=status_code)
 
@@ -28,6 +28,7 @@ def inkassa_balance(request):
 def inkassa_stats(request):
     result, status_code = AdminInkassaService.get_stats(
         branch_id=(request.GET.get('branch_id') or '').strip() or None,
+        actor=request.user,
     )
     return JsonResponse(result, status=status_code)
 
@@ -40,6 +41,7 @@ def inkassa_history(request):
     result, status_code = AdminInkassaService.get_history(
         page=page, per_page=per_page,
         branch_id=(request.GET.get('branch_id') or '').strip() or None,
+        actor=request.user,
     )
     return JsonResponse(result, status=status_code)
 
@@ -48,23 +50,41 @@ def inkassa_history(request):
 @require_GET
 @manager_required
 def inkassa_detail(request, inkassa_id):
-    result, status_code = AdminInkassaService.get_detail(inkassa_id)
+    result, status_code = AdminInkassaService.get_detail(
+        inkassa_id, actor=request.user,
+    )
     return JsonResponse(result, status=status_code)
 
 
 @csrf_exempt
 @require_POST
 @manager_required
-@idempotent('inkassa.perform')
 def inkassa_perform(request):
     data, error = parse_json_body(request)
     if error:
         return json_response(error)
 
+    batch_key = (
+        request.META.get('HTTP_IDEMPOTENCY_KEY')
+        or data.get('batch_id')
+        or ''
+    ).strip()
+    if not batch_key or len(batch_key) > 128:
+        return JsonResponse({
+            'success': False,
+            'message': 'Idempotency-Key header or batch_id is required',
+            'error': {
+                'batch_id': 'A stable batch id (1..128 characters) is required',
+            },
+        }, status=422)
+
     result, status_code = AdminInkassaService.perform(
-        request.user, data, branch_id=(data.get('branch_id') or '').strip() or None,
+        request.user,
+        data,
+        branch_id=(data.get('branch_id') or '').strip() or None,
+        batch_key=batch_key,
     )
-    if result.get('success'):
+    if result.get('success') and not result.get('data', {}).get('replayed'):
         payload = result.get('data', {})
         audit(
             request,

@@ -14,8 +14,11 @@ def test_inkassa_cursor_windows_are_half_open_and_late_safe(
     admin_user, regular_user, monkeypatch,
 ):
     from base.models import CashRegister, Inkassa, Order, OrderRefund
+    from base.services.treasury_service import TreasuryService
     from admins.services import inkassa_service
 
+    admin_user.branch_id = 'cloud'
+    admin_user.save(update_fields=['branch_id'])
     CashRegister.objects.create(branch_id='branch-a', current_balance='0')
     cutoff = timezone.now().replace(microsecond=0)
     economic_time = cutoff - timedelta(days=2)
@@ -48,10 +51,19 @@ def test_inkassa_cursor_windows_are_half_open_and_late_safe(
     OrderRefund.objects.filter(pk=refund.pk).update(
         accounting_recorded_at=cutoff,
     )
+    TreasuryService.post_shift_settlement(
+        9401,
+        {'PAYME': '3.00'},
+        performed_by=admin_user,
+        branch_id='branch-a',
+    )
 
     monkeypatch.setattr(inkassa_service.timezone, 'now', lambda: cutoff)
     first, status = inkassa_service.AdminInkassaService.perform(
-        admin_user, {'payme': '1.00'}, branch_id='branch-a',
+        admin_user,
+        {'payme': '1.00'},
+        branch_id='branch-a',
+        batch_key='cursor-first',
     )
     assert status == 200, first
     first_row = Inkassa.objects.get(pk=first['data']['inkassas'][0]['id'])
@@ -63,7 +75,10 @@ def test_inkassa_cursor_windows_are_half_open_and_late_safe(
         inkassa_service.timezone, 'now', lambda: second_cutoff,
     )
     second, status = inkassa_service.AdminInkassaService.perform(
-        admin_user, {'payme': '1.00'}, branch_id='branch-a',
+        admin_user,
+        {'payme': '1.00'},
+        branch_id='branch-a',
+        batch_key='cursor-second',
     )
     assert status == 200, second
     second_row = Inkassa.objects.get(pk=second['data']['inkassas'][0]['id'])
@@ -76,7 +91,10 @@ def test_inkassa_cursor_windows_are_half_open_and_late_safe(
         inkassa_service.timezone, 'now', lambda: third_cutoff,
     )
     third, status = inkassa_service.AdminInkassaService.perform(
-        admin_user, {'payme': '1.00'}, branch_id='branch-a',
+        admin_user,
+        {'payme': '1.00'},
+        branch_id='branch-a',
+        batch_key='cursor-third',
     )
     assert status == 200, third
     third_row = Inkassa.objects.get(pk=third['data']['inkassas'][0]['id'])

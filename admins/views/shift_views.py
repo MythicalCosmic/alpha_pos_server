@@ -107,6 +107,7 @@ def shifts(request):
         live_only=live_only,
         closed_only=closed_only,
         order_by=order_by,
+        actor=request.user,
     )
     return JsonResponse(result, status=status_code)
 
@@ -183,8 +184,9 @@ def shift_reconcile(request, shift_id):
         actual_cash=actual_cash,
         notes=data.get('notes', ''),
         reconciled_by_id=request.user.id,
+        actor=request.user,
         # {method: confirmed_amount} the manager accepts; defaults per method to
-        # the cashier's counted figure. Posts CASH→SAFE, cards→BANK.
+        # the cashier's counted figure. Every confirmed tender posts to SAFE.
         confirmed=data.get('confirmed'),
     )
     if result.get('success'):
@@ -207,5 +209,5 @@ def shift_reconcile(request, shift_id):
 @require_GET
 @manager_required
 def active_shifts(request):
-    result, status_code = ShiftService.get_active_shifts()
+    result, status_code = ShiftService.get_active_shifts(actor=request.user)
     return JsonResponse(result, status=status_code)

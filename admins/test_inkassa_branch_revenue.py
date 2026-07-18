@@ -30,13 +30,22 @@ def test_cloud_requires_branch_when_multiple_registers(admin_user):
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
 def test_inkassa_changes_only_selected_branch(admin_user):
     from base.models import CashRegister
+    from base.services.treasury_service import TreasuryService
     from admins.services.inkassa_service import AdminInkassaService
 
+    admin_user.branch_id = 'cloud'
+    admin_user.save(update_fields=['branch_id'])
     first = CashRegister.objects.create(branch_id='branch-a', current_balance=100)
     second = CashRegister.objects.create(branch_id='branch-b', current_balance=200)
+    TreasuryService.post_shift_settlement(
+        9301, {'CASH': '30'}, performed_by=admin_user, branch_id='branch-a',
+    )
 
     result, status = AdminInkassaService.perform(
-        admin_user, {'cash': '30'}, branch_id='branch-a',
+        admin_user,
+        {'cash': '30'},
+        branch_id='branch-a',
+        batch_key='branch-a-cash',
     )
     assert status == 200, result
     first.refresh_from_db()
@@ -52,8 +61,11 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
     admin_user, cashier_user, regular_user,
 ):
     from base.models import CashRegister, Inkassa, Order
+    from base.services.treasury_service import TreasuryService
     from admins.services.inkassa_service import AdminInkassaService
 
+    admin_user.branch_id = 'cloud'
+    admin_user.save(update_fields=['branch_id'])
     Order.objects.create(
         user=regular_user,
         cashier=cashier_user,
@@ -70,11 +82,18 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
     register = CashRegister.objects.get(branch_id='branch-a')
     register.current_balance = Decimal('100.00')
     register.save(update_fields=['current_balance'])
+    TreasuryService.post_shift_settlement(
+        9302,
+        {'CASH': '10.00', 'UZCARD': '20.00'},
+        performed_by=admin_user,
+        branch_id='branch-a',
+    )
 
     result, status = AdminInkassaService.perform(
         admin_user,
         {'cash': '10.00', 'uzcard': '20.00'},
         branch_id='branch-a',
+        batch_key='branch-a-mixed-period',
     )
     assert status == 200, result
     ids = [row['id'] for row in result['data']['inkassas']]

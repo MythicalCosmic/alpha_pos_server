@@ -9,6 +9,18 @@ from admins.services.inkassa_service import AdminInkassaService
 pytestmark = pytest.mark.django_db
 
 
+def _recognize_settlement(branch_id, tenders, admin_user, shift_id):
+    """Seed the reconciliation-first treasury evidence Inkassa consumes."""
+    from base.services.treasury_service import TreasuryService
+
+    return TreasuryService.post_shift_settlement(
+        shift_id,
+        tenders,
+        performed_by=admin_user,
+        branch_id=branch_id,
+    )
+
+
 class TestUserRoleValidation:
     """Pre-fix: update_user accepted any string for role, allowing
     role='SUPERADMIN' or other invalid privilege escalation."""
@@ -68,10 +80,15 @@ class TestInkassaFloor:
 
     def test_withdrawal_exceeding_balance_rejected(self, admin_user):
         from base.models import CashRegister
-        CashRegister.objects.create(current_balance=Decimal('100'))
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        register = CashRegister.objects.create(current_balance=Decimal('100'))
 
         result, status = AdminInkassaService.perform(
-            admin_user, {'cash': '500'},
+            admin_user,
+            {'cash': '500'},
+            branch_id=register.branch_id,
+            batch_key='floor-too-large',
         )
         assert status == 422
         register = CashRegister.objects.first()
@@ -79,51 +96,89 @@ class TestInkassaFloor:
 
     def test_negative_amount_rejected(self, admin_user):
         from base.models import CashRegister
-        CashRegister.objects.create(current_balance=Decimal('100'))
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        register = CashRegister.objects.create(current_balance=Decimal('100'))
 
         result, status = AdminInkassaService.perform(
-            admin_user, {'cash': '-50'},
+            admin_user,
+            {'cash': '-50'},
+            branch_id=register.branch_id,
+            batch_key='floor-negative',
         )
         assert status == 422
 
     def test_valid_withdrawal_succeeds(self, admin_user):
         from base.models import CashRegister
-        CashRegister.objects.create(current_balance=Decimal('1000'))
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        register = CashRegister.objects.create(current_balance=Decimal('1000'))
+        _recognize_settlement(
+            register.branch_id, {'CASH': '300'}, admin_user, shift_id=9101,
+        )
 
         result, status = AdminInkassaService.perform(
-            admin_user, {'cash': '300'},
+            admin_user,
+            {'cash': '300'},
+            branch_id=register.branch_id,
+            batch_key='floor-valid',
         )
-        assert status == 200
+        assert status == 200, result
         register = CashRegister.objects.first()
         assert register.current_balance == Decimal('1000')
         assert Decimal(result['data']['balance_after']) == Decimal('700')
 
 
 class TestInkassaTreasuryRouting:
-    """Inkassa: only cash leaves the register; cash -> SAFE, cards -> BANK."""
+    """Inkassa is physical register movement/audit, never revenue recognition."""
 
-    def test_cash_to_safe_card_to_bank(self, admin_user):
+    def test_mixed_inkassa_does_not_credit_treasury(self, admin_user):
         from base.models import CashRegister, TreasuryAccount
-        CashRegister.objects.create(current_balance=Decimal('1000'))
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        register = CashRegister.objects.create(current_balance=Decimal('1000'))
+        _recognize_settlement(
+            register.branch_id,
+            {'CASH': '400', 'UZCARD': '300', 'HUMO': '100'},
+            admin_user,
+            shift_id=9201,
+        )
+        safe_before = TreasuryAccount.objects.get(kind='SAFE').balance
         result, status = AdminInkassaService.perform(
-            admin_user, {'cash': '400', 'uzcard': '300', 'humo': '100'})
-        assert status == 200
+            admin_user,
+            {'cash': '400', 'uzcard': '300', 'humo': '100'},
+            branch_id=register.branch_id,
+            batch_key='routing-mixed',
+        )
+        assert status == 200, result
         # Cloud records a durable 400 cash command; it cannot overwrite the
         # branch-owned raw register before the desktop acknowledges it.
         assert CashRegister.objects.first().current_balance == Decimal('1000')
         assert Decimal(result['data']['balance_after']) == Decimal('600')
-        assert TreasuryAccount.objects.get(kind='SAFE').balance == Decimal('400')
-        assert TreasuryAccount.objects.get(kind='BANK').balance == Decimal('400')
-        assert Decimal(result['data']['cash_to_safe']) == Decimal('400')
-        assert Decimal(result['data']['card_to_bank']) == Decimal('400')
+        assert TreasuryAccount.objects.get(kind='SAFE').balance == safe_before
+        assert Decimal(result['data']['cash_to_safe']) == Decimal('0')
+        assert Decimal(result['data']['card_to_bank']) == Decimal('0')
+        assert result['data']['treasury_posting']['status'] == 'not_posted'
 
     def test_card_only_inkassa_ignores_empty_register(self, admin_user):
         from base.models import CashRegister, TreasuryAccount
-        CashRegister.objects.create(current_balance=Decimal('0'))
-        result, status = AdminInkassaService.perform(admin_user, {'payme': '500'})
-        assert status == 200  # card inkassa not bounded by cash drawer
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        register = CashRegister.objects.create(current_balance=Decimal('0'))
+        _recognize_settlement(
+            register.branch_id, {'PAYME': '500'}, admin_user, shift_id=9202,
+        )
+        safe_before = TreasuryAccount.objects.get(kind='SAFE').balance
+        result, status = AdminInkassaService.perform(
+            admin_user,
+            {'payme': '500'},
+            branch_id=register.branch_id,
+            batch_key='routing-payme',
+        )
+        assert status == 200, result  # card inkassa not bounded by cash drawer
         assert CashRegister.objects.first().current_balance == Decimal('0')
-        assert TreasuryAccount.objects.get(kind='BANK').balance == Decimal('500')
+        assert TreasuryAccount.objects.get(kind='SAFE').balance == safe_before
+        assert result['data']['treasury_posting']['status'] == 'not_posted'
 
 
 class TestTreasury:
@@ -187,20 +242,36 @@ class TestShiftEndReconcileFlow:
 
     def test_end_sets_ended_then_reconcile_completes(self, cashier_user, admin_user):
         from admins.services.shift_service import ShiftService
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
         s = self._active_shift(cashier_user)
         res, st = ShiftService.end_shift(s.id, cashier_user.id, 'done')
         assert st == 200
         assert res['data']['status'] == 'ENDED'
 
-        res2, st2 = ShiftService.reconcile(s.id, actual_cash='0', notes='', reconciled_by_id=admin_user.id)
+        res2, st2 = ShiftService.reconcile(
+            s.id,
+            actual_cash='0',
+            notes='',
+            reconciled_by_id=admin_user.id,
+            actor=admin_user,
+        )
         assert st2 == 201
         s.refresh_from_db()
         assert s.status == 'COMPLETED'
 
     def test_reconcile_requires_ended(self, cashier_user, admin_user):
         from admins.services.shift_service import ShiftService
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
         s = self._active_shift(cashier_user)  # still ACTIVE
-        _, st = ShiftService.reconcile(s.id, actual_cash='0', notes='', reconciled_by_id=admin_user.id)
+        _, st = ShiftService.reconcile(
+            s.id,
+            actual_cash='0',
+            notes='',
+            reconciled_by_id=admin_user.id,
+            actor=admin_user,
+        )
         assert st == 400
 
     def test_end_blocked_when_unpaid_open_cart(self, cashier_user, regular_user):
@@ -244,6 +315,8 @@ class TestShiftEndReconcileFlow:
 
     def test_shift_detail_exposes_stats_and_settlement(self, cashier_user, admin_user):
         from admins.services.shift_service import ShiftService
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
         s = self._active_shift(cashier_user)
         res, st = ShiftService.get(s.id, actor=admin_user)
         assert st == 200
@@ -302,7 +375,9 @@ class TestShiftListExtras:
 
     LIST_KEYS = ('net_revenue', 'expenses_total', 'cancelled_orders_count',
                  'cancelled_orders_value', 'payment_mix', 'paid_orders', 'items_sold',
-                 'avg_prep_seconds', 'peak_hour')
+                 'avg_prep_seconds', 'peak_hour', 'expected_by_tender',
+                 'total_expected_to_receive', 'settlement', 'reconciled_count',
+                 'cashbox_expenses')
 
     def _list_rows(self, cashier_user, **kw):
         from admins.services.shift_service import ShiftService
@@ -317,12 +392,13 @@ class TestShiftListExtras:
         from base.models import Shift
         return Shift.objects.create(
             user=user, start_time=timezone.now() - timedelta(hours=hours_ago),
-            status='ACTIVE', branch_id=settings.BRANCH_ID)
+            status='ACTIVE', branch_id=settings.BRANCH_ID,
+            treasury_settlement_eligible=True)
 
     def test_row_has_all_fields_and_correct_values(self, cashier_user, regular_user, category):
         from datetime import timedelta
         from django.utils import timezone
-        from base.models import Order, OrderItem, Product, Shift
+        from base.models import Order, OrderItem, Product
         from cashbox.models import CashboxExpense
 
         s = self._active_shift(cashier_user)
@@ -339,8 +415,10 @@ class TestShiftListExtras:
             subtotal='50.00', total_amount='50.00', paid_at=now)
         OrderItem.objects.create(order=o2, product=prod, quantity=2, price='50.00')
         # prep: o1 100s, o2 200s -> avg 150
-        o1.ready_at = o1.created_at + timedelta(seconds=100); o1.save(update_fields=['ready_at'])
-        o2.ready_at = o2.created_at + timedelta(seconds=200); o2.save(update_fields=['ready_at'])
+        o1.ready_at = o1.created_at + timedelta(seconds=100)
+        o1.save(update_fields=['ready_at'])
+        o2.ready_at = o2.created_at + timedelta(seconds=200)
+        o2.save(update_fields=['ready_at'])
         # a cancelled order (lost value) + a drawer expense
         Order.objects.create(
             user=regular_user, cashier=cashier_user, status='CANCELED',
@@ -366,6 +444,29 @@ class TestShiftListExtras:
         assert row['cancelled_orders_count'] == 1
         assert row['cancelled_orders_value'] == '30.00'
         assert row['expenses_total'] == '20.00'
+        assert row['expected_by_tender'] == {
+            'CASH': '80.00',
+            'UZCARD': '50.00',
+            'HUMO': '0.00',
+            'CARD': '0.00',
+            'PAYME': '0.00',
+        }
+        assert row['total_expected_to_receive'] == '130.00'
+        assert row['reconciled_count'] == 0
+        assert row['settlement'] == []
+        assert row['cashbox_expenses'][0] == {
+            'id': row['cashbox_expenses'][0]['id'],
+            'shift_id': s.id,
+            'amount': '20.00',
+            'category': None,
+            'category_id': None,
+            'description': '',
+            'comment': '',
+            'paid_at': row['cashbox_expenses'][0]['created_at'],
+            'created_at': row['cashbox_expenses'][0]['created_at'],
+            'paid_by': None,
+            'status': 'RECORDED',
+        }
         assert row['total_revenue'] == '150.00'        # live: two paid orders
         # The cancelled ticket was never paid, so it is operational lost value,
         # not money to subtract a second time from realized revenue.
@@ -380,6 +481,14 @@ class TestShiftListExtras:
         assert row['items_sold'] == 5
         assert row['variance'] is None and row['reported'] is None  # not reconciled
         assert row['is_live_stats'] is True
+        from admins.services.shift_service import ShiftService
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id, per_page=50,
+        )
+        assert status == 200, listed
+        summary = listed['data']['summary']
+        assert summary['expected_by_tender'] == row['expected_by_tender']
+        assert summary['total_expected_to_receive'] == '130.00'
 
     def test_empty_shift_returns_typed_defaults(self, cashier_user):
         s = self._active_shift(cashier_user)
@@ -392,6 +501,134 @@ class TestShiftListExtras:
         assert row['cancelled_orders_count'] == 0
         assert row['cancelled_orders_value'] == '0.00'
         assert row['net_revenue'] == '0.00'
+
+    def test_reconciled_shift_exposes_tenders_expenses_and_posting(
+        self, cashier_user, admin_user, regular_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import Order, OrderPayment
+        from cashbox.models import (
+            CashboxExpense, CashboxExpenseCategory, ShiftPaymentTotal,
+        )
+        from admins.services.shift_service import ShiftService
+
+        admin_user.branch_id = 'cloud'
+        admin_user.save(update_fields=['branch_id'])
+        shift = self._active_shift(cashier_user)
+        shift.status = 'ENDED'
+        shift.end_time = timezone.now()
+        shift.save(update_fields=['status', 'end_time'])
+        amounts = {
+            'CASH': '100.00',
+            'HUMO': '20.00',
+            'UZCARD': '30.00',
+            'CARD': '40.00',
+            'PAYME': '50.00',
+        }
+        # CASH gross is 110; the 10 drawer expense below makes its canonical
+        # amount-to-hand-over 100. Every other tender remains unchanged.
+        sales = {
+            'CASH': '110.00',
+            'HUMO': '20.00',
+            'UZCARD': '30.00',
+            'CARD': '40.00',
+            'PAYME': '50.00',
+        }
+        for index, (method, amount) in enumerate(sales.items(), start=1):
+            order = Order.objects.create(
+                user=regular_user,
+                cashier=cashier_user,
+                branch_id=shift.branch_id,
+                status=Order.Status.COMPLETED,
+                is_paid=True,
+                payment_method=method,
+                paid_at=shift.end_time - timedelta(seconds=1),
+                display_id=index,
+                subtotal=amount,
+                total_amount=amount,
+            )
+            OrderPayment.objects.create(
+                order=order,
+                method=method,
+                amount=amount,
+                branch_id=shift.branch_id,
+            )
+        for method, amount in amounts.items():
+            ShiftPaymentTotal.objects.create(
+                shift=shift,
+                method=method,
+                expected_amount=amount,
+                counted_amount=amount,
+                difference='0.00',
+                branch_id=shift.branch_id,
+            )
+        category = CashboxExpenseCategory.objects.create(name='Supplies')
+        expense = CashboxExpense.objects.create(
+            shift=shift,
+            amount='10.00',
+            category=category,
+            comment='paper',
+            created_by=cashier_user,
+            branch_id=shift.branch_id,
+        )
+        from cashbox.services.drawer import expected_payment_totals
+        canonical = {
+            method: str(value)
+            for method, value in expected_payment_totals(shift).items()
+        }
+        assert canonical == amounts
+        # Reconciliation is fail-closed until the immutable close bundle is
+        # present. This test builds the same manifest end_shift publishes after
+        # all tender and expense rows have been persisted/synced.
+        from core.shifts.service import _build_settlement_manifest
+        frozen_rows = list(
+            ShiftPaymentTotal.objects.filter(shift=shift).order_by('method')
+        )
+        shift.settlement_manifest = _build_settlement_manifest(
+            shift, frozen_rows,
+        )
+        shift.save(update_fields=['settlement_manifest'])
+
+        result, status = ShiftService.reconcile(
+            shift.id,
+            actual_cash='100.00',
+            notes='manager accepted',
+            reconciled_by_id=admin_user.id,
+            actor=admin_user,
+            confirmed=amounts,
+        )
+        assert status == 201, result
+        assert result['data']['treasury_posting']['total'] == '240.00'
+
+        detail, detail_status = ShiftService.get(shift.id, actor=admin_user)
+        assert detail_status == 200, detail
+        data = detail['data']
+        assert data['expected_by_tender'] == amounts
+        assert data['total_expected_to_receive'] == '240.00'
+        assert data['reconciled_count'] == 5
+        assert {row['method'] for row in data['settlement']} == set(amounts)
+        assert {row['status'] for row in data['settlement']} == {'CONFIRMED'}
+        assert data['treasury_posting']['status'] == 'posted'
+        assert data['treasury_posting']['total'] == '240.00'
+        assert data['cashbox_expenses'][0]['id'] == expense.id
+        assert data['cashbox_expenses'][0]['description'] == 'paper'
+        assert data['cashbox_expenses'][0]['category'] == 'Supplies'
+        assert data['cashbox_expenses'][0]['paid_by']['id'] == cashier_user.id
+        assert data['cashbox_expenses'][0]['status'] == 'RECORDED'
+
+        listed, list_status = ShiftService.list(
+            user_id=cashier_user.id, per_page=50,
+        )
+        assert list_status == 200, listed
+        row = next(r for r in listed['data']['shifts'] if r['id'] == shift.id)
+        assert row['expected_by_tender'] == amounts
+        assert row['reconciled_count'] == 5
+        summary = listed['data']['summary']
+        assert summary['expected_by_tender'] == amounts
+        assert summary['confirmed_by_tender'] == amounts
+        assert summary['total_expected_to_receive'] == '240.00'
+        assert summary['total_confirmed_received'] == '240.00'
 
     def test_null_payment_method_counts_as_cash(self, cashier_user, regular_user):
         from django.utils import timezone
