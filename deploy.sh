@@ -170,6 +170,7 @@ for _i in $(seq 1 90); do
         && { echo ">> web ready"; break; }
     sleep 2
 done
+bash "$DIR/deploy/verify_public_route.sh" "$DIR" "$HOST" "$SHA"
 eval "$DC migrate --noinput" || true   # idempotent safety-net in case the wait timed out
 eval "$DC activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true
 eval "$DC bootstrap_admin" || true

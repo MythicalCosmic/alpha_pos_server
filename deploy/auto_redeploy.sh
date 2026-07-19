@@ -30,13 +30,30 @@ cd "$ALPHA_DIR"
 git fetch --quiet origin "$BRANCH"
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
+COMPOSE="docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
+PUBLIC_HOST="${POS_HOST:-$(sed -n 's/^ALLOWED_HOSTS=\([^,]*\).*/\1/p' .env | head -n1)}"
 
-if [ "$LOCAL" = "$REMOTE" ]; then
-    echo "$(date -Is) up to date ($LOCAL)"
-    exit 0
+if [ -z "$PUBLIC_HOST" ]; then
+    echo "$(date -Is) ERROR: cannot derive the public POS host" >&2
+    exit 1
 fi
 
-echo "$(date -Is) change detected: $LOCAL -> $REMOTE ; deploying"
+if [ "$LOCAL" = "$REMOTE" ]; then
+    CURRENT_SHA="$(git rev-parse --short=12 HEAD)"
+    if bash "$ALPHA_DIR/deploy/verify_public_route.sh" \
+        "$ALPHA_DIR" "$PUBLIC_HOST" "$CURRENT_SHA"; then
+        echo "$(date -Is) up to date and publicly healthy ($LOCAL)"
+        exit 0
+    fi
+    # Git can already be at the target revision after a failed build, and a
+    # manual base-only Compose recreate can drop the Caddy edge attachment.
+    # Rebuild the current revision instead of treating equal SHAs as healthy.
+    echo "$(date -Is) current revision is publicly unhealthy; redeploying $LOCAL"
+fi
+
+if [ "$LOCAL" != "$REMOTE" ]; then
+    echo "$(date -Is) change detected: $LOCAL -> $REMOTE ; deploying"
+fi
 
 # Make sure we're on the deploy branch, then fast-forward only. If the branches
 # have diverged (someone hand-committed on the server), bail loudly rather than
@@ -49,11 +66,16 @@ fi
 
 git submodule update --init --recursive
 
-COMPOSE="docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
 # Stamp the build with the commit we just checked out so /healthz reports it.
 export GIT_SHA="$(git rev-parse --short=12 HEAD)"
 # --build picks up the new code; migrations run from the container entrypoint.
 $COMPOSE up -d --build
+
+# Internal container health is not enough: Caddy reaches Django over the
+# external `edge` network and stable `alpha-web` alias. Fail this deployment
+# if the overlay was omitted or the public route still returns 502.
+bash "$ALPHA_DIR/deploy/verify_public_route.sh" \
+    "$ALPHA_DIR" "$PUBLIC_HOST" "$GIT_SHA"
 
 # Drop dangling images from old builds so the disk doesn't fill over time.
 docker image prune -f >/dev/null 2>&1 || true

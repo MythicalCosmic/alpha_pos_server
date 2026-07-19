@@ -241,6 +241,7 @@ for _i in $(seq 1 90); do
         && { echo ">> alpha_pos web ready"; break; }
     sleep 2
 done
+bash "$ALPHA_DIR/deploy/verify_public_route.sh" "$ALPHA_DIR" "$POS_HOST" "$A_SHA"
 echo ">> provisioning alpha_pos: license + admins ..."
 eval "$A exec -T web python manage.py migrate --noinput" || true
 eval "$A exec -T web python manage.py activate_offline --email vendor@local --org 'AlphaPOS Cloud' --perpetual" || true

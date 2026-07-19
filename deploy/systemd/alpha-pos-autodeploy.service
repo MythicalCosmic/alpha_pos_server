@@ -13,7 +13,8 @@ Type=oneshot
 User=root
 Environment=DEPLOY_BRANCH=main
 Environment=ALPHA_DIR=/var/www/alpha_pos
-ExecStart=/var/www/alpha_pos/deploy/auto_redeploy.sh
-# Don't let a single failed deploy mark the unit broken forever; the next timer
-# tick retries.
-SuccessExitStatus=0 1
+ExecStart=/usr/bin/bash /var/www/alpha_pos/deploy/auto_redeploy.sh
+# A failed public-route check must remain visible to operators and monitoring.
+# The timer will invoke a fresh oneshot later; auto_redeploy.sh retries the
+# current revision when Git is already at the remote SHA but the route is bad.
+SuccessExitStatus=0
