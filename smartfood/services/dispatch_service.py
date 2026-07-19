@@ -112,7 +112,7 @@ class DispatchService:
         if not items:
             return ServiceResponse.error('Order has no items')
 
-        from base.models import OrderItem
+        from base.models import Order, OrderItem
         now = timezone.now()
         placeholder = _bot_customer_user()
         # Reconcile the Telegram customer onto the unified base.Customer so the POS
@@ -160,6 +160,7 @@ class DispatchService:
                 scope=target_branch,
             ),
             order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
+            order_origin=Order.Origin.TELEGRAM,
             phone_number=bot_order.phone_number,
             description=description,
             status='PREPARING',

@@ -116,6 +116,7 @@ class TestDispatch:
         order = Order.objects.get(id=pos_id)
         assert order.cashier_id == cashier.id                 # attributed to THIS cashier
         assert order.order_type == 'DELIVERY'
+        assert order.order_origin == Order.Origin.TELEGRAM
         item = OrderItem.objects.get(order=order)
         # line price carries size + toppings (NOT base 39000): 63000
         assert item.price == Decimal('63000.00')
