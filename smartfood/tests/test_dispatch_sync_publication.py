@@ -40,6 +40,7 @@ def test_dispatch_lines_publish_only_after_transaction_commit(
         item = OrderItem.objects.get(order_id=bot_order.pos_order_id)
         pos_customer = PosCustomer.objects.get(pk=order.customer_id)
         assert order.branch_id == active_shift.branch_id
+        assert order.order_origin == Order.Origin.TELEGRAM
         assert item.branch_id == active_shift.branch_id
         assert pos_customer.branch_id == active_shift.branch_id
         assert item.synced_at is None
@@ -112,6 +113,7 @@ def test_dispatch_customer_order_item_chain_applies_on_owning_terminal(
 
     customer_payload = legacy_placeholder.to_sync_dict()
     order_payload = source_order.to_sync_dict()
+    assert order_payload['order_origin'] == Order.Origin.TELEGRAM
     item_payload = source_item.to_sync_dict()
     source_customer_uuid = legacy_placeholder.uuid
     source_order_uuid = source_order.uuid
@@ -141,6 +143,7 @@ def test_dispatch_customer_order_item_chain_applies_on_owning_terminal(
     assert pulled_order.customer_id == pulled_customer.id
     assert pulled_item.order_id == pulled_order.id
     assert pulled_order.branch_id == pulled_item.branch_id == 'branch-a'
+    assert pulled_order.order_origin == Order.Origin.TELEGRAM
 
 
 def test_dispatch_stock_failure_keeps_bot_order_pending_and_rolls_back_pos_order(
