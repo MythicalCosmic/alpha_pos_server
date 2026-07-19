@@ -7,6 +7,8 @@ from couriers import views
 urlpatterns = [
     # auth
     path('auth/courier/login/', views.courier_login, name='courier-login'),
+    path('auth/courier/refresh/', views.courier_refresh, name='courier-refresh'),
+    path('auth/courier/revoke/', views.courier_revoke, name='courier-revoke'),
     path('auth/courier/logout/', views.courier_logout, name='courier-logout'),
 
     # profile + feeds

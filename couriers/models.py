@@ -14,6 +14,8 @@ state, it must not sync down to every till. The *order* already syncs; the
 courier app talks to the server directly over REST + WebSocket. Money is
 integer so'm (BigIntegerField), never floats.
 """
+import uuid
+
 from django.db import models
 
 
@@ -64,6 +66,80 @@ class Courier(models.Model):
                 .select_related('order')
                 .order_by('-assigned_at')
                 .first())
+
+
+class CourierLoginClaim(models.Model):
+    """Short-lived, one-time claim embedded in a courier login QR.
+
+    Only a SHA-256 digest is persisted.  The raw claim exists solely in the
+    create/regenerate response and on the scanning device, so a database dump
+    cannot be used to log in as a courier.
+    """
+
+    courier = models.ForeignKey(
+        Courier, on_delete=models.CASCADE, related_name='login_claims',
+    )
+    token_digest = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField(db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    issued_by = models.ForeignKey(
+        'base.User', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(
+                fields=['courier', 'expires_at'],
+                name='courier_qr_expiry_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f'CourierLoginClaim<{self.courier_id} expires={self.expires_at}>'
+
+
+class CourierRefreshToken(models.Model):
+    """Rotating refresh-token record for a courier mobile session.
+
+    Refresh tokens are one-time credentials.  Reusing a rotated token revokes
+    its entire family, including the replacement access token, which contains
+    theft/replay instead of letting two clients continue the same session.
+    Raw refresh and access tokens are never stored here.
+    """
+
+    courier = models.ForeignKey(
+        Courier, on_delete=models.CASCADE, related_name='refresh_tokens',
+    )
+    access_session = models.OneToOneField(
+        'base.Session', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='courier_refresh_token',
+    )
+    token_digest = models.CharField(max_length=64, unique=True)
+    family_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    replaced_by = models.OneToOneField(
+        'self', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='replaces',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(
+                fields=['courier', 'revoked_at'],
+                name='courier_refresh_active_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f'CourierRefreshToken<{self.courier_id} family={self.family_id}>'
 
 
 class DeliveryAssignment(models.Model):

@@ -10,23 +10,21 @@ from datetime import timedelta
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from django.views.decorators.http import require_GET, require_POST
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Sum
 
 from base.helpers.request import parse_json_body
 from base.models import Order
-from base.repositories.session import SessionRepository
 from base.security.hashing import verify_password, verify_password_dummy
 
-from couriers.auth import courier_required, logout_session
+from couriers.auth import courier_required, get_courier_token, logout_session
 from couriers.models import (
     Courier, DeliveryAssignment, PushToken, CourierPayment, CourierNotification,
 )
-from couriers import services, presenters, payments
-
-SESSION_TTL_DAYS = 7
+from couriers import services, presenters, payments, tokens
 
 
 def _ip(request):
@@ -52,7 +50,7 @@ def _today_range():
 @csrf_exempt
 @require_POST
 def courier_login(request):
-    """POST /auth/courier/login/  {phone,password} OR {qr} -> {token}."""
+    """Exchange a one-time QR claim or manual credentials for a token pair."""
     data, error = parse_json_body(request)
     if error:
         return JsonResponse(error[0], status=error[1])
@@ -61,37 +59,86 @@ def courier_login(request):
     password = data.get('password') or ''
     qr = (data.get('qr') or '').strip()
 
-    if qr and not phone:
-        # QR payload format: "phone:password" (the app encodes the rider's creds
-        # into the login QR). Adjust to your QR scheme if different.
-        if ':' in qr:
-            phone, password = qr.split(':', 1)
+    with transaction.atomic():
+        if qr:
+            courier = tokens.consume_login_claim(qr)
+            if courier is None:
+                return JsonResponse(
+                    {'success': False, 'message': 'Invalid or expired login QR'},
+                    status=401,
+                )
         else:
-            return JsonResponse({'success': False, 'message': 'Invalid login QR'}, status=400)
+            if not phone or not password:
+                return JsonResponse(
+                    {'success': False, 'message': 'phone and password required'},
+                    status=400,
+                )
+            courier = (Courier.objects.select_related('user')
+                       .filter(phone=phone, user__is_deleted=False).first())
+            if not courier:
+                # Constant-time: do not leak which courier phones exist.
+                verify_password_dummy(password)
+                return JsonResponse(
+                    {'success': False, 'message': 'Invalid credentials'}, status=401,
+                )
+            if not verify_password(password, courier.user.password):
+                return JsonResponse(
+                    {'success': False, 'message': 'Invalid credentials'}, status=401,
+                )
+        if getattr(courier.user, 'status', 'ACTIVE') != 'ACTIVE':
+            return JsonResponse(
+                {'success': False, 'message': 'Account is suspended'}, status=403,
+            )
+        issued = tokens.issue_session(
+            courier, ip_address=_ip(request), user_agent=_ua(request),
+        )
+    return JsonResponse(issued.response_payload())
 
-    if not phone or not password:
-        return JsonResponse({'success': False, 'message': 'phone and password required'},
-                            status=400)
 
-    courier = (Courier.objects.select_related('user')
-               .filter(phone=phone, user__is_deleted=False).first())
-    if not courier:
-        verify_password_dummy(password)   # constant-time: don't leak which phones exist
-        return JsonResponse({'success': False, 'message': 'Invalid credentials'}, status=401)
-    if not verify_password(password, courier.user.password):
-        return JsonResponse({'success': False, 'message': 'Invalid credentials'}, status=401)
-    if getattr(courier.user, 'status', 'ACTIVE') != 'ACTIVE':
-        return JsonResponse({'success': False, 'message': 'Account is suspended'}, status=403)
-
-    token = secrets.token_hex(32)
-    SessionRepository.create(
-        user_id=courier.user,
-        ip_address=_ip(request),
-        user_agent=_ua(request),
-        payload=SessionRepository.hash_token(token),
-        expires_at=timezone.now() + timedelta(days=SESSION_TTL_DAYS),
+@csrf_exempt
+@require_POST
+def courier_refresh(request):
+    """Rotate a one-time refresh token and replace its access session."""
+    data, error = parse_json_body(request)
+    if error:
+        return JsonResponse(error[0], status=error[1])
+    refresh_token = (data.get('refresh_token') or '').strip()
+    if not refresh_token:
+        return JsonResponse(
+            {'success': False, 'message': 'refresh_token required'}, status=400,
+        )
+    issued = tokens.rotate_refresh_token(
+        refresh_token, ip_address=_ip(request), user_agent=_ua(request),
     )
-    return JsonResponse({'token': token})
+    if issued is None:
+        return JsonResponse(
+            {'success': False, 'message': 'Invalid or expired refresh token'},
+            status=401,
+        )
+    return JsonResponse(issued.response_payload())
+
+
+@csrf_exempt
+@require_POST
+def courier_revoke(request):
+    """Idempotently revoke a refresh family or the current access session."""
+    data, error = parse_json_body(request)
+    if error:
+        return JsonResponse(error[0], status=error[1])
+    refresh_token = (data.get('refresh_token') or '').strip()
+    access_token = get_courier_token(request)
+    if not refresh_token and not access_token:
+        return JsonResponse(
+            {'success': False, 'message': 'refresh_token or authorization required'},
+            status=400,
+        )
+    if refresh_token:
+        tokens.revoke_refresh_token(refresh_token)
+    if access_token:
+        tokens.revoke_access_token(access_token)
+    # Always return the same success shape, including for an already-revoked or
+    # unknown token, so this endpoint is both idempotent and non-enumerating.
+    return JsonResponse({'ok': True})
 
 
 @csrf_exempt

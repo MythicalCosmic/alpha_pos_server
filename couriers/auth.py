@@ -52,16 +52,9 @@ def resolve_courier(request):
 
 
 def logout_session(token):
-    """Invalidate the courier's session (logout): delete the Session row whose
-    payload matches the token's hash and drop its cache entry. Idempotent."""
-    if not token:
-        return
-    from base.models import Session
-    token_hash = SessionRepository.hash_token(token)
-    if not token_hash:
-        return
-    SessionRepository.invalidate_cache(token)
-    Session.objects.filter(payload=token_hash).delete()
+    """Invalidate the access token and its refresh family. Idempotent."""
+    from couriers.tokens import revoke_access_token
+    revoke_access_token(token)
 
 
 def courier_required(view_func):
