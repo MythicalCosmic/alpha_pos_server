@@ -12,7 +12,7 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -27,6 +27,36 @@ logger = logging.getLogger('couriers.services')
 
 ACCEPT_WINDOW_SECONDS = 20      # IncomingOrderSheet hold-to-accept countdown
 TRAIL_RETENTION_DAYS = 7        # GPS breadcrumbs older than this are pruned
+
+
+class AssignmentConflict(Exception):
+    """The requested dispatch mutation conflicts with durable lifecycle state."""
+
+
+_PROTECTED_ASSIGNMENT_STEPS = frozenset({
+    DeliveryAssignment.Step.PICKED_UP,
+    DeliveryAssignment.Step.ON_WAY,
+    DeliveryAssignment.Step.DELIVERED,
+})
+_BUSY_ASSIGNMENT_STEPS = frozenset({
+    DeliveryAssignment.Step.ASSIGNED,
+    DeliveryAssignment.Step.READY,
+    DeliveryAssignment.Step.PICKED_UP,
+    DeliveryAssignment.Step.ON_WAY,
+})
+_UNSCOPED_ACTOR = object()
+
+
+def _after_commit(label, callback):
+    """Run network-facing effects only after the database commit succeeds."""
+    def run_safely():
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - external delivery is best-effort
+            logger.warning('post-commit courier effect failed: %s', label,
+                           exc_info=True)
+
+    transaction.on_commit(run_safely, robust=True)
 
 
 def lock_courier_accounting(courier_or_id):
@@ -66,10 +96,14 @@ def notify(courier, *, icon='bell', tone='primary', title='', body='', order=Non
     if courier is None or not title:
         return None
     try:
-        return CourierNotification.objects.create(
-            courier=courier, icon=(icon or 'bell')[:24], tone=(tone or 'primary')[:12],
-            title=title[:160], body=(body or '')[:400], order=order,
-        )
+        # Roll a failed optional feed write back to a savepoint; merely catching
+        # DatabaseError inside an outer atomic block would poison that block.
+        with transaction.atomic():
+            return CourierNotification.objects.create(
+                courier=courier, icon=(icon or 'bell')[:24],
+                tone=(tone or 'primary')[:12], title=title[:160],
+                body=(body or '')[:400], order=order,
+            )
     except Exception:  # noqa: BLE001
         logger.debug('courier notify failed', exc_info=True)
         return None
@@ -79,43 +113,150 @@ def notify(courier, *, icon='bell', tone='primary', title='', body='', order=Non
 # assignment (cashier/admin -> courier)
 # --------------------------------------------------------------------------- #
 @transaction.atomic
-def pick_available_courier():
+def pick_available_courier(*, branch_id=None):
     """Auto-assign policy: the first ONLINE courier with no in-flight delivery
-    (ASSIGNED/READY/PICKED_UP). Deliberately simple — swap for nearest /
+    (ASSIGNED/READY/PICKED_UP/ON_WAY). Deliberately simple — swap for nearest /
     round-robin later. Returns a Courier or None when all are busy/offline."""
     busy = DeliveryAssignment.objects.filter(
-        step__in=(DeliveryAssignment.Step.ASSIGNED,
-                  DeliveryAssignment.Step.READY,
-                  DeliveryAssignment.Step.PICKED_UP),
+        step__in=_BUSY_ASSIGNMENT_STEPS,
     ).values_list('courier_id', flat=True)
-    return (Courier.objects.filter(online=True).exclude(id__in=list(busy))
-            .order_by('id').first())
+    candidates = Courier.objects.filter(
+        online=True,
+        user__status='ACTIVE',
+        user__is_deleted=False,
+    ).exclude(id__in=busy).order_by('id')
+    if branch_id is not None:
+        candidates = candidates.filter(branch_id=str(branch_id or '').strip())
+    checked_ids = []
+    while True:
+        available = candidates.exclude(pk__in=checked_ids)
+        if connection.features.has_select_for_update_skip_locked:
+            available = available.select_for_update(skip_locked=True)
+        else:
+            available = available.select_for_update()
+        courier = available.first()
+        if courier is None:
+            return None
+        if not DeliveryAssignment.objects.filter(
+            courier_id=courier.pk,
+            step__in=_BUSY_ASSIGNMENT_STEPS,
+        ).exists():
+            return courier
+        checked_ids.append(courier.pk)
 
 
+@transaction.atomic
 def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=None,
-           addr_lng=None, distance_km=None):
-    """Assign a delivery order to a courier; (re)opens the hold-to-accept window
-    and fires order.assigned + push. Idempotent on the order (OneToOne)."""
-    now = timezone.now()
-    assignment, _ = DeliveryAssignment.objects.update_or_create(
-        order=order,
-        defaults={
-            'courier': courier,
-            'step': DeliveryAssignment.Step.ASSIGNED,
-            'fee': int(fee or 0),
-            'assigned_at': now,
-            'accepted_at': None,
-            'declined_reason': '',
-            'expires_at': now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
-            'addr_text': addr_text or '',
-            'addr_landmark': addr_landmark or '',
-            'addr_lat': addr_lat,
-            'addr_lng': addr_lng,
-            'distance_km': distance_km,
-        },
+           addr_lng=None, distance_km=None, actor_branch=_UNSCOPED_ACTOR,
+           actor_is_global=False):
+    """Assign or safely reassign one delivery order under durable row locks."""
+    from base.models import Order
+
+    order = (Order.objects.select_for_update()
+             .filter(pk=order.pk, is_deleted=False).first())
+    if order is None:
+        raise AssignmentConflict('Order no longer exists')
+    existing = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(order=order)
+        .first()
     )
+    courier = (
+        Courier.objects.select_for_update()
+        .select_related('user')
+        .filter(pk=courier.pk)
+        .first()
+    )
+    if courier is None:
+        raise AssignmentConflict('Courier no longer exists')
+    if courier.user.status != 'ACTIVE' or courier.user.is_deleted:
+        raise AssignmentConflict('Courier is suspended or deleted')
+    if actor_branch is not _UNSCOPED_ACTOR and not actor_is_global:
+        allowed_branch = str(actor_branch or '').strip()
+        if (
+            not allowed_branch
+            or str(order.branch_id or '').strip() != allowed_branch
+            or str(courier.branch_id or '').strip() != allowed_branch
+        ):
+            raise AssignmentConflict('Order or courier is outside your branch')
+    if DeliveryAssignment.objects.filter(
+        courier_id=courier.pk,
+        step__in=_BUSY_ASSIGNMENT_STEPS,
+    ).exclude(order_id=order.pk).exists():
+        raise AssignmentConflict('Courier already has an active delivery')
+    if order.order_type != Order.OrderType.DELIVERY:
+        raise AssignmentConflict('Only delivery orders can be assigned to a courier')
+    if order.status == Order.Status.CANCELED:
+        raise AssignmentConflict('Cannot change courier on a cancelled order')
+    if order.branch_id and courier.branch_id and order.branch_id != courier.branch_id:
+        raise AssignmentConflict('Courier is not in this order branch')
+
+    if (
+        existing is not None
+        and existing.step != DeliveryAssignment.Step.DECLINED
+        and existing.courier_id == courier.id
+    ):
+        if order.delivery_person_id is not None:
+            order.delivery_person = None
+            order.save(update_fields=['delivery_person', 'updated_at'])
+        return existing
+
+    if order.status == Order.Status.COMPLETED:
+        raise AssignmentConflict('Cannot change courier on a completed order')
+    if existing is not None and existing.step in _PROTECTED_ASSIGNMENT_STEPS:
+        raise AssignmentConflict(
+            f'Cannot reassign an order at courier step {existing.step}',
+        )
+
+    previous_courier = None
+    if (
+        existing is not None
+        and existing.step != DeliveryAssignment.Step.DECLINED
+        and existing.courier_id != courier.id
+    ):
+        previous_courier = existing.courier
+
+    now = timezone.now()
+    starts_ready = order.status == Order.Status.READY
+    assignment = existing or DeliveryAssignment(order=order)
+    assignment.courier = courier
+    assignment.step = (
+        DeliveryAssignment.Step.READY
+        if starts_ready else DeliveryAssignment.Step.ASSIGNED
+    )
+    assignment.fee = int(fee or 0)
+    assignment.assigned_at = now
+    assignment.accepted_at = None
+    assignment.ready_at = (order.ready_at or now) if starts_ready else None
+    assignment.picked_at = None
+    assignment.delivered_at = None
+    assignment.declined_reason = ''
+    assignment.expires_at = now + timedelta(seconds=ACCEPT_WINDOW_SECONDS)
+    assignment.addr_text = addr_text or ''
+    assignment.addr_landmark = addr_landmark or ''
+    assignment.addr_lat = addr_lat
+    assignment.addr_lng = addr_lng
+    assignment.distance_km = distance_km
+    assignment.save()
+
+    if order.delivery_person_id is not None:
+        order.delivery_person = None
+        order.save(update_fields=['delivery_person', 'updated_at'])
+
+    if previous_courier is not None:
+        _after_commit('reassigned-old-courier', lambda: _emit(
+            order, 'order.unassigned', {
+                'order_id': order.id,
+                'reason': 'reassigned',
+            }, courier_id=previous_courier.id, to_cashiers=False,
+        ))
+        notify(previous_courier, icon='scooter', tone='muted',
+               title=f'Order #{order.id} reassigned',
+               body='This delivery was assigned to another courier.', order=order)
+
     addr = presenters._address(order, assignment)
-    _emit(order, 'order.assigned', {
+    assigned_data = {
         'order_id': order.id,
         'total': presenters.so_m(order.total_amount),
         'fee': int(assignment.fee),
@@ -123,22 +264,49 @@ def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=No
         'customer': {'name': presenters._customer(order)['name']},
         'address': {'text': addr['text'], 'distance_km': addr['distanceKm']},
         'expires_in': ACCEPT_WINDOW_SECONDS,
-    }, courier_id=courier.id, to_cashiers=False,
+        'step': assignment.step,
+    }
+    _after_commit('assigned-courier', lambda: _emit(
+        order, 'order.assigned', assigned_data,
+        courier_id=courier.id, to_cashiers=False,
         push_title=f'New order #{order.id} assigned',
-        push_body='Kitchen is preparing — head over.', courier_for_push=courier)
-    # let the desktop reflect the assignment too
-    realtime.send_to_cashiers(order.branch_id, 'order.status', {
-        'order_id': order.id, 'courier_id': courier.code, 'step': assignment.step,
-    })
+        push_body=(
+            'Ready for pickup at the counter.' if starts_ready
+            else 'Kitchen is preparing - head over.'
+        ),
+        courier_for_push=courier,
+    ))
+    _after_commit('assigned-cashiers', lambda: realtime.send_to_cashiers(
+        order.branch_id, 'order.status', {
+            'order_id': order.id,
+            'courier_id': courier.code,
+            'step': assignment.step,
+        },
+    ))
     notify(courier, icon='scooter', tone='primary',
            title=f'New order #{order.id}',
-           body='Assigned — kitchen is preparing.', order=order)
+           body=(
+               'Assigned - ready for pickup.' if starts_ready
+               else 'Assigned - kitchen is preparing.'
+           ), order=order)
     return assignment
 
 
+@transaction.atomic
 def accept(assignment):
-    """Courier accepts within the window. Step stays ASSIGNED until the kitchen
-    is READY; we just record acceptance and tell the desktop."""
+    """Accept only while this courier still owns the locked assignment."""
+    from base.models import Order
+
+    expected_courier_id = assignment.courier_id
+    order = Order.objects.select_for_update().get(pk=assignment.order_id)
+    assignment = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(pk=assignment.pk)
+        .first()
+    )
+    if assignment is None or assignment.courier_id != expected_courier_id:
+        return False, 'Order was reassigned to another courier'
     if assignment.expires_at and timezone.now() > assignment.expires_at:
         return False, 'Accept window expired'
     if assignment.step not in (DeliveryAssignment.Step.ASSIGNED,
@@ -146,45 +314,81 @@ def accept(assignment):
         return False, 'Order is not awaiting acceptance'
     assignment.accepted_at = timezone.now()
     assignment.save(update_fields=['accepted_at', 'updated_at'])
-    realtime.send_to_cashiers(assignment.order.branch_id, 'order.status', {
-        'order_id': assignment.order_id,
-        'courier_id': assignment.courier.code if assignment.courier else None,
-        'step': assignment.step,
-    })
+    _after_commit('accepted-cashiers', lambda: realtime.send_to_cashiers(
+        order.branch_id, 'order.status', {
+            'order_id': assignment.order_id,
+            'courier_id': assignment.courier.code if assignment.courier else None,
+            'step': assignment.step,
+        },
+    ))
     return True, None
 
 
+@transaction.atomic
 def decline(assignment, reason=''):
-    """Courier declines — free the order for reassignment."""
+    """Decline only while this courier still owns an awaiting assignment."""
+    from base.models import Order
+
+    expected_courier_id = assignment.courier_id
+    order = Order.objects.select_for_update().get(pk=assignment.order_id)
+    assignment = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(pk=assignment.pk)
+        .first()
+    )
+    if assignment is None or assignment.courier_id != expected_courier_id:
+        return False, 'Order was reassigned to another courier'
+    if assignment.step not in (
+        DeliveryAssignment.Step.ASSIGNED,
+        DeliveryAssignment.Step.READY,
+    ):
+        return False, f'Order cannot be declined at step {assignment.step}'
     assignment.step = DeliveryAssignment.Step.DECLINED
     assignment.declined_reason = (reason or '')[:200]
     assignment.save(update_fields=['step', 'declined_reason', 'updated_at'])
-    realtime.send_to_cashiers(assignment.order.branch_id, 'order.status', {
-        'order_id': assignment.order_id,
-        'courier_id': assignment.courier.code if assignment.courier else None,
-        'step': 'DECLINED',
-    })
+    _after_commit('declined-cashiers', lambda: realtime.send_to_cashiers(
+        order.branch_id, 'order.status', {
+            'order_id': assignment.order_id,
+            'courier_id': assignment.courier.code if assignment.courier else None,
+            'step': 'DECLINED',
+        },
+    ))
     return True, None
 
 
 # --------------------------------------------------------------------------- #
 # kitchen READY -> courier (server-driven, via signal)
 # --------------------------------------------------------------------------- #
+@transaction.atomic
 def mark_ready(order):
     """Kitchen marked the order READY: flip the courier step and notify. Safe to
     call repeatedly — only the first ASSIGNED->READY transition emits."""
-    assignment = getattr(order, 'courier_delivery', None)
+    from base.models import Order
+
+    order = (Order.objects.select_for_update()
+             .filter(pk=order.pk, is_deleted=False).first())
+    if order is None:
+        return
+    assignment = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(order=order)
+        .first()
+    )
     if not assignment or assignment.step != DeliveryAssignment.Step.ASSIGNED:
         return
     assignment.step = DeliveryAssignment.Step.READY
-    assignment.ready_at = timezone.now()
+    assignment.ready_at = order.ready_at or timezone.now()
     assignment.save(update_fields=['step', 'ready_at', 'updated_at'])
     courier = assignment.courier
-    _emit(order, 'order.ready', {'order_id': order.id},
-          courier_id=courier.id if courier else None,
-          push_title=f'Order #{order.id} is ready',
-          push_body='Ready for pickup at the counter.',
-          courier_for_push=courier)
+    _after_commit('ready-courier', lambda: _emit(
+        order, 'order.ready', {'order_id': order.id},
+        courier_id=courier.id if courier else None,
+        push_title=f'Order #{order.id} is ready',
+        push_body='Ready for pickup at the counter.',
+        courier_for_push=courier,
+    ))
     notify(courier, icon='checkcircle', tone='success',
            title=f'Order #{order.id} is ready',
            body='Ready for pickup at the counter.', order=order)
@@ -205,22 +409,21 @@ def advance_status(assignment, target):
     owner-scoped (the caller already checked ownership). READY is kitchen-only."""
     if target not in DeliveryAssignment.COURIER_SETTABLE:
         return None, f'Courier cannot set step {target}'
+    expected_courier_id = assignment.courier_id
+    assignment_pk = assignment.pk
+    order_id = assignment.order_id
+    # Canonical dispatch lock order: Order -> DeliveryAssignment -> Courier.
+    from base.models import Order
+    order = Order.objects.select_for_update().get(pk=order_id)
     assignment = (
         DeliveryAssignment.objects.select_for_update()
         .select_related('order', 'courier')
-        .get(pk=assignment.pk)
+        .get(pk=assignment_pk)
     )
+    if assignment.courier_id != expected_courier_id:
+        return None, 'Order was reassigned to another courier'
     if not assignment.can_advance_to(target):
         return None, f'Illegal transition {assignment.step} -> {target}'
-
-    order = assignment.order
-    if target == DeliveryAssignment.Step.DELIVERED:
-        # Payment/refund writers lock Order -> branch -> Courier. Locking the
-        # courier first here and then updating Order formed the reverse half of
-        # a real deadlock when payment confirmation and DELIVERED overlapped.
-        # Keep one compatible order: Assignment -> Order -> Courier.
-        from base.models import Order
-        order = Order.objects.select_for_update().get(pk=assignment.order_id)
 
     assignment.step = target
     fields = ['step', 'updated_at']
@@ -237,19 +440,26 @@ def advance_status(assignment, target):
         if order.status != 'COMPLETED':
             order.status = 'COMPLETED'
             order.save(update_fields=['status', 'updated_at'])
-        realtime.send_to_cashiers(order.branch_id, 'order.delivered', {
-            'order_id': order.id,
-            'courier_id': assignment.courier.code if assignment.courier else None,
-            'at': assignment.delivered_at.isoformat(),
-        })
+        _after_commit('delivered-cashiers', lambda: realtime.send_to_cashiers(
+            order.branch_id, 'order.delivered', {
+                'order_id': order.id,
+                'courier_id': (
+                    assignment.courier.code if assignment.courier else None
+                ),
+                'at': assignment.delivered_at.isoformat(),
+            },
+        ))
 
     data = {'order_id': order.id, 'step': target}
-    realtime.push_courier_event(
+    _after_commit('advanced-courier-status', lambda: realtime.push_courier_event(
         'order.status',
         courier_id=assignment.courier_id,
         branch_id=order.branch_id,
-        data={**data, 'courier_id': assignment.courier.code if assignment.courier else None},
-    )
+        data={
+            **data,
+            'courier_id': assignment.courier.code if assignment.courier else None,
+        },
+    ))
     return assignment, None
 
 

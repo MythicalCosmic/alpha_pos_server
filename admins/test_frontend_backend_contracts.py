@@ -16,7 +16,7 @@ def _window():
 
 def _order(user, cashier, product, *, total, when, paid=True,
            status='COMPLETED', method='CASH', order_type='HALL',
-           phone='99890-needle', branch_id='branch1'):
+           phone='99890-needle', branch_id='branch1', order_origin='POS'):
     from base.models import Order, OrderItem
 
     order = Order.objects.create(
@@ -24,6 +24,7 @@ def _order(user, cashier, product, *, total, when, paid=True,
         cashier=cashier,
         branch_id=branch_id,
         order_type=order_type,
+        order_origin=order_origin,
         status=status,
         is_paid=paid,
         payment_method=method if paid else None,
@@ -45,6 +46,27 @@ def _order(user, cashier, product, *, total, when, paid=True,
     )
     order.refresh_from_db()
     return order
+
+
+def test_admin_order_list_and_detail_expose_durable_origin(
+        regular_user, cashier_user):
+    from admins.services.order_service import AdminOrderService
+
+    lo, _ = _window()
+    _category, product = _product('Telegram Burger', 'telegram-burger')
+    order = _order(
+        regular_user, cashier_user, product,
+        total='100', when=lo + timedelta(hours=1), order_origin='TELEGRAM',
+    )
+
+    listed, status = AdminOrderService.get_all_orders(page=1, per_page=20)
+    assert status == 200
+    row = next(item for item in listed['data']['orders'] if item['id'] == order.id)
+    assert row['order_origin'] == 'TELEGRAM'
+
+    detailed, status = AdminOrderService.get_order_by_id(order.id)
+    assert status == 200
+    assert detailed['data']['order']['order_origin'] == 'TELEGRAM'
 
 
 def _product(name, slug, price='100'):

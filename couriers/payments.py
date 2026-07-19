@@ -5,14 +5,16 @@ Record-only by design (the system launches cash-only, no live gateway): the
 courier confirms how the customer paid at the door and the payment lands
 ``PAID`` immediately — recording cash, card-on-terminal or QR the same way. We
 update the POS Order's rolled-up paid fields (so the cloud shift/AI reports see
-it) but deliberately do NOT write a synced ``base.OrderPayment`` row — those
+it) and write a synced immutable ``base.ExternalOrderPayment`` event, but
+deliberately do NOT write a synced ``base.OrderPayment`` row — those
 carry no such hazard: the old claim that the OrderPayment sync write-denylist
 "would land blank on the tills" is FALSE -- SyncMixin._strip_sync_denied(creating=True)
 keeps denied fields that are NOT NULL with no default, and ``amount``/``method`` both
 qualify, so a CREATE syncs intact. The real reason is that courier cash is collected at
 the door and never enters a till drawer, so it must not appear in
 ``cashbox.drawer.expected_payment_totals``. Reports attribute a courier sale from
-``CourierPayment`` via ``base.services.tender`` (PROVIDER_TO_METHOD), never as 100% cash.
+``ExternalOrderPayment`` via ``base.services.tender``; ``CourierPayment`` is a
+de-duplicated legacy fallback, never a second copy and never 100% drawer cash.
 
 ``apply_webhook`` is the seam for a future online gateway: it confirms/reverses
 a payment server-side (never from the client) and fires the same WS events. It
@@ -25,7 +27,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from base.models import Order, OrderPayment
+from base.models import ExternalOrderPayment, Order, OrderPayment
 from base.services.accounting_cursor import lock_branch_accounting
 from couriers import presenters, realtime, services
 from couriers.models import CourierPayment
@@ -33,9 +35,10 @@ from couriers.models import CourierPayment
 logger = logging.getLogger('couriers.payments')
 
 # MONEY INVARIANT: this is the one intentionally shiftless settlement path.
-# CourierPayment is provider evidence for a DELIVERY collected at the door; it
-# never creates OrderPayment, touches a till drawer, or impersonates the normal
-# cashier pay/refund path (which owns the active-shift guard).
+# ExternalOrderPayment is canonical synced provider evidence for a DELIVERY
+# collected at the door. CourierPayment remains provider workflow/audit state.
+# Neither creates OrderPayment, touches a till drawer, or impersonates the
+# normal cashier pay/refund path (which owns the active-shift guard).
 _PAID_WORDS = {'paid', 'success', 'succeeded', 'completed', 'confirmed'}
 _REFUND_WORDS = {'refund', 'refunded', 'reversed', 'chargeback'}
 _FAIL_WORDS = {'fail', 'failed', 'canceled', 'cancelled', 'declined'}
@@ -43,6 +46,129 @@ _CONCRETE_METHODS = {
     value for value, _label in Order.PaymentMethod.choices
     if value != Order.PaymentMethod.MIXED
 }
+
+
+class PaymentEvidenceConflict(ValueError):
+    """A provider event conflicts with immutable cross-edition evidence."""
+
+
+def _external_evidence_values(payment, order):
+    """Validate and freeze the authoritative identity of a courier receipt."""
+    if payment.status not in {
+        CourierPayment.Status.PAID,
+        CourierPayment.Status.REFUNDED,
+    }:
+        raise PaymentEvidenceConflict(
+            'only paid courier payments can create settlement evidence',
+        )
+    if payment.order_id != order.pk:
+        raise PaymentEvidenceConflict('courier payment belongs to another order')
+
+    branch_id = str(order.branch_id or '').strip()
+    payment_branch = str(payment.branch_id or '').strip()
+    if not branch_id:
+        raise PaymentEvidenceConflict('delivery order has no branch ownership')
+    if payment_branch and payment_branch != branch_id:
+        raise PaymentEvidenceConflict(
+            'courier payment belongs to another branch',
+        )
+
+    source_id = str(payment.external_id or '')
+    method = CourierPayment.PROVIDER_TO_METHOD.get(payment.provider)
+    amount = Decimal(str(payment.amount or 0))
+    occurred_at = payment.paid_at or payment.created_at
+    if not source_id.strip():
+        raise PaymentEvidenceConflict('courier payment has no external_id')
+    if method not in _CONCRETE_METHODS:
+        raise PaymentEvidenceConflict(
+            f'courier payment has invalid provider {payment.provider!r}',
+        )
+    if not amount.is_finite() or amount <= 0:
+        raise PaymentEvidenceConflict('courier payment amount must be positive')
+    if occurred_at is None:
+        raise PaymentEvidenceConflict('courier payment has no occurrence time')
+
+    return {
+        'order': order,
+        'source': ExternalOrderPayment.Source.COURIER,
+        'source_id': source_id,
+        'method': method,
+        'amount': amount,
+        'occurred_at': occurred_at,
+        'branch_id': branch_id,
+    }
+
+
+def _ensure_external_payment_evidence(payment, order):
+    """Get or create one immutable synced event for a provider collection.
+
+    Exact retries are no-ops (and repair a missing row). Any reuse with a
+    changed branch, order, method, amount, or timestamp fails closed. Callers
+    run this inside the same transaction as the CourierPayment transition.
+    """
+    values = _external_evidence_values(payment, order)
+    source = values['source']
+    source_id = values['source_id']
+    branch_id = values['branch_id']
+
+    evidence = (
+        ExternalOrderPayment.objects.select_for_update()
+        .filter(branch_id=branch_id, source=source, source_id=source_id)
+        .order_by('pk')
+        .first()
+    )
+    if evidence is None:
+        evidence, _created = ExternalOrderPayment.objects.get_or_create(
+            branch_id=branch_id,
+            source=source,
+            source_id=source_id,
+            defaults={
+                'order': values['order'],
+                'method': values['method'],
+                'amount': values['amount'],
+                'occurred_at': values['occurred_at'],
+            },
+        )
+
+    expected = {
+        'branch_id': branch_id,
+        'order_id': values['order'].pk,
+        'source': source,
+        'source_id': source_id,
+        'method': values['method'],
+        'amount': values['amount'],
+        'occurred_at': values['occurred_at'],
+        'is_deleted': False,
+    }
+    actual = {
+        'branch_id': str(evidence.branch_id or '').strip(),
+        'order_id': evidence.order_id,
+        'source': evidence.source,
+        'source_id': evidence.source_id,
+        'method': evidence.method,
+        'amount': Decimal(str(evidence.amount)),
+        'occurred_at': evidence.occurred_at,
+        'is_deleted': evidence.is_deleted,
+    }
+    changed = [name for name, value in expected.items() if actual[name] != value]
+    if changed:
+        raise PaymentEvidenceConflict(
+            'external payment evidence conflicts on ' + ', '.join(changed),
+        )
+    return evidence
+
+
+def _evidence_error_or_none(payment, order):
+    """Convert an invariant exception to the service error convention."""
+    try:
+        _ensure_external_payment_evidence(payment, order)
+    except PaymentEvidenceConflict as exc:
+        # All callers are inside transaction.atomic(). This is important for a
+        # PENDING -> PAID transition or newly inserted CourierPayment: a
+        # conflicting immutable event must roll back the collection itself.
+        transaction.set_rollback(True)
+        return str(exc)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -84,19 +210,45 @@ def _payment_evidence(order):
 
     if noncash > due:
         return None, 'existing till non-cash payments exceed order total'
-    # A raw CASH row can exceed the residual because it records the amount
-    # tendered before change. Never count that change as a second settlement.
-    cash_applied = min(cash_tendered, max(due - noncash, Decimal('0')))
-    if cash_applied > 0:
-        methods.add(Order.PaymentMethod.CASH)
-    total = noncash + cash_applied
+    exact_external = Decimal('0')
 
+    external_rows = list(
+        ExternalOrderPayment.objects.filter(
+            order=order,
+            source=ExternalOrderPayment.Source.COURIER,
+            is_deleted=False,
+        ).order_by('occurred_at', 'pk')
+    )
+    mirrored_source_ids = set()
+    for row in external_rows:
+        if row.branch_id != order.branch_id:
+            return None, 'order has external payment evidence from another branch'
+        if row.method not in _CONCRETE_METHODS:
+            return None, f'order has invalid external method {row.method!r}'
+        amount = Decimal(str(row.amount))
+        if amount <= 0:
+            return None, 'order has a non-positive external payment amount'
+        exact_external += amount
+        methods.add(row.method)
+        timestamps.append(row.occurred_at)
+        mirrored_source_ids.add(str(row.source_id or ''))
+
+    # Historical CourierPayment rows remain readable until migration mirrors
+    # them. Never count both representations of one provider event.
     courier_rows = list(
         CourierPayment.objects.filter(
-            order=order, status=CourierPayment.Status.PAID,
+            order=order,
+            status__in=[
+                CourierPayment.Status.PAID,
+                CourierPayment.Status.REFUNDED,
+            ],
         ).order_by('paid_at', 'created_at', 'pk')
     )
+    legacy_rows = []
     for row in courier_rows:
+        if str(row.external_id or '') in mirrored_source_ids:
+            continue
+        legacy_rows.append(row)
         method = CourierPayment.PROVIDER_TO_METHOD.get(row.provider)
         if row.branch_id != order.branch_id:
             return None, 'order has courier payment evidence from another branch'
@@ -105,16 +257,28 @@ def _payment_evidence(order):
         amount = Decimal(str(row.amount))
         if amount <= 0:
             return None, 'order has a non-positive courier payment amount'
-        total += amount
+        exact_external += amount
         methods.add(method)
         timestamps.append(row.paid_at or row.created_at)
+
+    if noncash + exact_external > due:
+        return None, 'exact non-drawer payments exceed order total'
+    # A till CASH row may include change; courier/provider CASH is an exact
+    # collected amount and must reduce the residual before change is capped.
+    cash_applied = min(
+        cash_tendered,
+        max(due - noncash - exact_external, Decimal('0')),
+    )
+    if cash_applied > 0:
+        methods.add(Order.PaymentMethod.CASH)
+    total = noncash + cash_applied + exact_external
 
     return {
         'due': due,
         'total': total,
         'methods': methods,
         'paid_at': max((stamp for stamp in timestamps if stamp), default=None),
-        'has_rows': bool(till_rows or courier_rows),
+        'has_rows': bool(till_rows or external_rows or legacy_rows),
     }, None
 
 
@@ -276,8 +440,9 @@ def _present_refunded(payment, refund):
 def create_payment(courier, order, provider, *, amount=None, note='', external_id='', link=''):
     """Record shiftless provider evidence for a courier DELIVERY.
 
-    This is not a shortcut around cashier settlement: it writes only
-    ``CourierPayment`` and never mutates a drawer or ``OrderPayment``. Returns
+    This is not a shortcut around cashier settlement: it writes provider audit
+    state plus canonical ``ExternalOrderPayment`` evidence, and never mutates a
+    drawer or ``OrderPayment``. Returns
     ``(payment, None)`` or ``(None, error_message)``.
     """
     provider = (provider or '').strip().upper()
@@ -361,12 +526,18 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
             if payment.status == CourierPayment.Status.PAID:
                 # Exact replay: repair the header if necessary but never emit a
                 # second money event/notification.
+                evidence_error = _evidence_error_or_none(payment, order)
+                if evidence_error:
+                    return None, evidence_error
                 _recompute_order_paid(order, accounting_recorded_at=now)
                 refund = _existing_refund(payment)
                 if refund is not None:
                     return _present_refunded(payment, refund), None
                 return payment, None
             if payment.status == CourierPayment.Status.REFUNDED:
+                evidence_error = _evidence_error_or_none(payment, order)
+                if evidence_error:
+                    return None, evidence_error
                 _recompute_order_paid(order, accounting_recorded_at=now)
                 return payment, None
             if payment.status == CourierPayment.Status.FAILED:
@@ -404,12 +575,18 @@ def create_payment(courier, order, provider, *, amount=None, note='', external_i
                     CourierPayment.Status.PAID,
                     CourierPayment.Status.REFUNDED,
                 }:
+                    evidence_error = _evidence_error_or_none(payment, order)
+                    if evidence_error:
+                        return None, evidence_error
                     _recompute_order_paid(order, accounting_recorded_at=now)
                     refund = _existing_refund(payment)
                     if refund is not None:
                         return _present_refunded(payment, refund), None
                     return payment, None
                 return None, f'external_id belongs to a {payment.status.lower()} payment'
+        evidence_error = _evidence_error_or_none(payment, order)
+        if evidence_error:
+            return None, evidence_error
         _recompute_order_paid(order, accounting_recorded_at=now)
 
     _emit(payment, 'payment.paid', order)
@@ -428,7 +605,10 @@ def refund_payment(payment):
     with transaction.atomic():
         order = Order.objects.select_for_update().get(pk=payment.order_id)
         payment = CourierPayment.objects.select_for_update().get(pk=payment.pk)
-        if payment.status != CourierPayment.Status.PAID:
+        if payment.status not in {
+            CourierPayment.Status.PAID,
+            CourierPayment.Status.REFUNDED,
+        }:
             _recompute_order_paid(order)
             return None, 'only a paid payment can be refunded'
         if not order.branch_id:
@@ -438,6 +618,14 @@ def refund_payment(payment):
             payment.courier = services.lock_courier_accounting(
                 payment.courier_id,
             )
+        evidence_error = _evidence_error_or_none(payment, order)
+        if evidence_error:
+            return None, evidence_error
+        if payment.status == CourierPayment.Status.REFUNDED:
+            existing_refund = _existing_refund(payment)
+            if existing_refund is not None:
+                return _present_refunded(payment, existing_refund), None
+            return None, 'legacy refunded payment has no refund ledger event'
         from base.services.order_refund import (
             SettlementInvariantError, record_external_provider_refund,
         )
@@ -484,6 +672,16 @@ def apply_webhook(*, external_id='', payment_id=None, status='', order_id=None,
                 order = Order.objects.select_for_update().get(pk=payment.order_id)
                 payment = CourierPayment.objects.select_for_update().get(pk=payment.pk)
                 if payment.status == CourierPayment.Status.PAID:
+                    if not order.branch_id:
+                        return None, 'delivery order has no branch ownership'
+                    lock_branch_accounting(order.branch_id)
+                    if payment.courier_id:
+                        payment.courier = services.lock_courier_accounting(
+                            payment.courier_id,
+                        )
+                    evidence_error = _evidence_error_or_none(payment, order)
+                    if evidence_error:
+                        return None, evidence_error
                     _recompute_order_paid(order)
                     refund = _existing_refund(payment)
                     if refund is not None:
@@ -500,6 +698,17 @@ def apply_webhook(*, external_id='', payment_id=None, status='', order_id=None,
                     # First terminal outcome wins for this event identity. Late
                     # or out-of-order callbacks are acknowledged as no-ops so a
                     # gateway does not retry forever, but money is never revived.
+                    if payment.status == CourierPayment.Status.REFUNDED:
+                        if not order.branch_id:
+                            return None, 'delivery order has no branch ownership'
+                        lock_branch_accounting(order.branch_id)
+                        if payment.courier_id:
+                            payment.courier = services.lock_courier_accounting(
+                                payment.courier_id,
+                            )
+                        evidence_error = _evidence_error_or_none(payment, order)
+                        if evidence_error:
+                            return None, evidence_error
                     _recompute_order_paid(order)
                     logger.warning(
                         'Ignored late paid callback for terminal payment %s (%s)',
@@ -523,6 +732,9 @@ def apply_webhook(*, external_id='', payment_id=None, status='', order_id=None,
                 payment.status = CourierPayment.Status.PAID
                 payment.paid_at = now
                 payment.save(update_fields=['status', 'paid_at'])
+                evidence_error = _evidence_error_or_none(payment, order)
+                if evidence_error:
+                    return None, evidence_error
                 _recompute_order_paid(order, accounting_recorded_at=now)
             _emit(payment, 'payment.paid', order)
             return payment, None

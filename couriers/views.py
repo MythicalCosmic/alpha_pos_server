@@ -4,6 +4,8 @@ Paths are the exact ones the mobile app calls (spec §3). Read feeds are
 camelCase; the reconciliation payload is snake_case. Auth is the session token
 the app sends as ``Authorization: Token <key>`` (see couriers.auth).
 """
+import hashlib
+import json
 import secrets
 from datetime import timedelta
 
@@ -17,8 +19,10 @@ from django.db import transaction
 from django.db.models import Sum
 
 from base.helpers.request import parse_json_body
-from base.models import Order
+from base.models import Order, User
 from base.security.hashing import verify_password, verify_password_dummy
+from base.security.rate_limit import rate_limit, rate_limit_by
+from base.services.phone import normalize_uz_phone
 
 from couriers.auth import courier_required, get_courier_token, logout_session
 from couriers.models import (
@@ -44,18 +48,47 @@ def _today_range():
     return start, start + timedelta(days=1)
 
 
+def _courier_login_identity(request):
+    """Stable, non-secret rate-limit key for both supported login modes."""
+    try:
+        data = json.loads(request.body or b'{}')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    qr = (data.get('qr') or '').strip()
+    if qr:
+        # Never put the reusable raw request credential into Redis/cache keys.
+        return 'qr:' + hashlib.sha256(qr.encode('utf-8')).hexdigest()
+    phone = normalize_uz_phone(data.get('phone'))
+    return f'phone:{phone}' if phone else None
+
+
+_LOGIN_LIMIT_ERROR = {
+    'message': 'Too many login attempts. Please wait and try again.',
+}
+
+
 # --------------------------------------------------------------------------- #
 # auth
 # --------------------------------------------------------------------------- #
 @csrf_exempt
 @require_POST
+@rate_limit(
+    'courier_login_ip', max_attempts=60, window=300,
+    error_payload=_LOGIN_LIMIT_ERROR,
+)
+@rate_limit_by(
+    'courier_login_identity', max_attempts=10, window=300,
+    extractor=_courier_login_identity, error_payload=_LOGIN_LIMIT_ERROR,
+)
 def courier_login(request):
     """Exchange a one-time QR claim or manual credentials for a token pair."""
     data, error = parse_json_body(request)
     if error:
         return JsonResponse(error[0], status=error[1])
 
-    phone = (data.get('phone') or '').strip()
+    phone = normalize_uz_phone(data.get('phone'))
     password = data.get('password') or ''
     qr = (data.get('qr') or '').strip()
 
@@ -73,9 +106,11 @@ def courier_login(request):
                     {'success': False, 'message': 'phone and password required'},
                     status=400,
                 )
-            courier = (Courier.objects.select_related('user')
-                       .filter(phone=phone, user__is_deleted=False).first())
-            if not courier:
+            candidate_id = (Courier.objects.filter(phone=phone)
+                            .values_list('pk', flat=True).first())
+            courier = (Courier.objects.select_for_update()
+                       .filter(pk=candidate_id).first()) if candidate_id else None
+            if not courier or courier.user.is_deleted:
                 # Constant-time: do not leak which courier phones exist.
                 verify_password_dummy(password)
                 return JsonResponse(
@@ -88,6 +123,11 @@ def courier_login(request):
         if getattr(courier.user, 'status', 'ACTIVE') != 'ACTIVE':
             return JsonResponse(
                 {'success': False, 'message': 'Account is suspended'}, status=403,
+            )
+        if courier.user.role != User.RoleChoices.COURIER:
+            return JsonResponse(
+                {'success': False, 'message': 'Invalid courier identity'},
+                status=401,
             )
         issued = tokens.issue_session(
             courier, ip_address=_ip(request), user_agent=_ua(request),
@@ -362,7 +402,9 @@ def order_decline(request, order_id):
         return JsonResponse({'success': False, 'message': 'Order not assigned to you'},
                             status=403)
     data, _ = parse_json_body(request)
-    services.decline(a, (data or {}).get('reason', ''))
+    ok, err = services.decline(a, (data or {}).get('reason', ''))
+    if not ok:
+        return JsonResponse({'success': False, 'message': err}, status=409)
     return JsonResponse({'ok': True})
 
 

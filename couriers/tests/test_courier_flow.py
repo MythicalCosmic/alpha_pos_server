@@ -20,7 +20,7 @@ from couriers import services
 pytestmark = pytest.mark.django_db
 
 
-def _courier(code='CR-1', phone='+99890000000'):
+def _courier(code='CR-1', phone='+998900000000'):
     user = User.objects.create(email=f'{code}@t.local', first_name='A', last_name='B',
                                role='CASHIER', status='ACTIVE',
                                password=hash_password('x'))

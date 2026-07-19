@@ -34,6 +34,13 @@ def test_reconcile_expected_cash_is_net_of_expenses(cashier_user, admin_user):
     from cashbox.models import CashboxExpense, ShiftPaymentTotal
     from admins.services.shift_service import ShiftService
 
+    # Reconciliation is deliberately branch-scoped. This scenario exercises a
+    # control-centre administrator, so model that global identity explicitly
+    # instead of inheriting the server node's ``BRANCH_ID`` from the shared
+    # fixture (which would make it a manager for a different branch).
+    admin_user.branch_id = 'cloud'
+    admin_user.save(update_fields=['branch_id'])
+
     start = timezone.now() - timedelta(hours=1)
     mid = timezone.now() - timedelta(minutes=30)
     s = Shift.objects.create(user=cashier_user, start_time=start, status='ACTIVE')

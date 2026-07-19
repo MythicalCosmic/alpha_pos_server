@@ -15,6 +15,22 @@ from base.models import Order
 logger = logging.getLogger('couriers.signals')
 
 
+@receiver(post_save, sender=Order, dispatch_uid='couriers_legacy_dispatch_guard')
+def _clear_conflicting_legacy_courier(sender, instance, **kwargs):
+    """Reject a legacy delivery_person replay while new dispatch is active."""
+    if not instance.pk or not instance.delivery_person_id:
+        return
+    from couriers.models import DeliveryAssignment
+
+    if DeliveryAssignment.objects.filter(order_id=instance.pk).exclude(
+        step=DeliveryAssignment.Step.DECLINED,
+    ).exists():
+        Order.objects.filter(
+            pk=instance.pk, delivery_person_id__isnull=False,
+        ).update(delivery_person_id=None)
+        instance.delivery_person_id = None
+
+
 @receiver(post_save, sender=Order, dispatch_uid='couriers_order_ready_bridge')
 def _order_ready_bridge(sender, instance, created, **kwargs):
     if created or getattr(instance, 'status', None) != 'READY':

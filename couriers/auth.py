@@ -8,7 +8,7 @@ the two: it accepts ``Token``, ``Bearer`` or the cookie, resolves the session
 user's ``Courier`` profile.
 
 ``@courier_required`` mirrors ``base.security.permissions.admin_required`` but
-gates on "has a Courier profile" instead of a role, and sets:
+requires both the dedicated COURIER role and its Courier profile, and sets:
   request.user          -> base.User
   request.courier       -> couriers.Courier
   request.session_key   -> raw token
@@ -17,6 +17,7 @@ from functools import wraps
 
 from django.http import JsonResponse
 
+from base.models import User
 from base.repositories.session import SessionRepository
 
 
@@ -46,6 +47,11 @@ def resolve_courier(request):
         return None, None, None
     user = session.user_id
     if getattr(user, 'status', 'ACTIVE') != 'ACTIVE':
+        return None, None, None
+    # The profile alone is not an authentication audience.  A legacy role
+    # drift to CASHIER/MANAGER must never let that staff bearer enter the
+    # courier mobile API (and the reverse is blocked by the core POS gates).
+    if user.role != User.RoleChoices.COURIER:
         return None, None, None
     courier = getattr(user, 'courier', None)
     return user, courier, token

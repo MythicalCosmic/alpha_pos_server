@@ -22,6 +22,8 @@ logger = logging.getLogger('couriers.ws')
 _CLOSE_AUTH = 4401
 _CLOSE_FORBIDDEN = 4403
 
+_CASHIER_FEED_ROLES = frozenset({'ADMIN', 'MANAGER', 'CASHIER'})
+
 # sane bounds so a bad client can't relay garbage onto the desktop map
 _LAT_MIN, _LAT_MAX = -90.0, 90.0
 _LNG_MIN, _LNG_MAX = -180.0, 180.0
@@ -84,7 +86,7 @@ class CourierConsumer(JsonWebsocketConsumer):
             return
         user = _session_user(_handshake_token(self.scope))
         courier = getattr(user, 'courier', None) if user else None
-        if courier is None:
+        if courier is None or getattr(user, 'role', None) != 'COURIER':
             self.close(code=_CLOSE_AUTH)
             return
         self.courier_id = courier.id
@@ -151,6 +153,9 @@ class CashierConsumer(JsonWebsocketConsumer):
                 self.close(code=_CLOSE_FORBIDDEN)
                 return
             role = getattr(user, 'role', '')
+            if role not in _CASHIER_FEED_ROLES:
+                self.close(code=_CLOSE_FORBIDDEN)
+                return
             own_branch = getattr(user, 'branch_id', '') or ''
             if role not in self._ALL_BRANCH_ROLES:
                 # Non-admins are pinned to their own branch; ignore/deny a

@@ -99,7 +99,7 @@ class TestAutoCourierAssign:
     dispatched DELIVERY order to an available online courier. Manual assignment
     (POST /api/admins/couriers/assign) is always available regardless."""
 
-    def _courier(self, online=True):
+    def _courier(self, online=True, branch_id='cloud'):
         from base.models import User
         from couriers.models import Courier
         u = User.objects.create(
@@ -107,7 +107,7 @@ class TestAutoCourierAssign:
             role='USER', status='ACTIVE', password='!')
         return Courier.objects.create(
             user=u, code=f'C{secrets.randbelow(9999)}', phone='+998900000000',
-            branch_id='cloud', online=online)
+            branch_id=branch_id, online=online)
 
     def _dispatch(self, customer, product, cashier):
         from smartfood.services.dispatch_service import DispatchService
@@ -119,7 +119,7 @@ class TestAutoCourierAssign:
 
     def test_assigns_when_enabled(self, settings, cfg, active_shift, cashier, product, customer):
         settings.COURIER_AUTO_ASSIGN = True
-        courier = self._courier(online=True)
+        courier = self._courier(online=True, branch_id=active_shift.branch_id)
         o = self._dispatch(customer, product, cashier)
         from couriers.models import DeliveryAssignment
         assert DeliveryAssignment.objects.filter(
@@ -127,14 +127,16 @@ class TestAutoCourierAssign:
 
     def test_no_assign_when_disabled(self, settings, cfg, active_shift, cashier, product, customer):
         settings.COURIER_AUTO_ASSIGN = False
-        self._courier(online=True)
+        self._courier(online=True, branch_id=active_shift.branch_id)
         o = self._dispatch(customer, product, cashier)
         from couriers.models import DeliveryAssignment
         assert not DeliveryAssignment.objects.filter(order_id=o.pos_order_id).exists()
 
     def test_no_assign_when_no_online_courier(self, settings, cfg, active_shift, cashier, product, customer):
         settings.COURIER_AUTO_ASSIGN = True
-        self._courier(online=False)                  # offline -> not eligible
+        self._courier(
+            online=False, branch_id=active_shift.branch_id,
+        )                                            # offline -> not eligible
         o = self._dispatch(customer, product, cashier)
         from couriers.models import DeliveryAssignment
         assert not DeliveryAssignment.objects.filter(order_id=o.pos_order_id).exists()

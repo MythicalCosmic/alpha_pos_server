@@ -16,7 +16,10 @@ integer so'm (BigIntegerField), never floats.
 """
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
+
+from base.services.phone import is_canonical_uz_phone, normalize_uz_phone
 
 
 class Courier(models.Model):
@@ -29,7 +32,7 @@ class Courier(models.Model):
     # Profile (the app reads these; first/last fall back to the User's names).
     first_name = models.CharField(max_length=50, blank=True, default='')
     last_name = models.CharField(max_length=50, blank=True, default='')
-    phone = models.CharField(max_length=24, db_index=True)
+    phone = models.CharField(max_length=12, unique=True)
     vehicle = models.CharField(max_length=32, blank=True, default='Scooter')
     plate = models.CharField(max_length=24, blank=True, default='')
     # The app's `courier.id` (e.g. "CR-118"). Stable, human-facing, unique.
@@ -50,6 +53,20 @@ class Courier(models.Model):
 
     def __str__(self):
         return f'{self.code} ({self.full_name})'
+
+    def save(self, *args, **kwargs):
+        canonical = normalize_uz_phone(self.phone)
+        if not is_canonical_uz_phone(canonical):
+            raise ValidationError({
+                'phone': 'Enter a valid Uzbekistan phone number.',
+            })
+        changed = canonical != (self.phone or '')
+        self.phone = canonical
+        if changed and kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = list(
+                set(kwargs['update_fields']) | {'phone'}
+            )
+        return super().save(*args, **kwargs)
 
     @property
     def full_name(self):

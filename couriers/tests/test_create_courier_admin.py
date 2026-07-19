@@ -43,7 +43,7 @@ def test_post_root_creates_courier_with_supplied_password():
     assert r.status_code == 200, r.content
     d = r.json()['data']
     # the flat shape the FE asked for
-    assert d['phone'] == '+998901112233'
+    assert d['phone'] == '998901112233'
     assert d['code'].startswith('CR-')
     assert isinstance(d['id'], int)
     assert 'password' not in d
@@ -52,7 +52,8 @@ def test_post_root_creates_courier_with_supplied_password():
     assert d['qr']['expires_at'] == d['expires_at']
     assert '+998901112233' not in d['qr']['token']
     assert 'kuryer123' not in json.dumps(d)
-    assert Courier.objects.filter(phone='+998901112233').exists()
+    assert Courier.objects.filter(phone='998901112233').exists()
+    assert Courier.objects.get(phone='998901112233').user.role == 'COURIER'
     claim = CourierLoginClaim.objects.get()
     assert claim.token_digest == _digest(d['qr']['token'])
     assert d['qr']['token'] not in claim.token_digest
@@ -73,6 +74,11 @@ def test_post_root_creates_courier_with_supplied_password():
     assert Session.objects.filter(
         payload=SessionRepository.hash_token(auth['token']),
     ).exists()
+    # A courier bearer is not a cashier/admin bearer even though both session
+    # types share the same digest-only Session table.
+    assert Client().get(
+        ROOT, HTTP_AUTHORIZATION=f"Bearer {auth['token']}",
+    ).status_code == 403
 
     # QR claims are one-time credentials, never reusable passwords.
     replay = _post('/auth/courier/login/', {'qr': d['qr']['token']})
@@ -105,8 +111,29 @@ def test_duplicate_phone_409():
 
 def test_short_password_rejected():
     tok = _staff_token()
-    r = _post(CREATE, {'phone': '+998901234567', 'password': 'ab'}, tok)
+    r = _post(CREATE, {'phone': '+998901234567', 'password': '1234567'}, tok)
     assert r.status_code == 400
+    assert 'at least 8' in r.json()['message']
+
+
+def test_login_is_rate_limited_by_credential_without_leaking_qr():
+    from django.core.cache import cache
+
+    cache.clear()
+    qr = 'cq1.' + ('x' * 43)
+    try:
+        for _ in range(10):
+            assert _post('/auth/courier/login/', {'qr': qr}).status_code == 401
+        blocked = _post('/auth/courier/login/', {'qr': qr})
+        assert blocked.status_code == 429
+        assert blocked.json() == {
+            'success': False,
+            'message': 'Too many login attempts. Please wait and try again.',
+        }
+        assert blocked.headers.get('Retry-After')
+        assert qr not in json.dumps(blocked.json())
+    finally:
+        cache.clear()
 
 
 def test_get_root_still_lists():
@@ -254,6 +281,12 @@ def test_password_reset_revokes_sessions_without_returning_password():
     auth = _post('/auth/courier/login/', {
         'phone': '+998907070707', 'password': 'first-secret',
     }).json()
+    too_short = _post(
+        f"/api/admins/couriers/{created['id']}/regenerate",
+        {'password': '1234567'}, tok,
+    )
+    assert too_short.status_code == 400
+    assert 'at least 8' in too_short.json()['message']
     response = _post(
         f"/api/admins/couriers/{created['id']}/regenerate",
         {'password': 'second-secret'}, tok,

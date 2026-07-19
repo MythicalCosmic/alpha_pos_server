@@ -13,7 +13,10 @@ import pytest
 from django.test import Client
 from django.utils import timezone
 
-from base.models import User, Order, OrderPayment, OrderRefund, Session
+from base.models import (
+    CashRegister, ExternalOrderPayment, Order, OrderPayment, OrderRefund,
+    Session, User,
+)
 from base.repositories.session import SessionRepository
 from base.security.hashing import hash_password
 from couriers import services, payments, geo
@@ -28,9 +31,9 @@ pytestmark = pytest.mark.django_db
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _courier(code='CR-1', phone='+99890000000'):
+def _courier(code='CR-1', phone='+998900000000'):
     user = User.objects.create(email=f'{code}@t.local', first_name='A', last_name='B',
-                               role='CASHIER', status='ACTIVE',
+                               role='COURIER', status='ACTIVE',
                                password=hash_password('x'))
     return Courier.objects.create(user=user, code=code, phone=phone, branch_id='cloud')
 
@@ -75,6 +78,123 @@ def test_cash_payment_marks_order_paid_and_records():
     assert order.is_paid and order.payment_method == 'CASH' and order.paid_at
 
 
+def test_cash_payment_creates_external_evidence_without_touching_drawer():
+    c = _courier()
+    order, _ = _order(c)
+
+    payment, err = payments.create_payment(
+        c, order, 'CASH', external_id='cash-external-evidence',
+    )
+
+    assert err is None
+    evidence = ExternalOrderPayment.objects.get(
+        source=ExternalOrderPayment.Source.COURIER,
+        source_id=payment.external_id,
+    )
+    assert evidence.order_id == order.pk
+    assert evidence.branch_id == order.branch_id
+    assert evidence.method == Order.PaymentMethod.CASH
+    assert evidence.amount == Decimal('100000')
+    assert evidence.occurred_at == payment.paid_at
+    assert evidence.affects_drawer is False
+    assert not OrderPayment.objects.filter(order=order).exists()
+    assert CashRegister.objects.get(
+        branch_id=order.branch_id,
+    ).current_balance == Decimal('0')
+
+
+def test_exact_retry_repairs_missing_external_evidence_without_duplicate_collection():
+    c = _courier()
+    order, _ = _order(c)
+    paid_at = timezone.now() - timedelta(minutes=5)
+    payment = CourierPayment.objects.create(
+        order=order,
+        courier=c,
+        provider=CourierPayment.Provider.QR,
+        amount=100000,
+        status=CourierPayment.Status.PAID,
+        external_id='repair-missing-external-evidence',
+        branch_id=order.branch_id,
+        paid_at=paid_at,
+    )
+
+    replay, err = payments.create_payment(
+        c, order, 'QR', external_id='repair-missing-external-evidence',
+    )
+
+    assert err is None and replay.pk == payment.pk
+    assert CourierPayment.objects.filter(external_id=payment.external_id).count() == 1
+    assert ExternalOrderPayment.objects.filter(
+        source=ExternalOrderPayment.Source.COURIER,
+        source_id=payment.external_id,
+    ).count() == 1
+
+
+def test_synced_partial_external_evidence_blocks_overcollection():
+    c = _courier()
+    order, _ = _order(c, total='100000')
+    ExternalOrderPayment.objects.create(
+        order=order,
+        source=ExternalOrderPayment.Source.COURIER,
+        source_id='other-edition-partial',
+        method=Order.PaymentMethod.PAYME,
+        amount=Decimal('40000'),
+        occurred_at=timezone.now(),
+        branch_id=order.branch_id,
+    )
+
+    rejected, err = payments.create_payment(
+        c, order, 'CASH', amount=70000,
+        external_id='would-overcollect-cross-edition',
+    )
+
+    assert rejected is None
+    assert 'remaining order amount (60000' in err
+    assert not CourierPayment.objects.filter(
+        external_id='would-overcollect-cross-edition',
+    ).exists()
+
+    accepted, err = payments.create_payment(
+        c, order, 'CASH', amount=60000,
+        external_id='complete-cross-edition',
+    )
+    assert err is None and accepted is not None
+    order.refresh_from_db()
+    assert order.is_paid is True
+    assert order.payment_method == Order.PaymentMethod.MIXED
+
+
+def test_external_evidence_conflict_rolls_back_new_collection():
+    c = _courier()
+    first_order, _ = _order(c)
+    second_order, _ = _order(c)
+    occurred_at = timezone.now()
+    ExternalOrderPayment.objects.create(
+        order=first_order,
+        source=ExternalOrderPayment.Source.COURIER,
+        source_id='conflicting-external-evidence',
+        method=Order.PaymentMethod.PAYME,
+        amount=Decimal('100000'),
+        occurred_at=occurred_at,
+        branch_id=first_order.branch_id,
+    )
+
+    payment, err = payments.create_payment(
+        c, second_order, 'QR', external_id='conflicting-external-evidence',
+    )
+
+    assert payment is None
+    assert 'conflicts on order_id' in err
+    assert not CourierPayment.objects.filter(
+        external_id='conflicting-external-evidence',
+    ).exists()
+    second_order.refresh_from_db()
+    assert second_order.is_paid is False
+    assert ExternalOrderPayment.objects.filter(
+        source_id='conflicting-external-evidence',
+    ).count() == 1
+
+
 def test_refund_appends_ledger_and_preserves_paid_evidence():
     c = _courier()
     order, _ = _order(c)
@@ -94,10 +214,15 @@ def test_refund_appends_ledger_and_preserves_paid_evidence():
     assert event.amount == Decimal('100000')
     assert event.cash_amount == Decimal('100000')
     assert event.drawer_cash_amount == Decimal('0')
+    evidence = ExternalOrderPayment.objects.get(source_id=payment.external_id)
+    evidence_pk = evidence.pk
     # A replay returns legacy wire status but does not append/debit twice.
     again, err = payments.refund_payment(refunded)
     assert err is None and again.status == CourierPayment.Status.REFUNDED
     assert OrderRefund.objects.filter(order=order).count() == 1
+    assert ExternalOrderPayment.objects.get(
+        source_id=payment.external_id,
+    ).pk == evidence_pk
 
 
 def test_partial_then_completing_payment_sets_mixed():
@@ -270,7 +395,7 @@ def test_drawer_cash_excludes_all_courier_collection_even_when_till_tender_is_la
 def test_refund_keeps_order_paid_when_separate_till_payment_covers_it():
     c = _courier()
     order, _ = _order(c, total='100000')
-    till = OrderPayment.objects.create(
+    OrderPayment.objects.create(
         order=order, method=Order.PaymentMethod.HUMO, amount=100000,
         branch_id=order.branch_id,
     )
@@ -522,7 +647,7 @@ def test_terminal_webhook_states_ignore_late_conflicting_callbacks():
 # --------------------------------------------------------------------------- #
 # reconciliation + settlement ledger
 # --------------------------------------------------------------------------- #
-def test_delivered_locks_assignment_then_order_then_courier(monkeypatch):
+def test_delivered_locks_order_then_assignment_then_courier(monkeypatch):
     c = _courier()
     order, assignment = _order(c, step='ON_WAY')
     calls = []
@@ -557,7 +682,7 @@ def test_delivered_locks_assignment_then_order_then_courier(monkeypatch):
     delivered, err = services.advance_status(assignment, 'DELIVERED')
 
     assert err is None and delivered.step == 'DELIVERED'
-    assert calls == ['assignment', 'order', 'courier']
+    assert calls == ['order', 'assignment', 'courier']
     order.refresh_from_db()
     assert order.status == 'COMPLETED'
 
@@ -871,7 +996,7 @@ def test_logout_invalidates_session():
 # --------------------------------------------------------------------------- #
 def test_payment_create_endpoint_requires_ownership():
     mine = _courier('CR-1')
-    other = _courier('CR-2', phone='+99890000001')
+    other = _courier('CR-2', phone='+998900000001')
     order, _ = _order(other)                # assigned to the OTHER courier
     token = _token_for(mine)
     cl = Client()

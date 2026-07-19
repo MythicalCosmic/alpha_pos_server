@@ -15,7 +15,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
-from base.models import Session
+from base.models import Session, User
 from base.repositories.session import SessionRepository
 
 from couriers.models import Courier, CourierLoginClaim, CourierRefreshToken
@@ -26,6 +26,24 @@ REFRESH_TOKEN_PREFIX = 'cr1.'
 ACCESS_TOKEN_TTL = timedelta(days=7)
 REFRESH_TOKEN_TTL = timedelta(days=30)
 QR_CLAIM_TTL = timedelta(minutes=10)
+
+
+class CourierTokenAudienceError(ValueError):
+    """Raised when a non-courier identity attempts to mint courier tokens."""
+
+
+def _require_courier_identity(courier):
+    user = courier.user
+    if (
+        user.role != User.RoleChoices.COURIER
+        or user.is_deleted
+        or getattr(user, 'status', User.UserStatus.ACTIVE)
+        != User.UserStatus.ACTIVE
+    ):
+        raise CourierTokenAudienceError(
+            'Courier tokens require an active COURIER identity',
+        )
+    return user
 
 
 @dataclass(frozen=True)
@@ -68,6 +86,17 @@ def _ttl(setting_name, default):
     return timedelta(seconds=max(1, seconds))
 
 
+def _lock_courier(courier_or_id):
+    """Acquire the root lock for every courier credential mutation.
+
+    Keeping the order Courier -> refresh/claim rows -> Session rows avoids the
+    inverse lock ordering that used to make refresh, logout, and password reset
+    capable of deadlocking one another under load.
+    """
+    courier_id = getattr(courier_or_id, 'pk', courier_or_id)
+    return Courier.objects.select_for_update().get(pk=courier_id)
+
+
 def issue_login_claim(courier, *, issued_by=None):
     """Rotate a courier's outstanding QR claims and return the new raw claim."""
     now = timezone.now()
@@ -75,7 +104,8 @@ def issue_login_claim(courier, *, issued_by=None):
     raw_claim = _random_token(QR_CLAIM_PREFIX)
     with transaction.atomic():
         # Lock the courier row so simultaneous regenerate requests serialize.
-        locked = Courier.objects.select_for_update().get(pk=courier.pk)
+        locked = _lock_courier(courier)
+        _require_courier_identity(locked)
         CourierLoginClaim.objects.filter(
             courier=locked,
             consumed_at__isnull=True,
@@ -95,17 +125,31 @@ def consume_login_claim(raw_claim):
     if not raw_claim or not raw_claim.startswith(QR_CLAIM_PREFIX):
         return None
     now = timezone.now()
-    with transaction.atomic():
-        claim = (CourierLoginClaim.objects.select_for_update()
-                 .select_related('courier__user')
+    candidate = (CourierLoginClaim.objects
                  .filter(token_digest=_digest(raw_claim))
+                 .values('pk', 'courier_id')
                  .first())
-        if (claim is None or claim.consumed_at is not None
-                or claim.revoked_at is not None or claim.expires_at <= now):
+    if candidate is None:
+        return None
+    with transaction.atomic():
+        courier = _lock_courier(candidate['courier_id'])
+        try:
+            _require_courier_identity(courier)
+        except CourierTokenAudienceError:
             return None
-        claim.consumed_at = now
-        claim.save(update_fields=['consumed_at'])
-        return claim.courier
+        # Conditional UPDATE is the actual one-time gate.  It remains atomic
+        # on SQLite, where select_for_update() is deliberately a no-op, while
+        # the Courier lock serializes this with regeneration on PostgreSQL.
+        consumed = CourierLoginClaim.objects.filter(
+            pk=candidate['pk'],
+            courier_id=courier.pk,
+            consumed_at__isnull=True,
+            revoked_at__isnull=True,
+            expires_at__gt=now,
+        ).update(consumed_at=now)
+        if consumed != 1:
+            return None
+        return courier
 
 
 def _delete_access_session(session):
@@ -120,6 +164,7 @@ def _delete_access_session(session):
 
 def _issue_session(courier, *, ip_address, user_agent, family_id=None,
                    refresh_expires_at=None):
+    _require_courier_identity(courier)
     now = timezone.now()
     access_expires_at = now + _ttl(
         'COURIER_ACCESS_TOKEN_TTL_SECONDS', ACCESS_TOKEN_TTL,
@@ -158,6 +203,7 @@ def _issue_session(courier, *, ip_address, user_agent, family_id=None,
 
 def issue_session(courier, *, ip_address, user_agent):
     with transaction.atomic():
+        courier = _lock_courier(courier)
         issued, _row = _issue_session(
             courier, ip_address=ip_address, user_agent=user_agent,
         )
@@ -165,19 +211,25 @@ def issue_session(courier, *, ip_address, user_agent):
 
 
 def _revoke_family(family_id, *, at=None):
-    """Revoke a locked refresh family and immediately delete access sessions."""
+    """Revoke a refresh family after its Courier root row has been locked."""
     at = at or timezone.now()
     rows = list(
         CourierRefreshToken.objects.select_for_update()
         .filter(family_id=family_id)
-        .select_related('access_session')
+        .order_by('pk')
     )
-    for row in rows:
-        if row.revoked_at is None:
-            row.revoked_at = at
-            row.save(update_fields=['revoked_at'])
-        if row.access_session_id:
-            _delete_access_session(row.access_session)
+    session_ids = sorted({row.access_session_id for row in rows
+                          if row.access_session_id})
+    sessions = list(
+        Session.objects.select_for_update()
+        .filter(pk__in=session_ids)
+        .order_by('pk')
+    )
+    CourierRefreshToken.objects.filter(
+        pk__in=[row.pk for row in rows], revoked_at__isnull=True,
+    ).update(revoked_at=at)
+    for session in sessions:
+        _delete_access_session(session)
 
 
 def rotate_refresh_token(raw_refresh, *, ip_address, user_agent):
@@ -185,10 +237,16 @@ def rotate_refresh_token(raw_refresh, *, ip_address, user_agent):
     if not raw_refresh or not raw_refresh.startswith(REFRESH_TOKEN_PREFIX):
         return None
     now = timezone.now()
+    candidate = (CourierRefreshToken.objects
+                 .filter(token_digest=_digest(raw_refresh))
+                 .values('pk', 'courier_id')
+                 .first())
+    if candidate is None:
+        return None
     with transaction.atomic():
+        courier = _lock_courier(candidate['courier_id'])
         row = (CourierRefreshToken.objects.select_for_update()
-               .select_related('courier__user', 'access_session')
-               .filter(token_digest=_digest(raw_refresh))
+               .filter(pk=candidate['pk'], courier_id=courier.pk)
                .first())
         if row is None:
             return None
@@ -198,16 +256,33 @@ def rotate_refresh_token(raw_refresh, *, ip_address, user_agent):
             return None
         if row.revoked_at is not None or row.expires_at <= now:
             return None
-        courier = row.courier
         user = courier.user
-        if user.is_deleted or getattr(user, 'status', 'ACTIVE') != 'ACTIVE':
+        if (
+            user.role != User.RoleChoices.COURIER
+            or user.is_deleted
+            or getattr(user, 'status', User.UserStatus.ACTIVE)
+            != User.UserStatus.ACTIVE
+        ):
             _revoke_family(row.family_id, at=now)
             return None
 
-        row.used_at = now
-        row.save(update_fields=['used_at'])
+        # This compare-and-swap is necessary even though PostgreSQL has the
+        # Courier/row locks: local installations and tests can use SQLite.
+        claimed = CourierRefreshToken.objects.filter(
+            pk=row.pk,
+            used_at__isnull=True,
+            revoked_at__isnull=True,
+            expires_at__gt=now,
+        ).update(used_at=now)
+        if claimed != 1:
+            latest = CourierRefreshToken.objects.filter(pk=row.pk).first()
+            if latest is not None and latest.used_at is not None:
+                _revoke_family(latest.family_id, at=now)
+            return None
         if row.access_session_id:
-            _delete_access_session(row.access_session)
+            old_session = (Session.objects.select_for_update()
+                           .filter(pk=row.access_session_id).first())
+            _delete_access_session(old_session)
         issued, replacement = _issue_session(
             courier,
             ip_address=ip_address,
@@ -228,9 +303,16 @@ def revoke_refresh_token(raw_refresh):
     """Idempotently revoke the family identified by a refresh token."""
     if not raw_refresh or not raw_refresh.startswith(REFRESH_TOKEN_PREFIX):
         return
+    candidate = (CourierRefreshToken.objects
+                 .filter(token_digest=_digest(raw_refresh))
+                 .values('pk', 'courier_id')
+                 .first())
+    if candidate is None:
+        return
     with transaction.atomic():
+        courier = _lock_courier(candidate['courier_id'])
         row = (CourierRefreshToken.objects.select_for_update()
-               .filter(token_digest=_digest(raw_refresh)).first())
+               .filter(pk=candidate['pk'], courier_id=courier.pk).first())
         if row is not None:
             _revoke_family(row.family_id)
 
@@ -240,29 +322,43 @@ def revoke_access_token(raw_access):
     token_hash = SessionRepository.hash_token(raw_access)
     if not token_hash:
         return
+    candidate = (Session.objects.filter(payload=token_hash)
+                 .values('pk', 'user_id_id').first())
+    if candidate is None:
+        SessionRepository.invalidate_cache(raw_access)
+        return
+    courier_id = (Courier.objects.filter(user_id=candidate['user_id_id'])
+                  .values_list('pk', flat=True).first())
     with transaction.atomic():
-        session = Session.objects.select_for_update().filter(payload=token_hash).first()
-        if session is None:
-            SessionRepository.invalidate_cache(raw_access)
-            return
+        if courier_id is not None:
+            _lock_courier(courier_id)
         row = (CourierRefreshToken.objects.select_for_update()
-               .filter(access_session=session).first())
+               .filter(access_session_id=candidate['pk']).first())
         if row is not None:
             _revoke_family(row.family_id)
         else:
+            session = (Session.objects.select_for_update()
+                       .filter(pk=candidate['pk'], payload=token_hash).first())
+            if session is None:
+                SessionRepository.invalidate_cache(raw_access)
+                return
             _delete_access_session(session)
 
 
 def revoke_all_for_courier(courier):
     """Revoke all mobile sessions, used when a manager resets a password."""
     with transaction.atomic():
-        family_ids = list(
+        courier = _lock_courier(courier)
+        family_ids = sorted({
+            family_id for family_id in
             CourierRefreshToken.objects.filter(courier=courier)
-            .values_list('family_id', flat=True).distinct()
-        )
+            .values_list('family_id', flat=True)
+        }, key=str)
         for family_id in family_ids:
             _revoke_family(family_id)
         # Also cover legacy sessions issued before refresh records existed.
-        legacy = Session.objects.filter(user_id=courier.user)
+        legacy = (Session.objects.select_for_update()
+                  .filter(user_id=courier.user)
+                  .order_by('pk'))
         for session in list(legacy):
             _delete_access_session(session)

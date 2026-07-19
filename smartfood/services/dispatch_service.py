@@ -13,12 +13,11 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
 from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
 from base.repositories import OrderRepository
-from smartfood.models import BotOrder, Customer
+from smartfood.models import BotOrder
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +33,32 @@ def _auto_assign_courier_safe(bot_order_id, pos_order_id):
         from couriers.models import DeliveryAssignment
         from couriers.services import assign, pick_available_courier
         from base.models import Order
-        if DeliveryAssignment.objects.filter(order_id=pos_order_id).exists():
-            return                                  # already assigned (e.g. manually)
-        courier = pick_available_courier()
-        if not courier:
-            logger.info('auto courier-assign: no available courier (order=%s)', pos_order_id)
-            return
-        order = Order.objects.filter(id=pos_order_id).first()
-        bot_order = BotOrder.objects.select_related('address').filter(id=bot_order_id).first()
-        if not order or not bot_order:
-            return
-        addr = bot_order.address
-        assign(order, courier, fee=bot_order.delivery_fee,
-               addr_text=bot_order.address_text,
-               addr_lat=(addr.lat if addr else None),
-               addr_lng=(addr.lng if addr else None))
+        # Keep the target Order and selected Courier locks until assignment is
+        # committed. A nested pick_available_courier() savepoint does not release
+        # its row lock before this outer transaction completes.
+        with transaction.atomic():
+            order = (Order.objects.select_for_update()
+                     .filter(id=pos_order_id, is_deleted=False).first())
+            if not order:
+                return
+            if DeliveryAssignment.objects.filter(order_id=pos_order_id).exists():
+                return                              # already assigned manually
+            courier = pick_available_courier(branch_id=order.branch_id)
+            if not courier:
+                logger.info(
+                    'auto courier-assign: no available courier (order=%s)',
+                    pos_order_id,
+                )
+                return
+            bot_order = (BotOrder.objects.select_related('address')
+                         .filter(id=bot_order_id).first())
+            if not bot_order:
+                return
+            addr = bot_order.address
+            assign(order, courier, fee=bot_order.delivery_fee,
+                   addr_text=bot_order.address_text,
+                   addr_lat=(addr.lat if addr else None),
+                   addr_lng=(addr.lng if addr else None))
     except Exception:
         logger.exception('auto courier-assign failed (order=%s)', pos_order_id)
 
