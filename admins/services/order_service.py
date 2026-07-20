@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta, datetime
+from uuid import uuid4
 from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository
 from base.services.inkassa_service import InkassaService
 from base.helpers.response import ServiceResponse
@@ -1080,14 +1081,16 @@ class AdminOrderService:
         paid_event_at = timezone.now()
 
         distinct = {m for m, _ in lines}
+        payment_action_id = uuid4()
         order.is_paid = True
+        order.payment_action_id = payment_action_id
         order.payment_method = (next(iter(distinct)) if len(distinct) == 1
                                 else Order.PaymentMethod.MIXED)
         order.paid_at = paid_event_at
         order.accounting_recorded_at = paid_event_at
         order.cashier_id = settlement_shift.user_id
         payment_update_fields = [
-            'is_paid', 'payment_method', 'paid_at',
+            'is_paid', 'payment_action_id', 'payment_method', 'paid_at',
             'accounting_recorded_at', 'cashier',
         ]
         if branch_assigned:
@@ -1096,11 +1099,13 @@ class AdminOrderService:
 
         # The tender lines: what makes this sale visible to per-tender shift settlement
         # (cashbox.drawer) and to base.services.tender.
-        for method, amount in lines:
+        for line_index, (method, amount) in enumerate(lines):
             OrderPayment.objects.create(
                 order=order,
                 method=method,
                 amount=amount,
+                payment_action_id=payment_action_id,
+                line_index=line_index,
                 branch_id=order.branch_id,
             )
 

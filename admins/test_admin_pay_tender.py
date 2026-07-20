@@ -60,6 +60,10 @@ def test_split_payments_write_lines_and_roll_up_to_mixed():
     o.refresh_from_db()
     assert o.payment_method == 'MIXED'
     assert _lines(o) == [('HUMO', D('35000')), ('UZCARD', D('18000'))]
+    rows = list(o.payments.filter(is_deleted=False).order_by('line_index'))
+    assert o.payment_action_id is not None
+    assert {row.payment_action_id for row in rows} == {o.payment_action_id}
+    assert [row.line_index for row in rows] == [0, 1]
 
 
 def test_bare_mixed_is_rejected():
