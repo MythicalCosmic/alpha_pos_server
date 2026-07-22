@@ -27,6 +27,7 @@ docker-compose.edge.yml
 .pytest_cache/
 .coverage
 htmlcov/
+/reports/
 
 # OS / IDE
 .DS_Store
