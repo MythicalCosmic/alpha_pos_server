@@ -8,9 +8,11 @@ import logging
 from decimal import Decimal
 
 from django.db.models import (
-    Count, ExpressionWrapper, F, Q, Sum,
+    Count, Q, Sum,
 )
 from django.utils import timezone
+
+from admins.services.shift_window import effective_shift_end
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ def shift_performance(shift):
     from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
-    end = shift.end_time or timezone.now()
+    end = effective_shift_end(shift)
     duration = end - start
     duration_minutes = max(int(duration.total_seconds() / 60), 0)
 
@@ -385,8 +387,9 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None, *, window=
     # up to "now"). Aggregated in Python so an open shift's running duration is
     # handled the same way shift_performance does it.
     shift_map = {}
+    now = timezone.now()
     for s in Shift.objects.filter(is_deleted=False, start_time__gte=lo, start_time__lt=hi):
-        end = s.end_time or timezone.now()
+        end = effective_shift_end(s, now=now)
         secs = max((end - s.start_time).total_seconds(), 0)
         agg = shift_map.setdefault(s.user_id, {'shifts': 0, 'seconds': 0.0})
         agg['shifts'] += 1

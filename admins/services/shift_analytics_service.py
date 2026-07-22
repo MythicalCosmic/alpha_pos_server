@@ -20,6 +20,8 @@ from django.db.models import Avg, Count, DecimalField, DurationField, Expression
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from admins.services.shift_window import effective_shift_end
+
 logger = logging.getLogger(__name__)
 
 CENTS = Decimal('0.01')
@@ -151,7 +153,7 @@ def _cashier_shift_row(shift, att_map):
     from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
-    end = shift.end_time or timezone.now()
+    end = effective_shift_end(shift)
     duration_min = max(int((end - start).total_seconds() / 60), 0)
     hours = _hours(start, end)
 
@@ -319,10 +321,10 @@ def _cashier_shift_row(shift, att_map):
 
 
 def _kitchen_shift_row(shift, att_map, target_prep_seconds):
-    from base.models import Order, OrderItem, OrderRefund
+    from base.models import Order, OrderItem
 
     start = shift.start_time
-    end = shift.end_time or timezone.now()
+    end = effective_shift_end(shift)
     duration_min = max(int((end - start).total_seconds() / 60), 0)
     hours = _hours(start, end)
 
@@ -403,7 +405,7 @@ def _hourly_daily(shifts, *, cashier_owned=True):
     raw_windows = defaultdict(list)
     shift_windows = {}
     for shift in shifts:
-        end = shift.end_time or now
+        end = effective_shift_end(shift, now=now)
         if end <= shift.start_time:
             continue
         owner = (
@@ -759,7 +761,7 @@ def shift_handover_report(shift):
     from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
-    end = shift.end_time or timezone.now()
+    end = effective_shift_end(shift)
     att = _attendance_map(
         {shift.user_id},
         timezone.localtime(start).date(),

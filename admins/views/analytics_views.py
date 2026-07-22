@@ -17,6 +17,7 @@ from admins.services.product_analytics_service import (
 from admins.services.shift_analytics_service import (
     cashier_shift_analytics, kitchen_shift_analytics, shift_handover_report,
 )
+from admins.services.shift_window import effective_shift_end
 from admins.services.workbook_export_service import build_shift_report_workbook
 from admins.views.export_response import xlsx_attachment
 from base.models import Shift
@@ -55,7 +56,7 @@ def _shift_export_receipt_count(shift):
     """Cheap guard before materializing an anomalously large XLSX report."""
     from base.models import Order
 
-    end = shift.end_time or timezone.now()
+    end = effective_shift_end(shift)
     return Order.objects.filter(
         is_deleted=False,
         cashier_id=shift.user_id,

@@ -220,6 +220,61 @@ def test_shift_analytics_are_branch_scoped_and_handoff_is_half_open():
     assert second_report['receipts'][0]['order_id'] == own.id
 
 
+def test_non_active_shift_without_end_time_cannot_absorb_later_orders():
+    """Fail closed when a legacy/corrupt closed shift lost its end timestamp.
+
+    Only an ACTIVE shift is allowed to run to ``now``.  Treating every null
+    ``end_time`` as live makes an ABANDONED/ENDED shift claim all later sales
+    by the same cashier, corrupting shift revenue, handover exports and worked
+    hours indefinitely.
+    """
+    from base.models import Shift
+    from admins.services.analytics_service import shift_performance, staff_performance
+    from admins.services.shift_analytics_service import (
+        _cashier_shift_row, _hourly_daily, _kitchen_shift_row,
+        shift_handover_report,
+    )
+    from admins.views.analytics_views import _shift_export_receipt_count
+
+    day = date(2026, 7, 10)
+    start = _at(day, 10)
+    cashier = _cashier()
+    abandoned = Shift.objects.create(
+        user=cashier,
+        branch_id='branch-a',
+        status=Shift.Status.ABANDONED,
+        start_time=start,
+        end_time=None,
+    )
+    _paid_order(
+        cashier,
+        start + timedelta(hours=1),
+        branch='branch-a',
+        total='640000',
+    )
+
+    perf = shift_performance(abandoned)
+    assert perf['duration_minutes'] == 0
+    assert perf['orders_total'] == 0
+    assert perf['revenue'] == '0'
+
+    row = _cashier_shift_row(abandoned, {})
+    assert row['duration_minutes'] == 0
+    assert row['orders']['total'] == 0
+    assert row['money']['revenue'] == '0.00'
+    assert _kitchen_shift_row(abandoned, {}, 15 * 60)['orders_in_window'] == 0
+    assert _hourly_daily([abandoned]) == {
+        'by_hour': [], 'by_date': [], 'peak_hour': None,
+    }
+    assert shift_handover_report(abandoned)['receipt_count'] == 0
+    assert _shift_export_receipt_count(abandoned) == 0
+
+    staff = staff_performance(day, day)['staff']
+    cashier_row = next(item for item in staff if item['user_id'] == cashier.id)
+    assert cashier_row['shifts_worked'] == 1
+    assert cashier_row['hours_worked'] == 0
+
+
 def test_shift_distribution_query_shape_is_constant_for_many_shifts():
     from base.models import Shift
     from admins.services.shift_analytics_service import _hourly_daily
