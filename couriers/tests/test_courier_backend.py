@@ -651,6 +651,7 @@ def test_delivered_locks_order_then_assignment_then_courier(monkeypatch):
     c = _courier()
     order, assignment = _order(c, step='ON_WAY')
     calls = []
+    assignment_lock_options = []
 
     real_assignment_lock = DeliveryAssignment.objects.select_for_update
     real_order_lock = Order.objects.select_for_update
@@ -658,6 +659,7 @@ def test_delivered_locks_order_then_assignment_then_courier(monkeypatch):
 
     def tracked_assignment_lock(*args, **kwargs):
         calls.append('assignment')
+        assignment_lock_options.append(kwargs)
         return real_assignment_lock(*args, **kwargs)
 
     def tracked_order_lock(*args, **kwargs):
@@ -683,8 +685,31 @@ def test_delivered_locks_order_then_assignment_then_courier(monkeypatch):
 
     assert err is None and delivered.step == 'DELIVERED'
     assert calls == ['order', 'assignment', 'courier']
+    assert assignment_lock_options == [{'of': ('self',)}]
     order.refresh_from_db()
     assert order.status == 'COMPLETED'
+
+
+def test_mark_ready_scopes_lock_away_from_nullable_courier_join(monkeypatch):
+    c = _courier()
+    order, assignment = _order(c, step='ASSIGNED')
+    lock_options = []
+    real_assignment_lock = DeliveryAssignment.objects.select_for_update
+
+    def tracked_assignment_lock(*args, **kwargs):
+        lock_options.append(kwargs)
+        return real_assignment_lock(*args, **kwargs)
+
+    monkeypatch.setattr(
+        DeliveryAssignment.objects, 'select_for_update',
+        tracked_assignment_lock,
+    )
+
+    services.mark_ready(order)
+
+    assignment.refresh_from_db()
+    assert assignment.step == DeliveryAssignment.Step.READY
+    assert lock_options == [{'of': ('self',)}]
 
 
 def test_reconciliation_counts_fees_and_cash():

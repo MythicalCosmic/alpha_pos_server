@@ -67,6 +67,18 @@ def lock_courier_accounting(courier_or_id):
     return Courier.objects.select_for_update().get(pk=courier_id)
 
 
+def _locked_assignments():
+    """Return assignments with a row lock scoped to the assignment table.
+
+    ``DeliveryAssignment.courier`` is nullable, so selecting the courier uses a
+    LEFT OUTER JOIN.  PostgreSQL rejects an unscoped ``FOR UPDATE`` on that
+    query because the nullable side of an outer join cannot be locked.  Every
+    assignment lifecycle mutation goes through this helper so related rows can
+    still be preloaded without expanding the lock target.
+    """
+    return DeliveryAssignment.objects.select_for_update(of=('self',))
+
+
 def _today_start():
     now = timezone.localtime()
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -157,7 +169,7 @@ def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=No
     if order is None:
         raise AssignmentConflict('Order no longer exists')
     existing = (
-        DeliveryAssignment.objects.select_for_update()
+        _locked_assignments()
         .select_related('courier')
         .filter(order=order)
         .first()
@@ -300,7 +312,7 @@ def accept(assignment):
     expected_courier_id = assignment.courier_id
     order = Order.objects.select_for_update().get(pk=assignment.order_id)
     assignment = (
-        DeliveryAssignment.objects.select_for_update()
+        _locked_assignments()
         .select_related('courier')
         .filter(pk=assignment.pk)
         .first()
@@ -332,7 +344,7 @@ def decline(assignment, reason=''):
     expected_courier_id = assignment.courier_id
     order = Order.objects.select_for_update().get(pk=assignment.order_id)
     assignment = (
-        DeliveryAssignment.objects.select_for_update()
+        _locked_assignments()
         .select_related('courier')
         .filter(pk=assignment.pk)
         .first()
@@ -371,7 +383,7 @@ def mark_ready(order):
     if order is None:
         return
     assignment = (
-        DeliveryAssignment.objects.select_for_update()
+        _locked_assignments()
         .select_related('courier')
         .filter(order=order)
         .first()
@@ -416,7 +428,7 @@ def advance_status(assignment, target):
     from base.models import Order
     order = Order.objects.select_for_update().get(pk=order_id)
     assignment = (
-        DeliveryAssignment.objects.select_for_update()
+        _locked_assignments()
         .select_related('order', 'courier')
         .get(pk=assignment_pk)
     )
