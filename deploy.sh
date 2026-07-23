@@ -20,7 +20,15 @@ CONTROL_URL="${LICENSE_CONTROL_CENTER_URL:-https://control.${IP}.nip.io}"
 echo ">> Alpha POS server  ->  https://${HOST}"
 
 # --- 1. latest code + core submodule --------------------------------------
+DEPLOY_HEAD_BEFORE="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
 git -C "$DIR" pull --ff-only 2>/dev/null || echo "   (not a fast-forwardable checkout — skipping pull)"
+DEPLOY_HEAD_AFTER="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || true)"
+if [ "${ALPHAPOS_DEPLOY_REEXEC:-0}" != "1" ] \
+    && [ -n "$DEPLOY_HEAD_BEFORE" ] \
+    && [ "$DEPLOY_HEAD_BEFORE" != "$DEPLOY_HEAD_AFTER" ]; then
+    echo ">> checkout advanced; restarting with the updated deploy script"
+    exec env ALPHAPOS_DEPLOY_REEXEC=1 bash "$DIR/deploy.sh" "$IP"
+fi
 git -C "$DIR" submodule update --init --recursive
 [ -f "$DIR/alpha_pos_core/pyproject.toml" ] || { echo "!! core submodule missing — run: git submodule update --init"; exit 1; }
 

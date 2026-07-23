@@ -45,3 +45,13 @@ def test_env_heredoc_cannot_execute_comment_substitutions():
     )[0]
 
     assert '`' not in env_block
+
+
+def test_root_deploy_restarts_once_after_its_checkout_advances():
+    """Never finish a release with the stale deploy script loaded by Bash."""
+    text = (ROOT / 'deploy.sh').read_text(encoding='utf-8')
+
+    assert 'DEPLOY_HEAD_BEFORE=' in text
+    assert 'DEPLOY_HEAD_AFTER=' in text
+    assert 'ALPHAPOS_DEPLOY_REEXEC:-0' in text
+    assert 'exec env ALPHAPOS_DEPLOY_REEXEC=1 bash "$DIR/deploy.sh" "$IP"' in text
