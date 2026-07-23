@@ -112,7 +112,8 @@ def test_products_overview_excludes_unpaid_and_soft_deleted_lines():
     _item(removed, product, 3, 10000)
     removed.items.first().delete()
 
-    day = timezone.localdate()
+    from base.services.business_day import business_date
+    day = business_date()
     data = products_overview(day, day)
     assert data['total_units'] == 2, data
     assert data['total_revenue'] == '20000', data
@@ -132,7 +133,8 @@ def test_products_overview_allocates_order_discount():
     order.save(update_fields=['subtotal', 'discount_amount'])
     _item(order, product, 1, 10000)
 
-    day = timezone.localdate()
+    from base.services.business_day import business_date
+    day = business_date()
     data = products_overview(day, day)
     assert data['total_revenue'] == '8000', data
     assert data['top_products'][0]['revenue'] == '8000', data

@@ -159,7 +159,11 @@ class TestMenuEngineering:
         _add_item_at_price(removed, p, 3)
         removed.items.first().delete()
 
-        today = timezone.localdate()
+        # Analytics windows use the configured business-day cutover. Between
+        # midnight and that cutover, the calendar date is already tomorrow
+        # while a just-paid order still belongs to the prior business day.
+        from base.services.business_day import business_date
+        today = business_date()
         data = menu_engineering(today, today)
         burger = next(i for i in data['items'] if i['product_id'] == p.id)
         assert burger['qty_sold'] == 2, burger

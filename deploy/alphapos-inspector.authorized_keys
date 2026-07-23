@@ -1,0 +1,1 @@
+restrict,port-forwarding,permitopen="127.0.0.1:15433",permitopen="127.0.0.1:18000" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFv6WBBGyPXZAMzgylRZXe7e2/lQt0aEqaq2yOVEpNVS alphapos-inspector-home-20260723
