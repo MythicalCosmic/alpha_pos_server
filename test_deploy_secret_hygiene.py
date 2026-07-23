@@ -34,3 +34,14 @@ def test_unconfigured_bot_is_parked_without_a_restart_loop():
 
     assert '$${CUSTOMER_BOT_TOKEN:-}' in compose
     assert 'exec tail -f /dev/null' in compose
+
+
+def test_env_heredoc_cannot_execute_comment_substitutions():
+    """An unquoted heredoc expands backticks even when they look commented."""
+    text = (ROOT / 'deploy.sh').read_text(encoding='utf-8')
+    env_block = text.split('cat > "$DIR/.env" <<EOF', 1)[1].split(
+        '\nEOF',
+        1,
+    )[0]
+
+    assert '`' not in env_block
