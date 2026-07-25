@@ -229,10 +229,24 @@ class AdminInkassaService:
         available = (register.current_balance or Decimal('0')) - pending
         return ServiceResponse.success(data={
             'branch_id': register.branch_id,
+            # Backwards-compatible keys used by existing Inkassa screens.
             'balance': str(available),
             'reported_balance': str(register.current_balance),
             'pending_cash_commands': str(pending),
             'last_updated': register.last_updated.isoformat(),
+            # Explicit semantics for every new UI: CashRegister is a durable
+            # branch-wide uncollected-cash cursor. It may span many shifts/days
+            # and must never be rendered as one cashier's current drawer.
+            'available_uncollected_cash': str(available),
+            'reported_uncollected_cash_cursor': str(
+                register.current_balance
+            ),
+            'balance_scope': {
+                'kind': 'BRANCH_UNCOLLECTED_CASH_CURSOR',
+                'branch_id': register.branch_id,
+                'is_shift_drawer': False,
+                'label': 'Uncollected branch cash (not a shift drawer)',
+            },
         })
 
     @staticmethod
@@ -554,10 +568,10 @@ class AdminInkassaService:
         balance_before = (
             register.current_balance or Decimal('0')
         ) - pending_before
-        # The register drawer holds ONLY physical cash. Electronic tenders do
-        # not enter the drawer (manager reconciliation recognizes every tender
-        # in SAFE), so the register is bounded by — and only reduced by — the
-        # CASH portion.
+        # The branch cursor tracks ONLY uncollected physical cash. Electronic
+        # tenders never enter it (manager reconciliation recognizes every
+        # tender in SAFE), so collection is bounded by, and only reduces, the
+        # CASH portion. This cursor is branch-wide, not a shift drawer.
         # (Bug fix: previously the whole cash+card total was checked against
         # and subtracted from the register, depleting cash that was never
         # there and rejecting valid collections.)
@@ -565,8 +579,13 @@ class AdminInkassaService:
 
         if cash_amount > balance_before:
             return ServiceResponse.validation_error(
-                errors={'cash': f'Cash {cash_amount} exceeds register balance {balance_before}'},
-                message='Insufficient register balance',
+                errors={
+                    'cash': (
+                        f'Cash {cash_amount} exceeds available uncollected '
+                        f'branch cash {balance_before}'
+                    ),
+                },
+                message='Insufficient uncollected branch cash',
             )
 
         # Enforce the lifecycle order. An eligible shift whose reconciliation

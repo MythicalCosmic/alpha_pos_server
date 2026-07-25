@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, time
 
 import django
 import pytest
@@ -19,6 +20,27 @@ os.environ.setdefault(
 )
 
 django.setup()
+
+
+@pytest.fixture
+def open_business_clock(monkeypatch):
+    """Freeze wall-clock-dependent dashboard tests inside an operating window.
+
+    The canonical restaurant day deliberately excludes 03:00-07:00 in
+    Asia/Tashkent. Tests that create an event at ``timezone.now()`` and then ask
+    for "today" must not change meaning depending on when CI happens to run.
+    Opt-in tests receive a stable local noon while explicit boundary tests keep
+    the real clock and their own timestamps.
+    """
+    from django.utils import timezone
+
+    local_now = timezone.localtime(timezone.now())
+    frozen = timezone.make_aware(
+        datetime.combine(local_now.date(), time(12, 0)),
+        timezone.get_current_timezone(),
+    )
+    monkeypatch.setattr(timezone, 'now', lambda: frozen)
+    return frozen
 
 
 @pytest.fixture(autouse=True)

@@ -313,6 +313,10 @@ def build_dashboard_workbook(data, *, filters=None, generated_at=None):
 def build_shift_report_workbook(report, *, generated_at=None):
     """Render one canonical ``shift_handover_report`` result to XLSX."""
     shift = report.get('shift') or {}
+    distribution = report.get('distribution') or {}
+    unbucketed_refunds = (
+        distribution.get('unbucketed_refund_adjustment') or {}
+    )
     shift_id = shift.get('shift_id') or ''
     cashier = report.get('cashier') or {}
     subtitle = f'Shift {shift_id} / {cashier.get("name") or "Unknown cashier"}'
@@ -329,8 +333,21 @@ def build_shift_report_workbook(report, *, generated_at=None):
         ('generated_at', _generated_label(generated_at)),
         ('cashier.id', cashier.get('id')),
         ('cashier.name', cashier.get('name')),
+        # Stable alias for spreadsheet automations built against older exports.
         ('receipt_count', report.get('receipt_count', 0)),
+        ('orders_taken_count', report.get('receipt_count', 0)),
+        (
+            'orders_paid_in_shift_count',
+            report.get('settled_receipt_count', 0),
+        ),
         ('peak_hour', report.get('peak_hour')),
+        ('distribution.revenue_total', distribution.get('revenue_total')),
+        *(
+            _flatten(
+                unbucketed_refunds,
+                'distribution.unbucketed_refund_adjustment',
+            )
+        ),
         *_flatten(shift, 'shift'),
         *_flatten(report.get('best_seller') or {}, 'best_seller'),
     ]
@@ -357,7 +374,7 @@ def build_shift_report_workbook(report, *, generated_at=None):
         ),
         (
             'Receipts',
-            'Receipts',
+            'Orders Taken During Shift (created_at)',
             report.get('receipts') or [],
             (
                 'order_id', 'display_id', 'status', 'order_type', 'is_paid',
@@ -368,6 +385,27 @@ def build_shift_report_workbook(report, *, generated_at=None):
             {
                 'order_id', 'display_id', 'total_amount', 'discount_amount',
                 'discount_percent', 'line_items', 'units',
+            },
+        ),
+        (
+            'Settled Receipts',
+            'Orders Paid During Shift (paid_at; drives money totals)',
+            report.get('settled_receipts') or [],
+            (
+                'order_id', 'display_id', 'status', 'order_type',
+                'payment_action_id', 'payment_method', 'total_amount',
+                'cash_amount', 'card_amount', 'payme_amount',
+                'unknown_amount', 'drawer_cash_amount', 'uzcard_amount',
+                'humo_amount', 'generic_card_amount',
+                'has_concrete_payment_evidence',
+                'tender_attribution_complete', 'created_in_this_shift',
+                'created_at', 'paid_at',
+            ),
+            {
+                'order_id', 'display_id', 'total_amount', 'cash_amount',
+                'card_amount', 'payme_amount', 'unknown_amount',
+                'drawer_cash_amount', 'uzcard_amount', 'humo_amount',
+                'generic_card_amount',
             },
         ),
         (
@@ -406,7 +444,6 @@ def build_shift_report_workbook(report, *, generated_at=None):
             numeric_columns=numeric_columns,
         )
 
-    distribution = report.get('distribution') or {}
     for key, name, title, preferred in (
         ('by_hour', 'Hourly', 'Hourly Distribution', ('hour', 'orders', 'revenue')),
         ('by_date', 'Daily', 'Daily Distribution', ('date', 'orders', 'revenue')),

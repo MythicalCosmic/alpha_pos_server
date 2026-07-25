@@ -247,22 +247,39 @@ def test_shift_report_export_matches_json_and_preserves_ownership(
     assert f'alpha-pos-shift-{shift.id}-report-2026-07-15.xlsx' in (
         response['Content-Disposition']
     )
-    assert response['X-Export-Count'] == '1'
+    assert response['X-Export-Count'] == '2'
     assert response['Cache-Control'] == 'private, no-store'
 
     workbook = load_workbook(BytesIO(response.content), data_only=False)
     assert workbook.sheetnames == [
-        'Summary', 'Settlement', 'Cash Expenses', 'Receipts', 'Refunds',
-        'Products', 'Hourly', 'Daily',
+        'Summary', 'Settlement', 'Cash Expenses', 'Receipts',
+        'Settled Receipts', 'Refunds', 'Products', 'Hourly', 'Daily',
     ]
     summary = _rows_by_first_column(workbook['Summary'])
+    assert summary['receipt_count'] == 1
+    assert summary['orders_taken_count'] == 1
+    assert summary['orders_paid_in_shift_count'] == 1
     assert summary['shift.money.revenue'] == int(
         Decimal(report['shift']['money']['revenue'])
     )
     assert summary['shift.money.cash'] == 150000
+    assert summary['distribution.revenue_total'] == 150000
+    assert (
+        summary['distribution.unbucketed_refund_adjustment.count'] == 0
+    )
+    assert (
+        summary['distribution.unbucketed_refund_adjustment.revenue'] == 0
+    )
+    assert (
+        summary['distribution.unbucketed_refund_adjustment.reason']
+        == 'SHIFT_OWNED_REFUND_OUTSIDE_EVENT_WINDOW'
+    )
     assert summary['best_seller.name'] == "'@Shift Formula"
     assert workbook['Receipts']['A5'].value == order.id
     assert workbook['Receipts']['G5'].value == 150000
+    assert workbook['Settled Receipts']['A5'].value == order.id
+    assert workbook['Settled Receipts']['G5'].value == 150000
+    assert workbook['Settled Receipts']['H5'].value == 150000
     product_name = workbook['Products']['B5']
     assert product_name.data_type == 's'
     assert product_name.value == "'@Shift Formula"
@@ -284,9 +301,33 @@ def test_shift_report_export_matches_json_and_preserves_ownership(
         **_auth(admin_user),
     ).status_code == 404
     assert client.post(path, **_auth(admin_user)).status_code == 405
+
+    from admins.views import analytics_views
+    real_count = analytics_views._shift_export_receipt_count
+    real_report = analytics_views.shift_handover_report
+    observed_cutoffs = {}
+
+    def recording_count(current_shift, *, now=None):
+        observed_cutoffs['guard'] = now
+        return real_count(current_shift, now=now)
+
+    def recording_report(current_shift, *, now=None):
+        observed_cutoffs['report'] = now
+        return real_report(current_shift, now=now)
+
+    monkeypatch.setattr(
+        analytics_views, '_shift_export_receipt_count', recording_count,
+    )
+    monkeypatch.setattr(
+        analytics_views, 'shift_handover_report', recording_report,
+    )
+    coherent = client.get(path, **_auth(admin_user))
+    assert coherent.status_code == 200
+    assert observed_cutoffs['guard'] is observed_cutoffs['report']
+
     monkeypatch.setattr(
         'admins.views.analytics_views._shift_export_receipt_count',
-        lambda _shift: 5001,
+        lambda _shift, **_kwargs: 5001,
     )
     too_large = client.get(path, **_auth(admin_user))
     assert too_large.status_code == 413

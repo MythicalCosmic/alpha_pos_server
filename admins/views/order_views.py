@@ -222,7 +222,12 @@ def update_status(request, order_id):
 @require_POST
 @admin_required
 @permission_required('order.update')
-@idempotent('orders.pay')
+@idempotent(
+    'orders.pay',
+    fallback_key_from_request=True,
+    expose_action_id=True,
+    recover_inflight_after_seconds=5,
+)
 def pay_order(request, order_id):
     """POST /orders/<id>/pay  {payment_method} | {payments:[{method,amount},...]}
 
@@ -230,16 +235,24 @@ def pay_order(request, order_id):
     recorded — MIXED is never a valid bare `payment_method`). Both write the
     OrderPayment tender lines, so the sale is visible to shift settlement.
     """
-    payment_method, payments = 'CASH', None
-    if request.body:
-        from base.helpers.request import parse_json_body
-        body, _ = parse_json_body(request)
-        if body:
-            payment_method = body.get('payment_method', 'CASH')
-            payments = body.get('payments')
+    body, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+
+    payment_kwargs = {}
+    if 'payment_method' in body:
+        payment_kwargs['payment_method'] = body['payment_method']
+    if 'payments' in body:
+        payment_kwargs['payments'] = body['payments']
     result, status_code = AdminOrderService.mark_as_paid(
-        order_id, payment_method=payment_method, payments=payments,
-        cashier_id=request.user.id)
+        order_id,
+        cashier_id=request.user.id,
+        discount_percent=body.get('discount_percent', 0),
+        payment_action_id=getattr(
+            request, 'idempotency_action_id', None,
+        ),
+        **payment_kwargs,
+    )
     return JsonResponse(result, status=status_code)
 
 

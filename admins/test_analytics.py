@@ -143,7 +143,9 @@ class TestMenuEngineering:
         m2 = Decimal(d2['items'][0]['margin_per_unit'])
         assert m1 > m2  # smaller cogs fraction → bigger margin
 
-    def test_excludes_unpaid_and_soft_deleted_lines(self, regular_user, cashier_user):
+    def test_excludes_unpaid_and_soft_deleted_lines(
+        self, regular_user, cashier_user, open_business_clock,
+    ):
         from base.models import Category, Product
         cat, _ = Category.objects.get_or_create(name='food', slug='food')
         p = Product.objects.create(name='Burger', price=Decimal('10000'), category=cat)

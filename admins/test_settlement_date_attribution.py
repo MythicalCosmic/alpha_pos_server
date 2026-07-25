@@ -245,14 +245,210 @@ def test_shift_distribution_handover_and_discount_use_settlement_clock():
 
     created_handover = shift_handover_report(creation_shift)
     assert created_handover['receipt_count'] == 1
+    assert created_handover['settled_receipt_count'] == 0
     assert created_handover['receipts'][0]['line_items'] == 1
     assert created_handover['receipts'][0]['units'] == 2
     assert created_handover['products'] == []
+    assert created_handover['receipt_scopes']['receipts'] == {
+        'clock': 'created_at',
+        'label': 'Orders taken during this shift',
+        'drives_money_totals': False,
+    }
 
     settled_handover = shift_handover_report(settlement_shift)
     assert settled_handover['receipt_count'] == 0
+    assert settled_handover['settled_receipt_count'] == 1
+    settled_receipt = settled_handover['settled_receipts'][0]
+    assert settled_receipt['order_id'] == order.id
+    assert settled_receipt['created_in_this_shift'] is False
+    assert settled_receipt['cash_amount'] == '100.00'
+    assert settled_receipt['card_amount'] == '0.00'
+    assert settled_receipt['payme_amount'] == '0.00'
+    assert settled_receipt['unknown_amount'] == '0.00'
+    assert settled_receipt['drawer_cash_amount'] == '100.00'
+    assert settled_receipt['has_concrete_payment_evidence'] is False
+    assert settled_receipt['tender_attribution_complete'] is True
+    assert settled_handover['receipt_scopes']['settled_receipts'] == {
+        'clock': 'paid_at',
+        'label': 'Orders paid during this shift',
+        'drives_money_totals': True,
+    }
     assert settled_handover['products'][0]['product_id'] == product.id
     assert settled_handover['products'][0]['units_sold'] == 2
+
+
+def test_shift_handover_settled_receipt_uses_canonical_mixed_tender_math():
+    from base.models import OrderPayment
+    from admins.services.shift_analytics_service import shift_handover_report
+
+    cashier, order, _item, _product = _sale()
+    _creation_shift, settlement_shift = _shifts(cashier)
+    order.payment_method = 'MIXED'
+    order.save(update_fields=['payment_method'])
+    # Customer tenders 80 cash + 40 HUMO against a 100 bill. The 20 change is
+    # not revenue and must not inflate either the shift or receipt drawer cash.
+    OrderPayment.objects.create(
+        order=order,
+        method='CASH',
+        amount='80.00',
+        branch_id=order.branch_id,
+    )
+    OrderPayment.objects.create(
+        order=order,
+        method='HUMO',
+        amount='40.00',
+        branch_id=order.branch_id,
+    )
+
+    report = shift_handover_report(settlement_shift)
+    receipt = report['settled_receipts'][0]
+
+    assert receipt['cash_amount'] == '60.00'
+    assert receipt['card_amount'] == '40.00'
+    assert receipt['humo_amount'] == '40.00'
+    assert receipt['drawer_cash_amount'] == '60.00'
+    assert receipt['has_concrete_payment_evidence'] is True
+    assert receipt['tender_attribution_complete'] is True
+    assert (
+        Decimal(receipt['cash_amount'])
+        + Decimal(receipt['card_amount'])
+        + Decimal(receipt['payme_amount'])
+        + Decimal(receipt['unknown_amount'])
+    ) == Decimal(receipt['total_amount'])
+
+
+def test_active_shift_handover_uses_one_authoritative_cutoff(product):
+    from django.conf import settings
+    from base.models import Order, OrderItem, OrderRefund, Shift, User
+    from cashbox.models import CashboxExpense
+    from admins.services.shift_analytics_service import (
+        cashier_shift_analytics,
+        kitchen_shift_analytics,
+        shift_handover_report,
+    )
+    from admins.views.analytics_views import _shift_export_receipt_count
+
+    cutoff = timezone.make_aware(
+        datetime(2026, 7, 24, 12, 0),
+        TASHKENT,
+    )
+    shift_start = cutoff - timedelta(hours=1)
+    cashier = User.objects.create(
+        email=f'active-cutoff-{uuid4().hex}@test.local',
+        first_name='Active',
+        last_name='Cutoff',
+        role='CASHIER',
+        status='ACTIVE',
+        password='!',
+        branch_id=settings.BRANCH_ID,
+    )
+    shift = Shift.objects.create(
+        user=cashier,
+        status=Shift.Status.ACTIVE,
+        start_time=shift_start,
+        branch_id=settings.BRANCH_ID,
+    )
+
+    def paid_order(display_id, moment, amount):
+        order = Order.objects.create(
+            user=cashier,
+            cashier=cashier,
+            branch_id=settings.BRANCH_ID,
+            status=Order.Status.COMPLETED,
+            is_paid=True,
+            payment_method='CASH',
+            paid_at=moment,
+            subtotal=Decimal(amount),
+            total_amount=Decimal(amount),
+            display_id=display_id,
+        )
+        Order.objects.filter(pk=order.pk).update(created_at=moment)
+        order.refresh_from_db()
+        return order
+
+    included = paid_order(9801, cutoff - timedelta(minutes=1), '100')
+    paid_order(9802, cutoff + timedelta(minutes=1), '900')
+    OrderItem.objects.create(
+        order=included,
+        product=product,
+        quantity=1,
+        price=Decimal('100'),
+        original_price=Decimal('100'),
+    )
+    OrderRefund.objects.create(
+        order=included,
+        shift=shift,
+        cashier=cashier,
+        amount=Decimal('25'),
+        cash_amount=Decimal('25'),
+        drawer_cash_amount=Decimal('25'),
+        refunded_at=cutoff + timedelta(minutes=1),
+        source=OrderRefund.Source.ORDER_CANCEL,
+        source_id=f'future-cutoff-{uuid4().hex}',
+        branch_id=settings.BRANCH_ID,
+    )
+    included_expense = CashboxExpense.objects.create(
+        shift=shift,
+        amount=Decimal('10'),
+        branch_id=settings.BRANCH_ID,
+    )
+    CashboxExpense.objects.filter(pk=included_expense.pk).update(
+        created_at=cutoff - timedelta(minutes=1),
+    )
+    excluded_expense = CashboxExpense.objects.create(
+        shift=shift,
+        amount=Decimal('90'),
+        branch_id=settings.BRANCH_ID,
+    )
+    CashboxExpense.objects.filter(pk=excluded_expense.pk).update(
+        created_at=cutoff + timedelta(minutes=1),
+    )
+
+    report = shift_handover_report(shift, now=cutoff)
+
+    assert report['shift']['money']['revenue'] == '100.00'
+    assert report['shift']['refunds']['count'] == 0
+    assert report['shift']['items']['units_sold'] == 1
+    assert report['receipt_count'] == 1
+    assert report['settled_receipt_count'] == 1
+    assert report['refunds'] == []
+    assert report['cash_expenses'] == [{
+        'category': 'Uncategorized',
+        'total': '10.00',
+        'count': 1,
+    }]
+    assert report['receipts'][0]['order_id'] == included.id
+    assert report['settled_receipts'][0]['order_id'] == included.id
+    assert sum(
+        Decimal(row['revenue'])
+        for row in report['distribution']['by_hour']
+    ) == Decimal('100.00')
+    assert sum(
+        row['orders'] for row in report['distribution']['by_hour']
+    ) == 1
+    # One operational row plus one settlement row for the included order.
+    assert _shift_export_receipt_count(shift, now=cutoff) == 2
+
+    business_date = timezone.localtime(cutoff).date()
+    cashier_analytics = cashier_shift_analytics(
+        business_date, business_date, now=cutoff,
+    )
+    assert cashier_analytics['summary']['money']['revenue'] == '100.00'
+    assert cashier_analytics['shifts'][0]['items']['units_sold'] == 1
+    assert sum(
+        Decimal(row['revenue'])
+        for row in cashier_analytics['distribution']['by_hour']
+    ) == Decimal('100.00')
+
+    kitchen_analytics = kitchen_shift_analytics(
+        business_date, business_date, role='CASHIER', now=cutoff,
+    )
+    assert kitchen_analytics['summary']['orders_in_window'] == 1
+    assert kitchen_analytics['shifts'][0]['orders_in_window'] == 1
+    assert sum(
+        Decimal(row['revenue'])
+        for row in kitchen_analytics['distribution']['by_hour']
+    ) == Decimal('100.00')
 
 
 def test_realized_export_uses_local_paid_date_and_operational_mode_uses_created():

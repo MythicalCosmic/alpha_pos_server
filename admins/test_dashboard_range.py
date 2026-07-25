@@ -18,12 +18,15 @@ def _u():
 
 def _order(method='CASH', total='100', cancelled=False, paid=True):
     from base.models import Order, OrderRefund
+    event_at = timezone.now() - timedelta(seconds=1)
     order = Order.objects.create(
         user=_u(), cashier=_u(),
         status='CANCELED' if cancelled else 'COMPLETED',
         is_paid=paid, display_id=1, subtotal=total, total_amount=total,
         payment_method=(method if paid else None),
-        paid_at=(timezone.now() if paid else None))
+        paid_at=(event_at if paid else None))
+    Order.objects.filter(pk=order.pk).update(created_at=event_at)
+    order.refresh_from_db()
     if cancelled and paid:
         amount = Decimal(total)
         kwargs = {
@@ -42,7 +45,7 @@ def _order(method='CASH', total='100', cancelled=False, paid=True):
     return order
 
 
-def test_get_range_today_revenue_and_payment():
+def test_get_range_today_revenue_and_payment(open_business_clock):
     from admins.services import dashboard_service
     _order('CASH', '100')
     _order('UZCARD', '50')
@@ -57,7 +60,7 @@ def test_get_range_today_revenue_and_payment():
     assert Decimal(data['payment_breakdown']['card_detail']['UZCARD']) == 50
 
 
-def test_get_range_window_excludes_other_days():
+def test_get_range_window_excludes_other_days(open_business_clock):
     from admins.services import dashboard_service
     from base.models import Order
     o = _order('CASH', '999')
@@ -68,7 +71,7 @@ def test_get_range_window_excludes_other_days():
     assert Decimal(data['revenue']) == 100
 
 
-def test_sidebar_counts():
+def test_sidebar_counts(open_business_clock):
     from admins.services import dashboard_service
     from base.models import Shift
     Shift.objects.create(user=_u(), start_time=timezone.now(), status='ACTIVE')

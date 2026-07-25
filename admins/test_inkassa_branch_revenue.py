@@ -9,6 +9,16 @@ from django.utils import timezone
 pytestmark = pytest.mark.django_db
 
 
+def _freeze_at_open_business_time(monkeypatch):
+    """Keep current-period assertions outside the deliberate 03:00-07:00 gap."""
+    from base.services.business_day import business_date, day_window
+
+    start, _ = day_window(business_date())
+    frozen_now = start + timedelta(hours=5)
+    monkeypatch.setattr(timezone, 'now', lambda: frozen_now)
+    return frozen_now
+
+
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
 def test_cloud_requires_branch_when_multiple_registers(admin_user):
     from base.models import CashRegister
@@ -25,6 +35,18 @@ def test_cloud_requires_branch_when_multiple_registers(admin_user):
     assert status == 200
     assert result['data']['branch_id'] == 'branch-b'
     assert Decimal(result['data']['balance']) == Decimal('200')
+    assert Decimal(
+        result['data']['available_uncollected_cash']
+    ) == Decimal('200')
+    assert Decimal(
+        result['data']['reported_uncollected_cash_cursor']
+    ) == Decimal('200')
+    assert result['data']['balance_scope'] == {
+        'kind': 'BRANCH_UNCOLLECTED_CASH_CURSOR',
+        'branch_id': 'branch-b',
+        'is_shift_drawer': False,
+        'label': 'Uncollected branch cash (not a shift drawer)',
+    }
 
 
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
@@ -58,15 +80,16 @@ def test_inkassa_changes_only_selected_branch(admin_user):
 
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
 def test_mixed_inkassa_batch_owns_period_revenue_once(
-    admin_user, cashier_user, regular_user,
+    admin_user, cashier_user, regular_user, monkeypatch,
 ):
     from base.models import CashRegister, Inkassa, Order
     from base.services.treasury_service import TreasuryService
     from admins.services.inkassa_service import AdminInkassaService
 
+    frozen_now = _freeze_at_open_business_time(monkeypatch)
     admin_user.branch_id = 'cloud'
     admin_user.save(update_fields=['branch_id'])
-    Order.objects.create(
+    order = Order.objects.create(
         user=regular_user,
         cashier=cashier_user,
         branch_id='branch-a',
@@ -76,6 +99,11 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
         paid_at=timezone.now(),
         subtotal='100.00',
         total_amount='100.00',
+    )
+    # Inkassa owns the half-open accounting period ending at ``now``. Keep the
+    # sale just inside that boundary rather than exactly on it.
+    Order.objects.filter(pk=order.pk).update(
+        accounting_recorded_at=frozen_now - timedelta(microseconds=1),
     )
     # Paid Order.save already created the branch register as its accounting
     # lock. Seed revenue on that same drawer rather than creating a duplicate.
@@ -106,12 +134,13 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
 
 
 def test_sales_stats_use_paid_at_and_net_product_revenue(
-    regular_user, cashier_user,
+    regular_user, cashier_user, monkeypatch,
 ):
     from base.models import Category, Order, OrderItem, Product
     from base.services.business_day import today_window
     from admins.services.inkassa_service import AdminInkassaService
 
+    _freeze_at_open_business_time(monkeypatch)
     start, _ = today_window()
     inside = start + timedelta(hours=1)
     outside = start - timedelta(hours=1)
@@ -152,12 +181,13 @@ def test_sales_stats_use_paid_at_and_net_product_revenue(
 
 
 def test_sales_stats_book_refund_at_refunded_at(
-    regular_user, cashier_user,
+    regular_user, cashier_user, monkeypatch,
 ):
     from base.models import Category, Order, OrderItem, OrderRefund, Product, Shift
     from base.services.business_day import today_window
     from admins.services.inkassa_service import AdminInkassaService
 
+    _freeze_at_open_business_time(monkeypatch)
     start, _ = today_window()
     sale_time = start - timedelta(hours=1)
     refund_time = start + timedelta(hours=1)

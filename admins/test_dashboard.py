@@ -50,7 +50,7 @@ def _add_item(order, name, price, qty, slug=None):
 
 
 class TestGetTodayService:
-    def test_revenue_and_count(self, regular_user):
+    def test_revenue_and_count(self, regular_user, open_business_clock):
         _make_paid_order(regular_user, total='100000')
         _make_paid_order(regular_user, total='50000')
         data = get_today()
@@ -64,7 +64,9 @@ class TestGetTodayService:
         assert data['today']['revenue'] == '0'
         assert data['today']['orders'] == 0
 
-    def test_cancelled_excluded_from_revenue_but_counted(self, regular_user):
+    def test_cancelled_excluded_from_revenue_but_counted(
+        self, regular_user, open_business_clock,
+    ):
         _make_paid_order(regular_user, total='100000', cancelled=True)
         _make_paid_order(regular_user, total='200000')
         data = get_today()
@@ -72,18 +74,21 @@ class TestGetTodayService:
         assert data['today']['orders'] == 2
         assert data['today']['cancelled'] == 1
 
-    def test_open_orders_counted(self, regular_user):
+    def test_open_orders_counted(self, regular_user, open_business_clock):
         from base.models import Order
-        Order.objects.create(
+        order = Order.objects.create(
             user=regular_user, phone_number='998900000001',
             order_type='PICKUP', status='PREPARING',
             is_paid=False, total_amount=Decimal('10000'),
             subtotal=Decimal('10000'), display_id=1,
         )
+        Order.objects.filter(pk=order.pk).update(
+            created_at=timezone.now() - timedelta(seconds=1),
+        )
         data = get_today()
         assert data['today']['open'] == 1
 
-    def test_top_products_today(self, regular_user):
+    def test_top_products_today(self, regular_user, open_business_clock):
         o1 = _make_paid_order(regular_user, total='100000')
         _add_item(o1, 'Pizza', '50000', 2, slug='pizza')
         o2 = _make_paid_order(regular_user, total='30000')
@@ -95,7 +100,9 @@ class TestGetTodayService:
         assert top[0]['product_name'] == 'Pizza'
         assert top[0]['quantity'] == 2
 
-    def test_units_sold_excludes_unpaid_and_soft_deleted_items(self, regular_user):
+    def test_units_sold_excludes_unpaid_and_soft_deleted_items(
+        self, regular_user, open_business_clock,
+    ):
         paid = _make_paid_order(regular_user, total='20000')
         _add_item(paid, 'Paid', '10000', 2, slug='paid')
 

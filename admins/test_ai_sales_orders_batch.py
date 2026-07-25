@@ -187,7 +187,9 @@ class TestProductAffinity:
         from datetime import date
         from admins.services.product_analytics_service import products_affinity
         A, B, C = _product('A'), _product('B'), _product('C')
-        _order_with([A, B, C]); _order_with([A, B]); _order_with([A, C])
+        _order_with([A, B, C])
+        _order_with([A, B])
+        _order_with([A, C])
         data = products_affinity(date(2026, 3, 10), date(2026, 3, 10), limit=2)
         assert len(data['products']) == 2
         ids = {p['id'] for p in data['products']}
@@ -228,7 +230,7 @@ class TestOperationsDashboard:
         assert [f['status'] for f in data['funnel']] == \
             ['OPEN', 'PREPARING', 'READY', 'COMPLETED', 'CANCELED']
 
-    def test_table_grid_and_funnel_live(self):
+    def test_table_grid_and_funnel_live(self, open_business_clock):
         from base.models import Order, Place, Table, User
         from admins.services.operations_dashboard_service import operations_dashboard
         u = User.objects.create(email=f'op{secrets.token_hex(4)}@x.local', first_name='a',

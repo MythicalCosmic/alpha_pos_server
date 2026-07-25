@@ -1,9 +1,10 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository
 from base.services.inkassa_service import InkassaService
 from base.helpers.response import ServiceResponse
@@ -12,6 +13,267 @@ logger = logging.getLogger(__name__)
 
 
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED', 'COMPLETED']
+
+_UNSET = object()
+_MONEY_QUANTUM = Decimal('0.01')
+_MAX_ORDER_PAYMENT = Decimal('99999999.99')
+
+
+def _dominant_payment_method(lines):
+    """Match Smart POS's stable first-seen winner for its legacy hint."""
+    totals = {}
+    for method, amount in lines:
+        totals[method] = totals.get(method, Decimal('0')) + amount
+    return max(totals, key=totals.get)
+
+
+def _normalize_checkout_action_id(value):
+    """Return a UUID checkout identity, or a field-level validation response."""
+    if value is None:
+        return None, None
+    try:
+        return UUID(str(value)), None
+    except (TypeError, ValueError, AttributeError):
+        return None, ServiceResponse.validation_error(
+            errors={'payment_action_id': 'Must be a valid UUID'},
+        )
+
+
+def _normalize_checkout_contract(
+    order_model, payment_method, payments, discount_percent,
+):
+    """Validate both checkout shapes without ever inventing an implicit CASH sale.
+
+    Smart POS 0.0.5 sends canonical ``payments`` plus a legacy
+    ``payment_method`` dominant-tender hint. The dual form is accepted only
+    when the hint agrees with the structured evidence.
+    """
+    legacy_supplied = payment_method is not _UNSET
+    structured_supplied = payments is not _UNSET
+    if not legacy_supplied and not structured_supplied:
+        return None, ServiceResponse.validation_error(
+            errors={'payment': 'Provide payment_method or payments'},
+        )
+
+    try:
+        pct = Decimal(str(discount_percent))
+    except (InvalidOperation, TypeError, ValueError):
+        return None, ServiceResponse.validation_error(
+            errors={'discount_percent': 'Must be a finite number'},
+        )
+    if not pct.is_finite():
+        return None, ServiceResponse.validation_error(
+            errors={'discount_percent': 'Must be a finite number'},
+        )
+    try:
+        normalized_pct = pct.quantize(_MONEY_QUANTUM)
+    except InvalidOperation:
+        return None, ServiceResponse.validation_error(
+            errors={'discount_percent': 'Must be a finite number'},
+        )
+    if normalized_pct != pct:
+        return None, ServiceResponse.validation_error(
+            errors={'discount_percent': 'Must have at most 2 decimal places'},
+        )
+    pct = normalized_pct
+    if pct < 0 or pct > 100:
+        return None, ServiceResponse.validation_error(
+            errors={'discount_percent': 'Must be 0..100'},
+        )
+
+    valid_methods = {
+        code for code, _label in order_model.PaymentMethod.choices
+        if code != order_model.PaymentMethod.MIXED
+    }
+    legacy_method = None
+    if legacy_supplied:
+        legacy_method = str(payment_method or '').strip().upper()
+        if legacy_method not in valid_methods:
+            return None, ServiceResponse.validation_error(
+                errors={
+                    'payment_method': (
+                        f'Must be one of {sorted(valid_methods)}'
+                    ),
+                },
+            )
+    if not structured_supplied:
+        return {
+            'kind': 'legacy',
+            'payment_method': legacy_method,
+            'lines': None,
+            'discount_percent': pct,
+        }, None
+
+    if not isinstance(payments, list):
+        return None, ServiceResponse.validation_error(
+            errors={'payments': 'Must be a non-empty list of payment objects'},
+        )
+    if not payments and not legacy_supplied:
+        return None, ServiceResponse.validation_error(
+            errors={'payments': 'Must contain at least one payment'},
+        )
+    if not payments:
+        # Smart POS uses [] + its legacy hint for a fully discounted checkout.
+        # Preserve that shape, but accept it only once the locked total is zero.
+        return {
+            'kind': 'dual_empty',
+            'payment_method': legacy_method,
+            'lines': [],
+            'discount_percent': pct,
+        }, None
+
+    lines = []
+    for index, item in enumerate(payments):
+        field = f'payments[{index}]'
+        if not isinstance(item, dict):
+            return None, ServiceResponse.validation_error(
+                errors={field: 'Must be an object with method and amount'},
+            )
+        method = str(item.get('method') or '').strip().upper()
+        if method not in valid_methods:
+            return None, ServiceResponse.validation_error(
+                errors={
+                    f'{field}.method': (
+                        f'Must be one of {sorted(valid_methods)}'
+                    ),
+                },
+            )
+        try:
+            raw_amount = Decimal(str(item.get('amount')))
+        except (InvalidOperation, TypeError, ValueError):
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Must be a finite number'},
+            )
+        if not raw_amount.is_finite():
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Must be a finite number'},
+            )
+        try:
+            amount = raw_amount.quantize(_MONEY_QUANTUM)
+        except InvalidOperation:
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Must be a valid monetary amount'},
+            )
+        if amount != raw_amount:
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Must have at most 2 decimal places'},
+            )
+        if amount <= 0:
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Must be greater than 0'},
+            )
+        if amount > _MAX_ORDER_PAYMENT:
+            return None, ServiceResponse.validation_error(
+                errors={f'{field}.amount': 'Exceeds the supported payment limit'},
+            )
+        lines.append((method, amount))
+
+    if legacy_supplied:
+        dominant = _dominant_payment_method(lines)
+        if legacy_method != dominant:
+            return None, ServiceResponse.validation_error(
+                errors={
+                    'payment_method': (
+                        'Must match the dominant method in payments'
+                    ),
+                },
+                message='Contradictory payment methods',
+            )
+
+    return {
+        'kind': 'structured',
+        'payment_method': legacy_method,
+        'lines': lines,
+        'discount_percent': pct,
+    }, None
+
+
+def _find_settlement_shift(order):
+    """Recover the shift that owned a paid order for retry evidence."""
+    if not order.cashier_id or not order.paid_at:
+        return None
+    from base.models import Shift
+
+    query = Shift.objects.filter(
+        user_id=order.cashier_id,
+        is_deleted=False,
+        start_time__lte=order.paid_at,
+    ).filter(Q(end_time__isnull=True) | Q(end_time__gte=order.paid_at))
+    if order.branch_id:
+        query = query.filter(branch_id=order.branch_id)
+    return query.order_by('-start_time', '-pk').first()
+
+
+def _checkout_success_data(order, settlement_shift=None):
+    """Serialize immutable checkout evidence for first response and replay."""
+    payment_rows = list(
+        order.payments.filter(is_deleted=False).order_by('line_index', 'pk')
+    )
+    shift = settlement_shift or _find_settlement_shift(order)
+    return {
+        'is_paid': True,
+        'order_id': order.id,
+        'order_uuid': str(order.uuid),
+        'payment_action_id': (
+            str(order.payment_action_id) if order.payment_action_id else None
+        ),
+        'shift_id': shift.id if shift else None,
+        'shift_uuid': str(shift.uuid) if shift else None,
+        'paid_at': order.paid_at.isoformat() if order.paid_at else None,
+        'payment_method': order.payment_method,
+        'discount_percent': str(
+            Decimal(order.discount_percent or 0).quantize(_MONEY_QUANTUM)
+        ),
+        'discount_amount': str(
+            Decimal(order.discount_amount or 0).quantize(_MONEY_QUANTUM)
+        ),
+        'total_amount': str(
+            Decimal(order.total_amount or 0).quantize(_MONEY_QUANTUM)
+        ),
+        'payments': [
+            {
+                'line_index': row.line_index,
+                'method': row.method,
+                'amount': str(Decimal(row.amount).quantize(_MONEY_QUANTUM)),
+            }
+            for row in payment_rows
+        ],
+    }
+
+
+def _checkout_request_matches(order, contract):
+    """Prove that a same-action retry describes the stored payment exactly."""
+    try:
+        stored_pct = Decimal(order.discount_percent or 0).quantize(
+            _MONEY_QUANTUM
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    if (
+        contract['discount_percent'] != 0
+        and stored_pct != contract['discount_percent']
+    ):
+        return False
+
+    rows = list(
+        order.payments.filter(is_deleted=False)
+        .order_by('line_index', 'pk')
+        .values_list('method', 'amount')
+    )
+    stored = [
+        (method, Decimal(amount).quantize(_MONEY_QUANTUM))
+        for method, amount in rows
+    ]
+    if contract['kind'] == 'structured':
+        return stored == contract['lines']
+
+    total = Decimal(order.total_amount or 0).quantize(_MONEY_QUANTUM)
+    if total == 0:
+        return not stored and order.payment_method is None
+    return (
+        stored == [(contract['payment_method'], total)]
+        and order.payment_method == contract['payment_method']
+    )
 
 
 def _schedule_loyalty_accrual(order_id):
@@ -81,7 +343,17 @@ def _payments_payload(order):
     lines = [p for p in order.payments.all() if not p.is_deleted]
     split, detail = split_from_rows(
         order.total_amount, order.payment_method,
-        [(p.method, p.amount) for p in lines], order_id=order.id,
+        [
+            (
+                p.method,
+                p.amount,
+                p.payment_action_id,
+                p.line_index,
+            )
+            for p in lines
+        ],
+        order_id=order.id,
+        payment_action_id=order.payment_action_id,
     )
     data = {
         'cash': str(split['cash']),
@@ -987,29 +1259,134 @@ class AdminOrderService:
 
     @staticmethod
     @transaction.atomic
-    def mark_as_paid(order_id, payment_method='CASH', payments=None,
-                     cashier_id=None):
-        """Mark an order paid, WRITING the tender line(s). Mirrors the till path.
+    def mark_as_paid(order_id, payment_method=_UNSET, payments=_UNSET,
+                     cashier_id=None, discount_percent=0,
+                     payment_action_id=None):
+        """Mark an order paid, writing exact, replayable tender evidence.
 
         Two input shapes:
           - single tender: payment_method='CASH'          -> one full-amount line
           - split:         payments=[{method,amount}, ...] -> one line per component
 
-        Previously this set only is_paid/payment_method/paid_at and wrote no
-        OrderPayment row, so a cloud-paid sale carried no tender lines. MIXED stays an
-        OUTPUT-only roll-up: it cannot be a bare input method because a single method
-        carries no split to decompose -- send `payments` instead.
+        Smart POS 0.0.5 also sends both, with ``payment_method`` as a
+        dominant-tender compatibility hint. Missing, empty-for-nonzero,
+        malformed, non-finite, or contradictory evidence fails closed.
         """
         from base.models import Order, OrderPayment
+
+        contract, contract_error = _normalize_checkout_contract(
+            Order, payment_method, payments, discount_percent,
+        )
+        if contract_error:
+            return contract_error
+
+        requested_action_id, action_error = _normalize_checkout_action_id(
+            payment_action_id,
+        )
+        if action_error:
+            return action_error
+
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
+        if order.is_paid:
+            if (
+                requested_action_id is not None
+                and order.payment_action_id == requested_action_id
+            ):
+                if not _checkout_request_matches(order, contract):
+                    return ({
+                        'success': False,
+                        'message': (
+                            'Payment retry conflicts with the payment evidence '
+                            'already stored for this checkout action.'
+                        ),
+                        'errors': {
+                            'payment': (
+                                'Tender lines or discount do not match the '
+                                'settled checkout'
+                            ),
+                        },
+                    }, 409)
+                return ServiceResponse.success(
+                    data=_checkout_success_data(order),
+                    message='Order marked as paid',
+                )
+            return ServiceResponse.error('Order already paid')
+
         if order.status == 'CANCELED':
             return ServiceResponse.error('Cancelled order cannot be paid')
 
-        if order.is_paid:
-            return ServiceResponse.error('Order already paid')
+        base_total = Decimal(order.total_amount or 0)
+        if not base_total.is_finite() or base_total < 0:
+            return ServiceResponse.validation_error(
+                errors={
+                    'total_amount': (
+                        'Order total must be a finite non-negative amount'
+                    ),
+                },
+            )
+        pct = contract['discount_percent']
+        effective_total = (
+            base_total * (Decimal('1') - pct / Decimal('100'))
+        ).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
+        if contract['kind'] == 'structured':
+            lines = contract['lines']
+            if effective_total == 0:
+                return ServiceResponse.validation_error(
+                    errors={
+                        'payments': (
+                            'A zero-total checkout cannot collect tender lines; '
+                            'use payment_method to record the checkout action'
+                        ),
+                    },
+                )
+        elif contract['kind'] == 'dual_empty':
+            if effective_total != 0:
+                return ServiceResponse.validation_error(
+                    errors={
+                        'payments': (
+                            'Must contain payment lines for a non-zero total'
+                        ),
+                    },
+                )
+            lines = []
+        else:
+            # A zero-total checkout records the immutable action without
+            # inventing a 0.00 tender child that branch sync would reject.
+            lines = (
+                [(contract['payment_method'], effective_total)]
+                if effective_total > 0
+                else []
+            )
+
+        from django.conf import settings as django_settings
+        if (
+            getattr(django_settings, 'DEPLOYMENT_MODE', 'local') == 'cloud'
+            and any(
+                method == Order.PaymentMethod.CASH for method, _ in lines
+            )
+        ):
+            return ServiceResponse.error(
+                'Physical cash payment must be settled on the owning branch desktop.'
+            )
+
+        paid_sum = sum((amount for _, amount in lines), Decimal('0'))
+        cash_sum = sum(
+            (amount for method, amount in lines if method == 'CASH'),
+            Decimal('0'),
+        )
+        noncash = paid_sum - cash_sum
+        if paid_sum < effective_total:
+            return ServiceResponse.validation_error(
+                errors={'payments': 'Payments do not cover the total'},
+                message=f'Short by {effective_total - paid_sum}')
+        # Only cash may over-tender (the customer's change); card/Payme never can.
+        if noncash > effective_total:
+            return ServiceResponse.validation_error(
+                errors={'payments': 'Non-cash overpayment is not allowed'})
 
         from base.services.order_refund import (
             SettlementInvariantError, lock_active_cashier_shift,
@@ -1025,53 +1402,6 @@ class AdminOrderService:
         except SettlementInvariantError as exc:
             return ServiceResponse.error(str(exc))
 
-        # Concrete tenders only: MIXED is the roll-up the system SETS, never an input.
-        valid_methods = [c[0] for c in Order.PaymentMethod.choices if c[0] != 'MIXED']
-        total = Decimal(order.total_amount or 0)
-
-        if payments:
-            lines = []
-            for p in payments:
-                method = str((p or {}).get('method', '')).upper()
-                if method not in valid_methods:
-                    return ServiceResponse.validation_error(
-                        errors={'payments': f'method must be one of {valid_methods}'})
-                try:
-                    amount = Decimal(str((p or {}).get('amount')))
-                except Exception:  # noqa: BLE001
-                    return ServiceResponse.validation_error(
-                        errors={'payments': 'amount must be a number'})
-                if amount <= 0:
-                    return ServiceResponse.validation_error(
-                        errors={'payments': 'amount must be > 0'})
-                lines.append((method, amount))
-        else:
-            payment_method = str(payment_method or '').upper()
-            if payment_method not in valid_methods:
-                return ServiceResponse.validation_error(
-                    errors={'payment_method': f'Must be one of {valid_methods}; '
-                                              f'MIXED requires a `payments` split'},
-                )
-            lines = [(payment_method, total)]
-
-        from django.conf import settings as django_settings
-        if (getattr(django_settings, 'DEPLOYMENT_MODE', 'local') == 'cloud'
-                and any(method == Order.PaymentMethod.CASH for method, _ in lines)):
-            return ServiceResponse.error(
-                'Physical cash payment must be settled on the owning branch desktop.'
-            )
-
-        paid_sum = sum((a for _, a in lines), Decimal('0'))
-        noncash = sum((a for m, a in lines if m != 'CASH'), Decimal('0'))
-        if paid_sum < total:
-            return ServiceResponse.validation_error(
-                errors={'payments': 'Payments do not cover the total'},
-                message=f'Short by {total - paid_sum}')
-        # Only cash may over-tender (the customer's change); card/Payme never can.
-        if noncash > total:
-            return ServiceResponse.validation_error(
-                errors={'payments': 'Non-cash overpayment is not allowed'})
-
         branch_assigned = False
         if not order.branch_id:
             order.branch_id = settlement_shift.branch_id
@@ -1081,11 +1411,14 @@ class AdminOrderService:
         paid_event_at = timezone.now()
 
         distinct = {m for m, _ in lines}
-        payment_action_id = uuid4()
+        checkout_action_id = requested_action_id or uuid4()
         order.is_paid = True
-        order.payment_action_id = payment_action_id
-        order.payment_method = (next(iter(distinct)) if len(distinct) == 1
-                                else Order.PaymentMethod.MIXED)
+        order.payment_action_id = checkout_action_id
+        order.payment_method = (
+            next(iter(distinct))
+            if len(distinct) == 1
+            else (Order.PaymentMethod.MIXED if distinct else None)
+        )
         order.paid_at = paid_event_at
         order.accounting_recorded_at = paid_event_at
         order.cashier_id = settlement_shift.user_id
@@ -1095,6 +1428,16 @@ class AdminOrderService:
         ]
         if branch_assigned:
             payment_update_fields.append('branch_id')
+        if pct > 0:
+            order.discount_percent = pct
+            order.discount_amount = (
+                Decimal(order.discount_amount or 0)
+                + (base_total - effective_total)
+            )
+            order.total_amount = effective_total
+            payment_update_fields.extend([
+                'discount_percent', 'discount_amount', 'total_amount',
+            ])
         order.save(update_fields=payment_update_fields)
 
         # The tender lines: what makes this sale visible to per-tender shift settlement
@@ -1104,14 +1447,14 @@ class AdminOrderService:
                 order=order,
                 method=method,
                 amount=amount,
-                payment_action_id=payment_action_id,
+                payment_action_id=checkout_action_id,
                 line_index=line_index,
                 branch_id=order.branch_id,
             )
 
         # The drawer only holds physical cash, net of change. Card/Payme settle
         # externally and reconcile against the acquirer report, not the register.
-        cash_to_drawer = total - noncash
+        cash_to_drawer = effective_total - noncash
         if cash_to_drawer > 0:
             InkassaService.add_to_register(cash_to_drawer, order.branch_id)
 
@@ -1136,7 +1479,7 @@ class AdminOrderService:
         _schedule_fiscalization(order.id)
 
         return ServiceResponse.success(
-            data={'is_paid': True},
+            data=_checkout_success_data(order, settlement_shift),
             message='Order marked as paid',
         )
 

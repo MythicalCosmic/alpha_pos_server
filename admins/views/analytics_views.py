@@ -52,18 +52,29 @@ def _visible_shift(request, shift_id):
     return shift, None
 
 
-def _shift_export_receipt_count(shift):
-    """Cheap guard before materializing an anomalously large XLSX report."""
+def _shift_export_receipt_count(shift, *, now=None):
+    """Cheap guard for both operational and settlement receipt worksheets."""
     from base.models import Order
 
-    end = effective_shift_end(shift)
-    return Order.objects.filter(
+    end = effective_shift_end(shift, now=now)
+    orders_taken = Order.objects.filter(
         is_deleted=False,
         cashier_id=shift.user_id,
         branch_id=shift.branch_id,
         created_at__gte=shift.start_time,
         created_at__lt=end,
     ).count()
+    orders_settled = Order.objects.filter(
+        is_deleted=False,
+        cashier_id=shift.user_id,
+        branch_id=shift.branch_id,
+        is_paid=True,
+        paid_at__gte=shift.start_time,
+        paid_at__lt=end,
+    ).count()
+    # The same order intentionally appears in both worksheets when it was both
+    # created and paid in the shift, so guard the actual row materialization.
+    return orders_taken + orders_settled
 
 
 @require_GET
@@ -233,7 +244,11 @@ def shift_report_export_view(request, shift_id):
     shift, error = _visible_shift(request, shift_id)
     if error is not None:
         return error
-    receipt_count = _shift_export_receipt_count(shift)
+    # The size guard and materialized workbook must use the same half-open
+    # cutoff for an ACTIVE shift. Otherwise an order arriving between them can
+    # bypass the guard or make the exported count disagree with its contents.
+    report_now = timezone.now()
+    receipt_count = _shift_export_receipt_count(shift, now=report_now)
     if receipt_count > MAX_SHIFT_EXPORT_RECEIPTS:
         return JsonResponse(
             {
@@ -247,14 +262,17 @@ def shift_report_export_view(request, shift_id):
             },
             status=413,
         )
-    report = shift_handover_report(shift)
+    report = shift_handover_report(shift, now=report_now)
     payload = build_shift_report_workbook(report)
     local_date = timezone.localtime(shift.start_time).date().isoformat()
     filename = f'alpha-pos-shift-{shift.id}-report-{local_date}.xlsx'
     return xlsx_attachment(
         payload,
         filename,
-        count=report.get('receipt_count', 0),
+        count=(
+            report.get('receipt_count', 0)
+            + report.get('settled_receipt_count', 0)
+        ),
     )
 
 

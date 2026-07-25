@@ -87,7 +87,9 @@ class TestBriefing:
 # ── Anomaly Watch ──
 
 class TestAnomaly:
-    def test_detects_void_burst_and_unusual_discount(self):
+    def test_detects_void_burst_and_unusual_discount(
+        self, open_business_clock,
+    ):
         from stock.services.anomaly_service import AnomalyScanner
         from stock.models import Anomaly
         c = _cashier()
@@ -131,7 +133,7 @@ class TestAnomaly:
         assert resp.status_code == 200
         assert 'anomalies' in resp.json()['data']
 
-    def test_anomaly_message_is_trilingual(self):
+    def test_anomaly_message_is_trilingual(self, open_business_clock):
         from stock.services.anomaly_service import AnomalyScanner, AnomalyService
         from stock.models import Anomaly
         c = _cashier()

@@ -78,7 +78,7 @@ def test_order_stats_status_and_payment_counts():
 
 
 # 4) GET /dashboard/operations — prepByCategory mins + target
-def test_operations_prep_mins_and_target():
+def test_operations_prep_mins_and_target(open_business_clock):
     from base.models import OrderItem
     from admins.services.operations_dashboard_service import operations_dashboard
     c = _category('Burgers')
@@ -94,7 +94,7 @@ def test_operations_prep_mins_and_target():
 
 
 # 5) GET /dashboard?from=&to= — category_stats in the range payload
-def test_dashboard_range_category_stats():
+def test_dashboard_range_category_stats(open_business_clock):
     from base.models import OrderItem
     from admins.services import dashboard_service
     c = _category('Drinks')

@@ -264,7 +264,15 @@ def test_non_active_shift_without_end_time_cannot_absorb_later_orders():
     assert row['money']['revenue'] == '0.00'
     assert _kitchen_shift_row(abandoned, {}, 15 * 60)['orders_in_window'] == 0
     assert _hourly_daily([abandoned]) == {
-        'by_hour': [], 'by_date': [], 'peak_hour': None,
+        'by_hour': [],
+        'by_date': [],
+        'peak_hour': None,
+        'unbucketed_refund_adjustment': {
+            'count': 0,
+            'revenue': '0.00',
+            'reason': 'SHIFT_OWNED_REFUND_OUTSIDE_EVENT_WINDOW',
+        },
+        'revenue_total': '0.00',
     }
     assert shift_handover_report(abandoned)['receipt_count'] == 0
     assert _shift_export_receipt_count(abandoned) == 0

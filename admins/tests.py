@@ -502,6 +502,220 @@ class TestShiftListExtras:
         assert row['cancelled_orders_value'] == '0.00'
         assert row['net_revenue'] == '0.00'
 
+    def test_partial_frozen_tenders_fall_back_to_complete_derived_totals(
+        self, cashier_user, regular_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import Order, OrderPayment
+        from cashbox.models import ShiftPaymentTotal
+        from admins.services.shift_service import ShiftService
+
+        shift = self._active_shift(cashier_user)
+        paid_at = timezone.now()
+        order = Order.objects.create(
+            user=regular_user,
+            cashier=cashier_user,
+            branch_id=shift.branch_id,
+            status=Order.Status.COMPLETED,
+            is_paid=True,
+            payment_method='HUMO',
+            paid_at=paid_at,
+            display_id=991,
+            subtotal='70.00',
+            total_amount='70.00',
+        )
+        OrderPayment.objects.create(
+            order=order,
+            method='HUMO',
+            amount='70.00',
+            branch_id=shift.branch_id,
+        )
+        shift.status = 'ENDED'
+        shift.end_time = paid_at + timedelta(seconds=1)
+        shift.total_orders = 1
+        shift.total_revenue = '70.00'
+        shift.cash_collected = '0.00'
+        shift.save(update_fields=[
+            'status', 'end_time', 'total_orders', 'total_revenue',
+            'cash_collected',
+        ])
+        # Simulate a child-by-child sync window: only one of the five frozen
+        # tender rows has arrived. This must not hide the other four identities
+        # or suppress the canonical order/payment fallback.
+        ShiftPaymentTotal.objects.create(
+            shift=shift,
+            method='HUMO',
+            expected_amount='70.00',
+            counted_amount='70.00',
+            difference='0.00',
+            branch_id=shift.branch_id,
+        )
+
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id, per_page=50,
+        )
+
+        assert status == 200, listed
+        row = next(
+            value for value in listed['data']['shifts']
+            if value['id'] == shift.id
+        )
+        assert row['expected_by_tender'] == {
+            'CASH': '0.00',
+            'UZCARD': '0.00',
+            'HUMO': '70.00',
+            'CARD': '0.00',
+            'PAYME': '0.00',
+        }
+        assert row['tender_totals_source'] == (
+            'DERIVED_INCOMPLETE_FROZEN'
+        )
+        assert row['frozen_tender_evidence_complete'] is False
+
+        summary = listed['data']['summary']
+        assert summary['expected_by_tender'] == row['expected_by_tender']
+        assert summary['total_expected_to_receive'] == '70.00'
+        assert summary['tender_attribution_complete'] is True
+        assert summary['unattributed_expected_amount'] == '0.00'
+        assert summary['tender_totals_sources'] == {
+            'frozen_closed_shifts': 0,
+            'derived_closed_shifts': 1,
+            'derived_live_shifts': 0,
+            'partial_frozen_shifts': 1,
+            'unavailable_shifts': 0,
+        }
+
+    def test_full_zero_frozen_set_cannot_hide_unattributed_mixed_sale(
+        self, cashier_user, regular_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import Order
+        from cashbox.models import PAYMENT_METHODS, ShiftPaymentTotal
+        from admins.services.shift_service import ShiftService
+
+        shift = self._active_shift(cashier_user)
+        paid_at = timezone.now()
+        Order.objects.create(
+            user=regular_user,
+            cashier=cashier_user,
+            branch_id=shift.branch_id,
+            status=Order.Status.COMPLETED,
+            is_paid=True,
+            payment_method='MIXED',
+            paid_at=paid_at,
+            display_id=992,
+            subtotal='100.00',
+            total_amount='100.00',
+        )
+        shift.status = 'ENDED'
+        shift.end_time = paid_at + timedelta(seconds=1)
+        shift.total_orders = 1
+        shift.total_revenue = '100.00'
+        shift.cash_collected = '0.00'
+        shift.save(update_fields=[
+            'status', 'end_time', 'total_orders', 'total_revenue',
+            'cash_collected',
+        ])
+        for method in PAYMENT_METHODS:
+            ShiftPaymentTotal.objects.create(
+                shift=shift,
+                method=method,
+                expected_amount='0.00',
+                counted_amount='0.00',
+                difference='0.00',
+                branch_id=shift.branch_id,
+            )
+
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id, per_page=50,
+        )
+
+        assert status == 200, listed
+        row = next(
+            value for value in listed['data']['shifts']
+            if value['id'] == shift.id
+        )
+        assert row['expected_by_tender'] == {
+            'CASH': '0.00',
+            'UZCARD': '0.00',
+            'HUMO': '0.00',
+            'CARD': '0.00',
+            'PAYME': '0.00',
+            'UNKNOWN': '100.00',
+        }
+        assert row['tender_totals_source'] == (
+            'DERIVED_INCOMPLETE_FROZEN'
+        )
+        assert row['frozen_tender_evidence_complete'] is False
+        assert row['tender_attribution_complete'] is False
+        assert row['unattributed_expected_amount'] == '100.00'
+        assert row['frozen_tender_evidence_issues'] == [
+            'UNATTRIBUTED_TENDER_EVIDENCE',
+        ]
+
+        summary = listed['data']['summary']
+        assert summary['expected_by_tender'] == row['expected_by_tender']
+        assert summary['total_expected_to_receive'] == '100.00'
+        assert summary['tender_attribution_complete'] is False
+        assert summary['unattributed_expected_amount'] == '100.00'
+        assert summary['unattributed_expected_absolute_amount'] == '100.00'
+        assert summary['unattributed_shift_count'] == 1
+        assert summary['tender_evidence_issue_counts'] == {
+            'UNATTRIBUTED_TENDER_EVIDENCE': 1,
+        }
+        assert summary['frozen_tender_discrepancy_shifts'] == 1
+        assert summary['tender_totals_sources'] == {
+            'frozen_closed_shifts': 0,
+            'derived_closed_shifts': 1,
+            'derived_live_shifts': 0,
+            'partial_frozen_shifts': 1,
+            'unavailable_shifts': 0,
+        }
+
+    def test_summary_fails_closed_when_tender_evidence_is_unavailable(
+        self, cashier_user, monkeypatch,
+    ):
+        from django.utils import timezone
+        from base.models import Shift
+        from admins.services.shift_service import (
+            CoreShiftService,
+            ShiftService,
+        )
+
+        shift = self._active_shift(cashier_user)
+
+        def unavailable_extras(shifts, now=None):
+            return {
+                item.id: {
+                    'expected_by_tender': {},
+                    'tender_totals_source': 'UNAVAILABLE',
+                }
+                for item in shifts
+            }
+
+        monkeypatch.setattr(
+            CoreShiftService,
+            '_batch_list_extras',
+            staticmethod(unavailable_extras),
+        )
+
+        summary = ShiftService._global_summary(
+            Shift.objects.filter(pk=shift.pk),
+            now=timezone.now(),
+        )
+
+        assert summary['expected_by_tender'] == {}
+        assert summary['tender_attribution_complete'] is False
+        assert summary['tender_totals_sources'] == {
+            'frozen_closed_shifts': 0,
+            'derived_closed_shifts': 0,
+            'derived_live_shifts': 1,
+            'partial_frozen_shifts': 0,
+            'unavailable_shifts': 1,
+        }
+
     def test_reconciled_shift_exposes_tenders_expenses_and_posting(
         self, cashier_user, admin_user, regular_user,
     ):
@@ -736,3 +950,73 @@ class TestShiftListExtras:
 
         assert n_big == n_small, \
             f'O(rows) regression: {n_small} queries for 2 shifts vs {n_big} for 6'
+
+    def test_live_summary_query_count_is_constant_in_shift_count(
+        self, cashier_user, regular_user,
+    ):
+        """Global KPIs and paged rows reuse one batched live-evidence pass.
+
+        Before the regression fix, each live shift called _live_totals once in
+        the summary and once in serialization, adding several queries per row.
+        """
+        from datetime import timedelta
+        from django.conf import settings
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from django.utils import timezone
+        from base.models import Order, Shift, User
+        from base.security.hashing import hash_password
+        from admins.services.shift_service import ShiftService
+
+        password_hash = hash_password('1234')
+
+        def live_shift(index, user=None):
+            user = user or User.objects.create(
+                first_name='Scale',
+                last_name=str(index),
+                email=f'shift-scale-{index}@test.local',
+                password=password_hash,
+                role=User.RoleChoices.CASHIER,
+                status=User.UserStatus.ACTIVE,
+            )
+            start = timezone.now() - timedelta(hours=1)
+            shift = Shift.objects.create(
+                user=user,
+                start_time=start,
+                status=Shift.Status.ACTIVE,
+                branch_id=settings.BRANCH_ID,
+            )
+            Order.objects.create(
+                user=regular_user,
+                cashier=user,
+                branch_id=shift.branch_id,
+                status=Order.Status.COMPLETED,
+                is_paid=True,
+                payment_method='CASH',
+                display_id=2000 + index,
+                subtotal='10.00',
+                total_amount='10.00',
+                paid_at=start + timedelta(minutes=1),
+            )
+            return shift
+
+        live_shift(0, user=cashier_user)
+        live_shift(1)
+        # Warm lazy imports/caches before comparing database query counts.
+        ShiftService.list(per_page=50)
+        with CaptureQueriesContext(connection) as small:
+            small_result, small_status = ShiftService.list(per_page=50)
+        assert small_status == 200, small_result
+
+        for index in range(2, 8):
+            live_shift(index)
+        with CaptureQueriesContext(connection) as large:
+            large_result, large_status = ShiftService.list(per_page=50)
+        assert large_status == 200, large_result
+
+        assert len(large) == len(small), (
+            'live-shift N+1 regression: '
+            f'{len(small)} queries for 2 shifts vs {len(large)} for 8'
+        )
+        assert small_result['data']['summary']['total_revenue'] == '20.00'
+        assert large_result['data']['summary']['total_revenue'] == '80.00'

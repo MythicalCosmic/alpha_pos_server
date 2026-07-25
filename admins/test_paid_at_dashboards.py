@@ -54,7 +54,9 @@ def test_range_dashboard_splits_order_volume_from_settled_sales(order_factory):
     assert paid_series['channelDays'][0]['hall'] == 0
 
 
-def test_today_and_inkassa_stats_credit_payment_day(order_factory):
+def test_today_and_inkassa_stats_credit_payment_day(
+    order_factory, open_business_clock,
+):
     from admins.services.dashboard_service import get_today
     from admins.services.inkassa_service import AdminInkassaService
     from base.services.business_day import today_window
@@ -64,7 +66,7 @@ def test_today_and_inkassa_stats_credit_payment_day(order_factory):
     order = _settled_later(
         order_factory,
         opened=start - timedelta(hours=1),
-        paid=timezone.now(),
+        paid=timezone.now() - timedelta(seconds=1),
     )
 
     today = get_today()['today']

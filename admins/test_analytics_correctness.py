@@ -10,6 +10,14 @@ from django.utils import timezone
 pytestmark = pytest.mark.django_db
 
 
+def _open_business_time():
+    """Stable event time inside the current restaurant reporting date."""
+    from base.services.business_day import business_date, day_window
+
+    start, _ = day_window(business_date())
+    return start + timedelta(hours=5)
+
+
 def _cashier():
     from base.models import User
     return User.objects.create(email='c@x.local', first_name='C', last_name='X',
@@ -71,7 +79,7 @@ def test_top_products_excludes_unpaid_and_cancelled():
     cat = Category.objects.create(name='Drinks', slug='drinks')
     p = Product.objects.create(name='Cola', price=Decimal('10000'), category=cat)
     c = _cashier()
-    now = timezone.now()
+    now = _open_business_time()
 
     paid = _order(c, 20000, now, is_paid=True, status='COMPLETED')
     _item(paid, p, 2, 10000)          # 20000 paid revenue
@@ -102,7 +110,7 @@ def test_products_overview_excludes_unpaid_and_soft_deleted_lines():
     cat = Category.objects.create(name='Food', slug='food')
     product = Product.objects.create(name='Burger', price=Decimal('10000'), category=cat)
     cashier = _cashier()
-    now = timezone.now()
+    now = _open_business_time()
 
     paid = _order(cashier, 20000, now, is_paid=True)
     _item(paid, product, 2, 10000)
@@ -126,7 +134,7 @@ def test_products_overview_allocates_order_discount():
     cat = Category.objects.create(name='Discounted', slug='discounted')
     product = Product.objects.create(name='Combo', price=Decimal('10000'), category=cat)
     cashier = _cashier()
-    now = timezone.now()
+    now = _open_business_time()
     order = _order(cashier, 8000, now, is_paid=True)
     order.subtotal = Decimal('10000')
     order.discount_amount = Decimal('2000')

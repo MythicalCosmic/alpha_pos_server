@@ -133,13 +133,6 @@ class ShiftService(CoreShiftService):
         orders = int(closed_totals['orders'] or 0)
         revenue = Decimal(closed_totals['revenue'] or 0)
         cash = Decimal(closed_totals['cash'] or 0)
-        for shift in live_rows:
-            live_orders, live_revenue, live_cash = CoreShiftService._live_totals(
-                shift, now,
-            )
-            orders += int(live_orders or 0)
-            revenue += Decimal(live_revenue or 0)
-            cash += Decimal(live_cash or 0)
 
         by_status = {value: 0 for value in Shift.Status.values}
         for row in base.values('status').annotate(count=Count('id')):
@@ -148,19 +141,41 @@ class ShiftService(CoreShiftService):
         reconciled = base.filter(
             reconciliation__is_deleted=False,
         ).count()
-        from cashbox.models import ShiftPaymentTotal
+        from cashbox.models import PAYMENT_METHODS, ShiftPaymentTotal
+        settlement_rows = ShiftPaymentTotal.objects.filter(
+            is_deleted=False,
+            shift__in=closed,
+            branch_id=F('shift__branch_id'),
+        )
+        closed_rows = list(closed)
+        evidence_rows = [*closed_rows, *live_rows]
+        evidence_extras = CoreShiftService._batch_list_extras(
+            evidence_rows, now=now,
+        )
+        unavailable_shift_ids = {
+            shift.id
+            for shift in evidence_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'tender_totals_source',
+            ) == 'UNAVAILABLE'
+        }
+        complete_frozen_shift_ids = {
+            shift.id
+            for shift in closed_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'frozen_tender_evidence_complete',
+            ) is True
+        }
+        settlement_shift_ids = set(
+            settlement_rows.values_list('shift_id', flat=True).distinct()
+        )
         tender_rows = (
-            ShiftPaymentTotal.objects.filter(
-                is_deleted=False,
-                shift__in=closed,
-                branch_id=F('shift__branch_id'),
+            settlement_rows.filter(
+                shift_id__in=complete_frozen_shift_ids,
+                method__in=PAYMENT_METHODS,
             )
             .values('method')
             .annotate(
-                expected=Coalesce(
-                    Sum('expected_amount'), Decimal('0.00'),
-                    output_field=DecimalField(max_digits=20, decimal_places=2),
-                ),
                 confirmed=Coalesce(
                     Sum('confirmed_amount'), Decimal('0.00'),
                     output_field=DecimalField(max_digits=20, decimal_places=2),
@@ -168,19 +183,68 @@ class ShiftService(CoreShiftService):
             )
             .order_by('method')
         )
-        expected_totals = {
-            row['method']: Decimal(row['expected'] or 0) for row in tender_rows
-        }
         confirmed_totals = {
             row['method']: Decimal(row['confirmed'] or 0) for row in tender_rows
         }
-        # ACTIVE shifts have no frozen ShiftPaymentTotal rows yet. Derive their
-        # tender split in one batched pass so global summary money remains
-        # consistent with the visible live rows instead of silently omitting it.
-        live_extras = CoreShiftService._batch_list_extras(live_rows, now=now)
+        derived_closed_rows = [
+            shift for shift in closed_rows
+            if shift.id not in complete_frozen_shift_ids
+        ]
+        partial_frozen_count = len(
+            settlement_shift_ids - complete_frozen_shift_ids
+        )
+        frozen_closed_count = len(complete_frozen_shift_ids)
+        evidence_issue_counts = {}
+        discrepancy_shift_ids = set()
+        incomplete_attribution_shift_ids = set()
+        absolute_unattributed = Decimal('0.00')
+        for shift in evidence_rows:
+            extras = evidence_extras.get(shift.id, {})
+            for issue in extras.get('frozen_tender_evidence_issues', []):
+                if (
+                    shift.status == Shift.Status.ACTIVE
+                    and not shift.end_time
+                    and issue == 'NO_FROZEN_TENDER_ROWS'
+                ):
+                    continue
+                evidence_issue_counts[issue] = (
+                    evidence_issue_counts.get(issue, 0) + 1
+                )
+            if (
+                shift.id in settlement_shift_ids
+                and extras.get('frozen_tender_discrepancies')
+            ):
+                discrepancy_shift_ids.add(shift.id)
+            if extras.get('tender_attribution_complete') is not True:
+                incomplete_attribution_shift_ids.add(shift.id)
+            absolute_unattributed += abs(Decimal(
+                extras.get('unattributed_expected_amount', '0.00')
+            ))
+        # The batch pass already read and bucketed all live order/payment/refund
+        # evidence. Reuse its private totals instead of issuing several queries
+        # per live shift here and again while serializing the page.
         for shift in live_rows:
+            live_totals = evidence_extras.get(shift.id, {}).get('_live_totals')
+            if live_totals is None:
+                live_orders, live_revenue, live_cash = (
+                    CoreShiftService._live_totals(shift, now)
+                )
+            else:
+                live_orders = live_totals['total_orders']
+                live_revenue = live_totals['total_revenue']
+                live_cash = live_totals['cash_collected']
+            orders += int(live_orders or 0)
+            revenue += Decimal(live_revenue or 0)
+            cash += Decimal(live_cash or 0)
+        # Aggregate every shift from the core verdict. Trusted frozen rows keep
+        # their immutable amounts; incomplete/mismatched rows have already
+        # failed closed to the canonical derived map (including UNKNOWN).
+        expected_totals = {}
+        for shift in evidence_rows:
             for method, amount in (
-                live_extras.get(shift.id, {}).get('expected_by_tender', {})
+                evidence_extras.get(shift.id, {}).get(
+                    'expected_by_tender', {}
+                )
             ).items():
                 expected_totals[method] = (
                     expected_totals.get(method, Decimal('0.00'))
@@ -202,6 +266,9 @@ class ShiftService(CoreShiftService):
             (Decimal(value) for value in confirmed_by_tender.values()),
             Decimal('0.00'),
         )
+        unknown_expected = Decimal(
+            expected_by_tender.get('UNKNOWN', '0.00')
+        )
         return {
             'shift_count': total,
             'live_count': len(live_rows),
@@ -216,6 +283,32 @@ class ShiftService(CoreShiftService):
             'confirmed_by_tender': confirmed_by_tender,
             'total_expected_to_receive': _money(total_expected),
             'total_confirmed_received': _money(total_confirmed),
+            # UNKNOWN=0 proves only that no known amount was left without a
+            # tender identity. It cannot prove completeness when the derived
+            # evidence pass itself failed and returned UNAVAILABLE for a shift.
+            'tender_attribution_complete': (
+                unknown_expected == 0
+                and not unavailable_shift_ids
+                and not incomplete_attribution_shift_ids
+            ),
+            'unattributed_expected_amount': _money(unknown_expected),
+            'unattributed_expected_absolute_amount': _money(
+                absolute_unattributed
+            ),
+            'unattributed_shift_count': len(
+                incomplete_attribution_shift_ids - unavailable_shift_ids
+            ),
+            'tender_evidence_issue_counts': dict(
+                sorted(evidence_issue_counts.items())
+            ),
+            'frozen_tender_discrepancy_shifts': len(discrepancy_shift_ids),
+            'tender_totals_sources': {
+                'frozen_closed_shifts': frozen_closed_count,
+                'derived_closed_shifts': len(derived_closed_rows),
+                'derived_live_shifts': len(live_rows),
+                'partial_frozen_shifts': partial_frozen_count,
+                'unavailable_shifts': len(unavailable_shift_ids),
+            },
             'average_revenue_per_shift': _money(
                 revenue / total if total else Decimal('0')
             ),

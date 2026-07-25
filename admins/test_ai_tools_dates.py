@@ -3,6 +3,7 @@
 - get_overview 'today' revenue must be business-day + paid + non-cancelled only.
 """
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -33,8 +34,12 @@ def _order(total, is_paid=True, status='COMPLETED'):
         payment_method='CASH' if is_paid else None,
         total_amount=Decimal(total), subtotal=Decimal(total),
         display_id=Order.objects.count() + 1)
-    if is_paid:
-        Order.objects.filter(pk=o.pk).update(paid_at=timezone.now())
+    event_at = timezone.now() - timedelta(seconds=1)
+    Order.objects.filter(pk=o.pk).update(
+        created_at=event_at,
+        paid_at=event_at if is_paid else None,
+    )
+    o.refresh_from_db()
     return o
 
 
@@ -57,7 +62,9 @@ def test_query_db_allows_orderitem_side_sum():
     assert 'error' not in res, res
 
 
-def test_overview_today_revenue_excludes_unpaid_and_cancelled():
+def test_overview_today_revenue_excludes_unpaid_and_cancelled(
+    open_business_clock,
+):
     _order(100000, is_paid=True, status='COMPLETED')    # counts
     _order(50000, is_paid=False, status='OPEN')          # unpaid -> excluded
     cancelled = _order(30000, is_paid=True, status='CANCELED')
@@ -72,7 +79,7 @@ def test_overview_today_revenue_excludes_unpaid_and_cancelled():
         drawer_cash_amount=Decimal('30000'),
         source=OrderRefund.Source.ORDER_CANCEL,
         source_id='ai-overview-cancel',
-        refunded_at=timezone.now(),
+        refunded_at=timezone.now() - timedelta(seconds=1),
     )
     res = _exec('get_overview', {})
     ts = res['today_sales']

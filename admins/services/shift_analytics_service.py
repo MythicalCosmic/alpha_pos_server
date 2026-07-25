@@ -149,11 +149,11 @@ def _reconciliation(shift):
 
 # ───────────────────────── per-shift rows ─────────────────────────
 
-def _cashier_shift_row(shift, att_map):
+def _cashier_shift_row(shift, att_map, *, now=None):
     from base.models import Order, OrderItem, OrderRefund
 
     start = shift.start_time
-    end = effective_shift_end(shift)
+    end = effective_shift_end(shift, now=now)
     duration_min = max(int((end - start).total_seconds() / 60), 0)
     hours = _hours(start, end)
 
@@ -192,11 +192,21 @@ def _cashier_shift_row(shift, att_map):
         units=Coalesce(Sum('quantity'), 0),
         lines=Count('id'),
     )
+    refunds = OrderRefund.objects.filter(
+        is_deleted=False, shift=shift, branch_id=shift.branch_id,
+    )
+    if shift.status == 'ACTIVE' and shift.end_time is None:
+        # A synced/backdated refund can be attached to the running shift after
+        # this report's captured cutoff. Keep ACTIVE evidence on the same
+        # snapshot boundary as its paid-order totals. Closed shifts retain the
+        # immutable shift-FK attribution used by settlement/reconciliation.
+        refunds = refunds.filter(refunded_at__lt=end)
+
     from base.services.refund_lines import (
         REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
     )
     refunded_items = refund_item_events(
-        shift=shift, branch_id=shift.branch_id,
+        id__in=refunds.values('id'),
     )
     refunded_item_totals = refunded_items.aggregate(
         units=Coalesce(
@@ -218,9 +228,6 @@ def _cashier_shift_row(shift, att_map):
         discount_total=Coalesce(Sum('discount_amount'), Decimal('0'), output_field=_DEC),
         discounted_orders=Count('id', filter=Q(discount_amount__gt=0) | Q(discount_percent__gt=0)),
         avg_discount_pct=Avg('discount_percent', filter=Q(discount_percent__gt=0)),
-    )
-    refunds = OrderRefund.objects.filter(
-        is_deleted=False, shift=shift, branch_id=shift.branch_id,
     )
     from base.services.order_refund import refund_totals
     refunded = refund_totals(refunds)
@@ -320,11 +327,11 @@ def _cashier_shift_row(shift, att_map):
     }
 
 
-def _kitchen_shift_row(shift, att_map, target_prep_seconds):
+def _kitchen_shift_row(shift, att_map, target_prep_seconds, *, now=None):
     from base.models import Order, OrderItem
 
     start = shift.start_time
-    end = effective_shift_end(shift)
+    end = effective_shift_end(shift, now=now)
     duration_min = max(int((end - start).total_seconds() / 60), 0)
     hours = _hours(start, end)
 
@@ -388,24 +395,45 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds):
 
 # ───────────────────── distribution / leaderboard ─────────────────────
 
-def _hourly_daily(shifts, *, cashier_owned=True):
+def _hourly_daily(shifts, *, cashier_owned=True, now=None):
     """Operational orders by created_at; realized revenue by paid_at.
 
     Keeping two event streams is essential around shift/cutoff boundaries: a
     ticket contributes demand when it was opened and money when it settled.
+    A refund immutably owned by a shift can carry a device-skewed event clock
+    outside that shift's wall-clock window. Such money is kept as an explicit
+    unbucketed adjustment instead of being dropped or assigned a false hour.
     """
     from base.models import Order, OrderRefund
     if not shifts:
-        return {'by_hour': [], 'by_date': [], 'peak_hour': None}
+        return {
+            'by_hour': [],
+            'by_date': [],
+            'peak_hour': None,
+            'unbucketed_refund_adjustment': {
+                'count': 0,
+                'revenue': _money(0),
+                'reason': 'SHIFT_OWNED_REFUND_OUTSIDE_EVENT_WINDOW',
+            },
+            'revenue_total': _money(0),
+        }
 
     from bisect import bisect_right
     from collections import defaultdict
 
-    now = timezone.now()
+    now = now or timezone.now()
     raw_windows = defaultdict(list)
     shift_windows = {}
     for shift in shifts:
         end = effective_shift_end(shift, now=now)
+        shift_windows[shift.id] = {
+            'branch_id': shift.branch_id,
+            'start': shift.start_time,
+            'end': end,
+            'is_live': (
+                shift.status == 'ACTIVE' and shift.end_time is None
+            ),
+        }
         if end <= shift.start_time:
             continue
         owner = (
@@ -413,10 +441,50 @@ def _hourly_daily(shifts, *, cashier_owned=True):
             shift.user_id if cashier_owned else None,
         )
         raw_windows[owner].append((shift.start_time, end))
-        shift_windows[shift.id] = (shift.branch_id, shift.start_time, end)
 
     if not raw_windows:
-        return {'by_hour': [], 'by_date': [], 'peak_hour': None}
+        unbucketed_refund_count = 0
+        unbucketed_refund_revenue = Decimal('0')
+        # A non-live null-end shift has a deliberately degenerate operational
+        # window, but immutable refund FK ownership still applies. Preserve
+        # those adjustments even when there is no clock bucket at all.
+        if cashier_owned and shift_windows:
+            for shift_id, branch_id, refunded_at, amount in (
+                OrderRefund.objects.filter(
+                    is_deleted=False,
+                    shift_id__in=list(shift_windows),
+                    branch_id__in={
+                        value['branch_id']
+                        for value in shift_windows.values()
+                    },
+                ).values_list(
+                    'shift_id', 'branch_id', 'refunded_at', 'amount',
+                )
+            ):
+                expected = shift_windows.get(shift_id)
+                if not expected or expected['branch_id'] != branch_id:
+                    continue
+                if (
+                    expected['is_live']
+                    and (
+                        refunded_at is None
+                        or refunded_at >= expected['end']
+                    )
+                ):
+                    continue
+                unbucketed_refund_count += 1
+                unbucketed_refund_revenue -= amount or Decimal('0')
+        return {
+            'by_hour': [],
+            'by_date': [],
+            'peak_hour': None,
+            'unbucketed_refund_adjustment': {
+                'count': unbucketed_refund_count,
+                'revenue': _money(unbucketed_refund_revenue),
+                'reason': 'SHIFT_OWNED_REFUND_OUTSIDE_EVENT_WINDOW',
+            },
+            'revenue_total': _money(unbucketed_refund_revenue),
+        }
 
     # Merge overlapping/adjacent windows, then binary-search them in Python.
     # SQL stays a constant-size broad envelope even for hundreds of shifts,
@@ -442,7 +510,14 @@ def _hourly_daily(shifts, *, cashier_owned=True):
         index = bisect_right(starts, moment) - 1
         return index >= 0 and moment < intervals[index][1]
 
-    branch_ids = list({owner[0] for owner in windows})
+    branch_ids = list(
+        {
+            value['branch_id']
+            for value in shift_windows.values()
+        }
+        if cashier_owned
+        else {owner[0] for owner in windows}
+    )
     min_start = min(start for intervals in raw_windows.values() for start, _ in intervals)
     max_end = max(end for intervals in raw_windows.values() for _, end in intervals)
     order_scope = {
@@ -488,6 +563,8 @@ def _hourly_daily(shifts, *, cashier_owned=True):
 
     by_hour = {h: {'orders': 0, 'revenue': Decimal('0')} for h in range(24)}
     by_date = {}
+    unbucketed_refund_count = 0
+    unbucketed_refund_revenue = Decimal('0')
     from base.services.business_day import business_date, business_day_start
     cutover = business_day_start()
 
@@ -515,8 +592,28 @@ def _hourly_daily(shifts, *, cashier_owned=True):
     for shift_id, branch_id, cashier_id, refunded_at, amount in refunded_rows:
         if cashier_owned:
             expected = shift_windows.get(shift_id)
-            if not expected or expected[0] != branch_id \
-                    or not (expected[1] <= refunded_at < expected[2]):
+            if not expected or expected['branch_id'] != branch_id:
+                continue
+            inside_window = (
+                refunded_at is not None
+                and expected['start'] <= refunded_at < expected['end']
+            )
+            if not inside_window:
+                # ACTIVE rows at/after the captured end are future evidence for
+                # this snapshot and must remain excluded. Older/pre-window
+                # device skew and every CLOSED shift-owned refund are already
+                # part of the headline FK totals, so preserve their money as an
+                # explicit unbucketed adjustment.
+                if (
+                    expected['is_live']
+                    and (
+                        refunded_at is None
+                        or refunded_at >= expected['end']
+                    )
+                ):
+                    continue
+                unbucketed_refund_count += 1
+                unbucketed_refund_revenue -= amount or Decimal('0')
                 continue
         elif not belongs(branch_id, cashier_id, refunded_at):
             continue
@@ -537,7 +634,23 @@ def _hourly_daily(shifts, *, cashier_owned=True):
         {'date': d, 'orders': by_date[d]['orders'], 'revenue': _money(by_date[d]['revenue'])}
         for d in sorted(by_date)
     ]
-    return {'by_hour': hour_list, 'by_date': date_list, 'peak_hour': peak['hour'] if peak else None}
+    bucketed_revenue = sum(
+        (row['revenue'] for row in by_hour.values()),
+        Decimal('0'),
+    )
+    return {
+        'by_hour': hour_list,
+        'by_date': date_list,
+        'peak_hour': peak['hour'] if peak else None,
+        'unbucketed_refund_adjustment': {
+            'count': unbucketed_refund_count,
+            'revenue': _money(unbucketed_refund_revenue),
+            'reason': 'SHIFT_OWNED_REFUND_OUTSIDE_EVENT_WINDOW',
+        },
+        'revenue_total': _money(
+            bucketed_revenue + unbucketed_refund_revenue
+        ),
+    }
 
 
 def _cashier_leaderboard(rows):
@@ -619,13 +732,15 @@ def _shifts_in_range(date_from, date_to, role, user_id=None, *, window=None):
     return list(qs)
 
 
-def cashier_shift_analytics(date_from, date_to, user_id=None, *, window=None):
+def cashier_shift_analytics(
+        date_from, date_to, user_id=None, *, window=None, now=None):
     """Everything about cashier shifts over [date_from, date_to]."""
+    now = now or timezone.now()
     shifts = _shifts_in_range(
         date_from, date_to, 'CASHIER', user_id, window=window,
     )
     att = _attendance_map({s.user_id for s in shifts}, date_from, date_to)
-    rows = [_cashier_shift_row(s, att) for s in shifts]
+    rows = [_cashier_shift_row(s, att, now=now) for s in shifts]
 
     # ── roll up the summary ──
     n = len(rows)
@@ -746,12 +861,12 @@ def cashier_shift_analytics(date_from, date_to, user_id=None, *, window=None):
         'filtered_user_id': user_id,
         'summary': summary,
         'leaderboard': _cashier_leaderboard(rows),
-        'distribution': _hourly_daily(shifts),
+        'distribution': _hourly_daily(shifts, now=now),
         'shifts': rows,
     }
 
 
-def shift_handover_report(shift):
+def shift_handover_report(shift, *, now=None):
     """Everything a manager needs when a cashier ends a shift and hands over.
 
     The full per-shift KPIs (money cash/card, payment mix, discounts, averages,
@@ -760,14 +875,19 @@ def shift_handover_report(shift):
     """
     from base.models import Order, OrderItem, OrderRefund
 
+    # One captured instant is the authoritative half-open end of an ACTIVE
+    # shift for this whole report. Recomputing ``timezone.now()`` in each
+    # helper let a payment land between queries: headline revenue could then
+    # include it while the receipt proof list still omitted it (or vice versa).
+    now = now or timezone.now()
     start = shift.start_time
-    end = effective_shift_end(shift)
+    end = effective_shift_end(shift, now=now)
     att = _attendance_map(
         {shift.user_id},
         timezone.localtime(start).date(),
         timezone.localtime(end).date(),
     )
-    row = _cashier_shift_row(shift, att)
+    row = _cashier_shift_row(shift, att, now=now)
 
     base_qs = Order.objects.filter(
         is_deleted=False, cashier_id=shift.user_id,
@@ -787,37 +907,123 @@ def shift_handover_report(shift):
     refund_qs = OrderRefund.objects.filter(
         is_deleted=False, shift=shift, branch_id=shift.branch_id,
     )
+    if shift.status == 'ACTIVE' and shift.end_time is None:
+        refund_qs = refund_qs.filter(refunded_at__lt=end)
 
-    # Every receipt taken during the shift.
-    receipts = []
-    for o in (
-        base_qs.annotate(
-            line_items=Count(
-                'items',
-                filter=Q(items__is_deleted=False),
-                distinct=True,
+    def _annotated_receipts(queryset, order_by):
+        return list(
+            queryset.annotate(
+                line_items=Count(
+                    'items',
+                    filter=Q(items__is_deleted=False),
+                    distinct=True,
+                ),
+                units=Coalesce(
+                    Sum(
+                        'items__quantity',
+                        filter=Q(items__is_deleted=False),
+                    ),
+                    0,
+                ),
+            ).order_by(order_by, 'id')
+        )
+
+    def _serialize_receipt(order):
+        return {
+            'order_id': order.id,
+            'display_id': order.display_id,
+            'status': order.status,
+            'order_type': order.order_type,
+            'is_paid': order.is_paid,
+            'payment_method': order.payment_method,
+            'total_amount': _money(order.total_amount),
+            'discount_amount': _money(order.discount_amount),
+            'discount_percent': str(order.discount_percent or 0),
+            'line_items': order.line_items,
+            'units': order.units or 0,
+            'created_at': (
+                order.created_at.isoformat() if order.created_at else None
             ),
-            units=Coalesce(
-                Sum('items__quantity', filter=Q(items__is_deleted=False)),
-                0,
+            'paid_at': order.paid_at.isoformat() if order.paid_at else None,
+        }
+
+    # Operational scope: orders CREATED during the shift. This list is useful
+    # for workload/kitchen review, but is not the receipt-level proof behind the
+    # shift's money totals when an order crosses a shift boundary.
+    receipts = [
+        _serialize_receipt(order)
+        for order in _annotated_receipts(base_qs, 'created_at')
+    ]
+
+    # Settlement scope: orders PAID during the shift. These are the exact sale
+    # rows behind ``row.money`` and expected tender totals, including an order
+    # created in a previous shift. Emit canonical bill tender amounts rather
+    # than raw CASH tendered, which can include the customer's change.
+    settled_orders = _annotated_receipts(paid_qs, 'paid_at')
+    from base.models import OrderPayment
+    from base.services.tender import (
+        _courier_rows_by_order,
+        _drawer_cash_from_sources,
+        split_from_rows,
+    )
+    settled_ids = [order.id for order in settled_orders]
+    till_rows = {}
+    if settled_ids:
+        for (
+            order_id, method, amount, payment_action_id, line_index,
+        ) in OrderPayment.objects.filter(
+            is_deleted=False,
+            order_id__in=settled_ids,
+        ).values_list(
+            'order_id', 'method', 'amount',
+            'payment_action_id', 'line_index',
+        ):
+            till_rows.setdefault(order_id, []).append((
+                method, amount, payment_action_id, line_index,
+            ))
+    courier_rows = _courier_rows_by_order(settled_ids)
+    settled_receipts = []
+    for order in settled_orders:
+        order_till = till_rows.get(order.id, ())
+        order_courier = courier_rows.get(order.id, ())
+        split, card_detail = split_from_rows(
+            order.total_amount,
+            order.payment_method,
+            order_till,
+            order_courier,
+            order_id=order.id,
+            payment_action_id=order.payment_action_id,
+        )
+        drawer_cash = _drawer_cash_from_sources(
+            order.total_amount,
+            split,
+            order_till,
+            order_courier,
+        )
+        receipt = _serialize_receipt(order)
+        receipt.update({
+            'payment_action_id': (
+                str(order.payment_action_id)
+                if order.payment_action_id else None
             ),
-        ).order_by('created_at')
-    ):
-        receipts.append({
-            'order_id': o.id,
-            'display_id': o.display_id,
-            'status': o.status,
-            'order_type': o.order_type,
-            'is_paid': o.is_paid,
-            'payment_method': o.payment_method,
-            'total_amount': _money(o.total_amount),
-            'discount_amount': _money(o.discount_amount),
-            'discount_percent': str(o.discount_percent or 0),
-            'line_items': o.line_items,
-            'units': o.units or 0,
-            'created_at': o.created_at.isoformat() if o.created_at else None,
-            'paid_at': o.paid_at.isoformat() if o.paid_at else None,
+            'created_in_this_shift': (
+                start <= order.created_at < end
+                if order.created_at else False
+            ),
+            'cash_amount': _money(split['cash']),
+            'card_amount': _money(split['card']),
+            'payme_amount': _money(split['payme']),
+            'unknown_amount': _money(split['unknown']),
+            'drawer_cash_amount': _money(drawer_cash),
+            'uzcard_amount': _money(card_detail.get('UZCARD')),
+            'humo_amount': _money(card_detail.get('HUMO')),
+            'generic_card_amount': _money(card_detail.get('CARD')),
+            'has_concrete_payment_evidence': bool(
+                order_till or order_courier
+            ),
+            'tender_attribution_complete': split['unknown'] == 0,
         })
+        settled_receipts.append(receipt)
 
     # What sold: per-product quantity, how many orders it appeared in, revenue.
     from base.services.revenue import net_line_revenue
@@ -888,7 +1094,9 @@ def shift_handover_report(shift):
         product_net.items(), key=lambda item: item[1]['units'], reverse=True,
     ) if value['units'] or value['revenue']]
 
-    distribution = _hourly_daily([shift])  # by_hour / peak_hour for this shift
+    distribution = _hourly_daily(
+        [shift], now=now,
+    )  # by_hour / peak_hour for this shift
 
     # Per-type settlement (P2): expected (system) / counted / confirmed /
     # difference per tender type, frozen at close.
@@ -905,10 +1113,13 @@ def shift_handover_report(shift):
 
     # Cash paid OUT of the drawer this shift, grouped by category (P4).
     from cashbox.models import CashboxExpense
+    expense_qs = CashboxExpense.objects.filter(
+        shift=shift, branch_id=shift.branch_id, is_deleted=False,
+    )
+    if shift.status == 'ACTIVE' and shift.end_time is None:
+        expense_qs = expense_qs.filter(created_at__lt=end)
     exp_rows = (
-        CashboxExpense.objects.filter(
-            shift=shift, branch_id=shift.branch_id, is_deleted=False,
-        )
+        expense_qs
         .values('category__name')
         .annotate(total=Coalesce(Sum('amount'), Decimal('0'), output_field=_DEC),
                   count=Count('id'))
@@ -926,6 +1137,20 @@ def shift_handover_report(shift):
         'cash_expenses': cash_expenses,
         'receipts': receipts,
         'receipt_count': len(receipts),
+        'settled_receipts': settled_receipts,
+        'settled_receipt_count': len(settled_receipts),
+        'receipt_scopes': {
+            'receipts': {
+                'clock': 'created_at',
+                'label': 'Orders taken during this shift',
+                'drives_money_totals': False,
+            },
+            'settled_receipts': {
+                'clock': 'paid_at',
+                'label': 'Orders paid during this shift',
+                'drives_money_totals': True,
+            },
+        },
         'refunds': [{
             'refund_id': refund.id,
             'order_id': refund.order_id,
@@ -945,18 +1170,24 @@ def shift_handover_report(shift):
 
 def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
                             target_prep_seconds=DEFAULT_TARGET_PREP_SECONDS,
-                            *, window=None):
+                            *, window=None, now=None):
     """Everything about kitchen/chef shifts over [date_from, date_to].
 
     No dedicated chef role exists yet, so `role` selects which staff are
     treated as kitchen (default WAITER). Prep metrics are window-based since
     per-item chef attribution isn't tracked — see module docstring.
     """
+    now = now or timezone.now()
     shifts = _shifts_in_range(
         date_from, date_to, role, user_id, window=window,
     )
     att = _attendance_map({s.user_id for s in shifts}, date_from, date_to)
-    rows = [_kitchen_shift_row(s, att, target_prep_seconds) for s in shifts]
+    rows = [
+        _kitchen_shift_row(
+            shift, att, target_prep_seconds, now=now,
+        )
+        for shift in shifts
+    ]
 
     n = len(rows)
     status_counts = {'ACTIVE': 0, 'ENDED': 0, 'COMPLETED': 0, 'ABANDONED': 0}
@@ -1025,6 +1256,8 @@ def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
         ),
         'filtered_user_id': user_id,
         'summary': summary,
-        'distribution': _hourly_daily(shifts, cashier_owned=False),
+        'distribution': _hourly_daily(
+            shifts, cashier_owned=False, now=now,
+        ),
         'shifts': rows,
     }
