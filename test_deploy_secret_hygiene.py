@@ -38,6 +38,13 @@ def test_docker_build_context_excludes_live_secrets_and_backups():
     } <= patterns
 
 
+def test_collectstatic_cannot_leave_build_logs_in_runtime_image():
+    dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
+
+    assert 'LOG_DIR=/tmp/alpha-pos-build-logs' in dockerfile
+    assert 'rm -rf /tmp/alpha-pos-build-logs /app/logs' in dockerfile
+
+
 @pytest.mark.parametrize('path', DEPLOY_FILES)
 def test_deploy_sources_never_embed_live_credentials(path):
     text = path.read_text(encoding='utf-8')

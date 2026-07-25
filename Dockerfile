@@ -30,9 +30,14 @@ ARG GIT_SHA=unknown
 ENV APP_GIT_SHA=${GIT_SHA}
 
 # Collect static (Django admin assets). A throwaway key lets settings import with
-# DEBUG=False; collectstatic itself needs no real secret and no DB.
+# DEBUG=False; collectstatic itself needs no real secret and no DB. Redirect its
+# temporary file handlers away from /app, then remove both the temporary target
+# and any defensive /app/logs residue so the runtime image contains no host or
+# build-time log material.
 RUN SECRET_KEY=build-time-only-not-used-at-runtime \
-    python manage.py collectstatic --noinput
+    LOG_DIR=/tmp/alpha-pos-build-logs \
+    python manage.py collectstatic --noinput \
+    && rm -rf /tmp/alpha-pos-build-logs /app/logs
 
 # Non-root runtime user.
 RUN groupadd --system app && useradd --system --gid app --home /app --shell /usr/sbin/nologin app \
