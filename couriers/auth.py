@@ -17,21 +17,26 @@ from functools import wraps
 
 from django.http import JsonResponse
 
+from base.helpers.request import SessionCredentialConflict
 from base.models import User
 from base.repositories.session import SessionRepository
+from base.security.auth import session_credential_conflict_response
 
 
 def get_courier_token(request):
     """Extract the raw session token from the request. Accepts the courier
     app's ``Token`` scheme, the server-wide ``Bearer`` scheme, or the cookie."""
     cookie = request.COOKIES.get('session_key')
-    if cookie:
-        return cookie
+    cookie = cookie if isinstance(cookie, str) and cookie else None
     auth = request.META.get('HTTP_AUTHORIZATION', '')
-    for prefix in ('Token ', 'Bearer '):
-        if auth.startswith(prefix):
-            return auth[len(prefix):].strip()
-    return None
+    header = None
+    if isinstance(auth, str):
+        scheme, separator, value = auth.partition(' ')
+        if separator and scheme.lower() in ('token', 'bearer'):
+            header = value.strip() or None
+    if cookie and header and cookie != header:
+        raise SessionCredentialConflict()
+    return cookie or header
 
 
 def resolve_courier(request):
@@ -66,7 +71,10 @@ def logout_session(token):
 def courier_required(view_func):
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
-        user, courier, token = resolve_courier(request)
+        try:
+            user, courier, token = resolve_courier(request)
+        except SessionCredentialConflict:
+            return session_credential_conflict_response()
         if user is None:
             return JsonResponse(
                 {'success': False, 'message': 'Authentication required'}, status=401,

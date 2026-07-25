@@ -49,7 +49,8 @@ def cashier(db):
 def active_shift(db, cashier):
     from base.models import Shift
     return Shift.objects.create(user=cashier, start_time=timezone.now() - timedelta(hours=1),
-                                status='ACTIVE', branch_id='branch-a')
+                                status='ACTIVE', branch_id='branch-a',
+                                device_id='till-1')
 
 
 @pytest.fixture

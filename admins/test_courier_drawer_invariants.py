@@ -72,7 +72,11 @@ def test_courier_cash_never_enters_or_leaves_pos_drawer(cashier_user):
     assert register.current_balance == Decimal('0.00')
 
 
-@override_settings(DEPLOYMENT_MODE='local', BRANCH_ID='branch-a')
+@override_settings(
+    DEPLOYMENT_MODE='local',
+    BRANCH_ID='branch-a',
+    DEVICE_ID='test-till',
+)
 def test_mixed_till_and_courier_cash_reconciles_only_till_residual(
     cashier_user,
 ):
@@ -97,6 +101,7 @@ def test_mixed_till_and_courier_cash_reconciles_only_till_residual(
         status=Shift.Status.ACTIVE,
         start_time=now - timedelta(hours=1),
         branch_id='branch-a',
+        device_id='test-till',
     )
     order = _paid_delivery(cashier_user)
     sale_time = sale_shift.start_time + timedelta(minutes=10)

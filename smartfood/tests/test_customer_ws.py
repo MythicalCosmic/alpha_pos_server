@@ -59,6 +59,31 @@ def _connect(path):
     return async_to_sync(_run)()
 
 
+def test_customer_websocket_credential_transports_must_match():
+    from smartfood.consumers import _handshake_token
+
+    first = 'a' * 64
+    second = 'b' * 64
+    assert _handshake_token({
+        'query_string': f'token={first}'.encode(),
+        'headers': [
+            (b'authorization', f'Bearer {second}'.encode()),
+            (b'cookie', f'session_key={first}'.encode()),
+        ],
+    }) is None
+    assert _handshake_token({
+        'query_string': f'token={first}'.encode(),
+        'headers': [
+            (b'authorization', f'bEaReR {first}'.encode()),
+            (b'cookie', f'session_key={first}'.encode()),
+        ],
+    }) == first
+    assert _handshake_token({
+        'query_string': b'',
+        'headers': [(b'cookie', f'session_key={first}'.encode())],
+    }) is None
+
+
 class TestCustomerOrderWsAuth:
     def test_owner_accepted(self):
         c = _customer()

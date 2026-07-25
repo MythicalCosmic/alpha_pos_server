@@ -5,7 +5,6 @@ gating, server-side money recompute (sizes + toppings), runtime stop-selling,
 the cashier-dispatch flow (attribution + price integrity), tracking, and IDOR.
 """
 import json
-from decimal import Decimal
 
 import pytest
 
@@ -56,6 +55,17 @@ class TestAuth:
     def test_protected_endpoint_needs_token(self, client, cfg):
         assert client.get(f'{C}/me').status_code == 401
 
+    def test_protected_endpoint_rejects_conflicting_cookie_and_bearer(
+        self, client, cfg,
+    ):
+        client.cookies['session_key'] = 'a' * 64
+        response = client.get(
+            f'{C}/me',
+            HTTP_AUTHORIZATION='Bearer ' + ('b' * 64),
+        )
+        assert response.status_code == 401
+        assert response.json()['code'] == 'session_credential_conflict'
+
     def test_me_with_token(self, auth_client, customer):
         r = auth_client.get(f'{C}/me')
         assert r.status_code == 200
@@ -68,7 +78,9 @@ class TestAuth:
 class TestGating:
     def test_catalog_closed_when_bot_off(self, auth_client, db, product):
         from smartfood.models import BotConfig
-        cfg = BotConfig.load(); cfg.enabled = False; cfg.save()
+        cfg = BotConfig.load()
+        cfg.enabled = False
+        cfg.save()
         r = auth_client.get(f'{C}/catalog/products')
         assert r.status_code == 200 and r.json().get('closed') is True
         assert r.json().get('reason') == 'bot_off'

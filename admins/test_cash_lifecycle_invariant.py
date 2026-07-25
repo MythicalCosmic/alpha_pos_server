@@ -42,6 +42,7 @@ def test_mark_paid_reconcile_then_inkassa_books_sale_once(
         status='ACTIVE',
         start_time=timezone.now() - timedelta(minutes=5),
         branch_id=branch,
+        device_id='test-till',
         treasury_settlement_eligible=True,
     )
     order = Order.objects.create(
@@ -56,7 +57,11 @@ def test_mark_paid_reconcile_then_inkassa_books_sale_once(
 
     # Physical cash is accepted only on the owning branch node; the remainder
     # of this test exercises the cloud reconciliation/inkassa half.
-    with override_settings(DEPLOYMENT_MODE='local', BRANCH_ID=branch):
+    with override_settings(
+        DEPLOYMENT_MODE='local',
+        BRANCH_ID=branch,
+        DEVICE_ID='test-till',
+    ):
         result, status = AdminOrderService.mark_as_paid(
             order.id, payment_method='CASH', cashier_id=cashier_user.id,
         )

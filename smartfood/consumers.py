@@ -9,12 +9,13 @@ and the socket is scoped to the authenticated customer's OWN order — a per-ord
 group plus an ownership check prevents leaking other customers' orders. The
 socket is read-only (no inbound messages)."""
 import logging
-from urllib.parse import parse_qs
 
 from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
 from django.conf import settings
 
+from base.helpers.request import SessionCredentialConflict
+from base.helpers.websocket import resolve_websocket_session_credential
 from smartfood.realtime import botorder_group
 
 logger = logging.getLogger('smartfood.ws')
@@ -24,16 +25,13 @@ _CLOSE_FORBIDDEN = 4403
 
 
 def _handshake_token(scope):
-    qs = parse_qs((scope.get('query_string') or b'').decode('utf-8', 'ignore'))
-    if qs.get('token'):
-        return qs['token'][0]
-    for key, val in (scope.get('headers') or []):
-        if key == b'authorization':
-            v = val.decode('utf-8', 'ignore')
-            for prefix in ('Token ', 'Bearer '):
-                if v.startswith(prefix):
-                    return v[len(prefix):].strip()
-    return None
+    try:
+        token, _source = resolve_websocket_session_credential(
+            scope, header_schemes=('token', 'bearer'),
+        )
+    except SessionCredentialConflict:
+        return None
+    return token
 
 
 def _license_blocked():

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 from django.db import IntegrityError, transaction
-from django.test import Client
+from django.test import Client, override_settings
 from django.utils import timezone
 
 from base.models import DeliveryPerson, Order, Session, Shift, User
@@ -147,3 +147,34 @@ def test_phone_canonical_unique_and_legacy_replay_guard():
     order.save(update_fields=['delivery_person', 'updated_at'])
     order.refresh_from_db()
     assert order.delivery_person_id is None
+
+
+@override_settings(DEPLOYMENT_MODE='cloud')
+def test_inbound_legacy_courier_replay_is_cleared_and_published():
+    """A rejected legacy projection must remain visible to the pull feed."""
+    actor, _token = _actor('MANAGER', branch_id='branch-a')
+    order = _order(actor, 'branch-a')
+    courier = _courier('CR-AUTHORITATIVE', '+998901110006', 'branch-a')
+    DeliveryAssignment.objects.create(
+        order=order,
+        courier=courier,
+        step=DeliveryAssignment.Step.ASSIGNED,
+        assigned_at=timezone.now(),
+    )
+    legacy = DeliveryPerson.objects.create(
+        first_name='Legacy Replay',
+        phone_number='+998909999998',
+    )
+    Order.objects.filter(pk=order.pk).update(synced_at=timezone.now())
+    order.refresh_from_db()
+    starting_version = order.sync_version
+
+    # Simulate sync ingestion: the replay itself must not publish an echo, but
+    # the guard's authoritative correction is a real cloud-owned change.
+    order.delivery_person = legacy
+    order.save(_syncing=True, update_fields=['delivery_person'])
+
+    order.refresh_from_db()
+    assert order.delivery_person_id is None
+    assert order.sync_version == starting_version + 1
+    assert order.synced_at is None

@@ -1,0 +1,59 @@
+# Source-control metadata and local tooling
+.git
+.gitmodules
+**/.git
+.github
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Secrets and machine-local credentials
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.ppk
+.ssh
+admin_credentials.json
+.django_admin_rotated
+
+# Databases, backups, logs, uploads, and generated runtime state
+db.sqlite3
+db.sqlite3-*
+*.sqlite3
+*.sqlite3-*
+*.sql
+*.sql.gz
+backups
+logs
+reports
+media
+private_media
+staticfiles
+caddy
+=
+
+# Build and release artifacts
+build
+dist
+DELIVERABLES
+update_keys
+update_repo
+*.exe
+*.zip
+*.tar
+*.tar.gz
+
+# Generated deployment files that belong on the host, never in the app image
+docker-compose.edge.yml
+deploy/caddy/Caddyfile

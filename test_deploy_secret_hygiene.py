@@ -12,6 +12,32 @@ DEPLOY_FILES = (
 )
 
 
+def test_docker_build_context_excludes_live_secrets_and_backups():
+    dockerignore = ROOT / '.dockerignore'
+    assert dockerignore.is_file()
+
+    patterns = {
+        line.strip()
+        for line in dockerignore.read_text(encoding='utf-8').splitlines()
+        if line.strip() and not line.lstrip().startswith('#')
+    }
+    assert {
+        '.git',
+        '.env',
+        '.env.*',
+        '*.pem',
+        '*.key',
+        'db.sqlite3',
+        '*.sql',
+        '*.sql.gz',
+        'backups',
+        'logs',
+        'reports',
+        'media',
+        'private_media',
+    } <= patterns
+
+
 @pytest.mark.parametrize('path', DEPLOY_FILES)
 def test_deploy_sources_never_embed_live_credentials(path):
     text = path.read_text(encoding='utf-8')

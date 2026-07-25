@@ -17,7 +17,18 @@ logger = logging.getLogger('couriers.signals')
 
 @receiver(post_save, sender=Order, dispatch_uid='couriers_legacy_dispatch_guard')
 def _clear_conflicting_legacy_courier(sender, instance, **kwargs):
-    """Reject a legacy delivery_person replay while new dispatch is active."""
+    """Keep DeliveryAssignment authoritative after sync or legacy Order saves.
+
+    The sync engine can replay an older ``Order.delivery_person`` value without
+    going through either courier HTTP service. Correct that projection in the
+    same transaction whenever a live DeliveryAssignment already owns dispatch,
+    then publish the correction back through the normal durable sync queue.
+
+    A direct QuerySet.update used to clear only the local database. In
+    particular, an inbound sync replay could therefore leave the cloud holding
+    the stale legacy courier forever. A normal save is safe here: the recursive
+    post_save sees a NULL delivery_person and returns immediately.
+    """
     if not instance.pk or not instance.delivery_person_id:
         return
     from couriers.models import DeliveryAssignment
@@ -25,10 +36,8 @@ def _clear_conflicting_legacy_courier(sender, instance, **kwargs):
     if DeliveryAssignment.objects.filter(order_id=instance.pk).exclude(
         step=DeliveryAssignment.Step.DECLINED,
     ).exists():
-        Order.objects.filter(
-            pk=instance.pk, delivery_person_id__isnull=False,
-        ).update(delivery_person_id=None)
-        instance.delivery_person_id = None
+        instance.delivery_person = None
+        instance.save(update_fields=['delivery_person'])
 
 
 @receiver(post_save, sender=Order, dispatch_uid='couriers_order_ready_bridge')

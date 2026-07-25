@@ -74,9 +74,15 @@ class AdminAuthService:
             expires_at=timezone.now() + timedelta(days=SESSION_TTL_DAYS),
         )
 
-        user.last_login_at = timezone.now()
-        user.last_login_api = ip_address[:20]  # last_login_api field is max_length=20
-        user.save(update_fields=['last_login_at', 'last_login_api'])
+        # Authentication telemetry is runtime evidence, not a new replicated
+        # generation of the cloud-owned user profile.
+        login_at = timezone.now()
+        User._base_manager.filter(pk=user.pk).update(
+            last_login_at=login_at,
+            last_login_api=(ip_address or '')[:20],
+        )
+        user.last_login_at = login_at
+        user.last_login_api = (ip_address or '')[:20]
 
         return ServiceResponse.success(
             data={

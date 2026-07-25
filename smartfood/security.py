@@ -16,7 +16,8 @@ from urllib.parse import parse_qsl
 from django.conf import settings
 from django.http import JsonResponse
 
-from base.helpers.request import get_session_key
+from base.helpers.request import SessionCredentialConflict, get_session_key
+from base.security.auth import session_credential_conflict_response
 from smartfood.repositories import CustomerSessionRepository
 
 AUTH_TTL_DEFAULT = 24 * 3600        # issued bearer SESSION lifetime
@@ -91,7 +92,10 @@ def customer_required(view_func):
     """Authenticate request.customer via a Bearer/cookie token."""
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
-        token = get_session_key(request)
+        try:
+            token = get_session_key(request)
+        except SessionCredentialConflict:
+            return session_credential_conflict_response()
         if not token:
             return JsonResponse({"success": False, "message": "Authentication required"}, status=401)
         session = CustomerSessionRepository.get_by_token(token)

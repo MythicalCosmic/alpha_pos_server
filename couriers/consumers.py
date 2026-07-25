@@ -15,6 +15,8 @@ from asgiref.sync import async_to_sync
 from channels.generic.websocket import JsonWebsocketConsumer
 from django.conf import settings
 
+from base.helpers.request import SessionCredentialConflict
+from base.helpers.websocket import resolve_websocket_session_credential
 from couriers.realtime import courier_group, branch_group
 
 logger = logging.getLogger('couriers.ws')
@@ -30,16 +32,13 @@ _LNG_MIN, _LNG_MAX = -180.0, 180.0
 
 
 def _handshake_token(scope):
-    qs = parse_qs((scope.get('query_string') or b'').decode('utf-8', 'ignore'))
-    if qs.get('token'):
-        return qs['token'][0]
-    for key, val in (scope.get('headers') or []):
-        if key == b'authorization':
-            v = val.decode('utf-8', 'ignore')
-            for prefix in ('Token ', 'Bearer '):
-                if v.startswith(prefix):
-                    return v[len(prefix):].strip()
-    return None
+    try:
+        token, _source = resolve_websocket_session_credential(
+            scope, header_schemes=('token', 'bearer'),
+        )
+    except SessionCredentialConflict:
+        return None
+    return token
 
 
 def _license_blocked():

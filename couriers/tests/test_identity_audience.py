@@ -1,5 +1,6 @@
 from datetime import timedelta
 import importlib
+import json
 import secrets
 from types import SimpleNamespace
 
@@ -8,12 +9,14 @@ from django.apps import apps
 from django.core.cache import cache
 from django.db import connection
 from django.db.models.signals import post_delete
+from django.http import JsonResponse
 from django.test import Client, RequestFactory
 from django.utils import timezone
 
 from base.models import Session, User
 from base.repositories.session import SessionRepository
-from couriers.auth import resolve_courier
+from couriers.auth import courier_required, resolve_courier
+from couriers.consumers import _handshake_token
 from couriers.models import Courier
 from couriers.tokens import (
     CourierTokenAudienceError,
@@ -62,6 +65,59 @@ def test_profile_with_manager_role_is_neither_courier_nor_admin_audience():
         '/api/admins/couriers/',
         HTTP_AUTHORIZATION=f'Bearer {raw}',
     ).status_code == 403
+
+
+def test_courier_auth_rejects_conflicting_cookie_and_header_credentials():
+    request = RequestFactory().get(
+        '/courier/me/',
+        HTTP_AUTHORIZATION='Token ' + ('b' * 64),
+    )
+    request.COOKIES['session_key'] = 'a' * 64
+
+    response = courier_required(
+        lambda _request: JsonResponse({'success': True}),
+    )(request)
+
+    assert response.status_code == 401
+    assert json.loads(response.content)['code'] == 'session_credential_conflict'
+
+
+def test_courier_websocket_rejects_split_browser_identity():
+    first = 'a' * 64
+    second = 'b' * 64
+    assert _handshake_token({
+        'query_string': f'token={first}'.encode(),
+        'headers': [
+            (b'authorization', f'Token {second}'.encode()),
+            (b'cookie', f'session_key={first}'.encode()),
+        ],
+    }) is None
+    assert _handshake_token({
+        'query_string': f'token={first}'.encode(),
+        'headers': [
+            (b'authorization', f'tOkEn {first}'.encode()),
+            (b'cookie', f'session_key={first}'.encode()),
+        ],
+    }) == first
+
+
+def test_courier_revoke_returns_token_free_conflict_response():
+    client = Client()
+    first = 'a' * 64
+    second = 'b' * 64
+    client.cookies['session_key'] = first
+
+    response = client.post(
+        '/auth/courier/revoke/',
+        data=json.dumps({}),
+        content_type='application/json',
+        HTTP_AUTHORIZATION=f'Token {second}',
+    )
+
+    assert response.status_code == 401
+    assert response.json()['code'] == 'session_credential_conflict'
+    assert first not in response.content.decode()
+    assert second not in response.content.decode()
 
 
 def test_token_minting_rejects_non_courier_role():

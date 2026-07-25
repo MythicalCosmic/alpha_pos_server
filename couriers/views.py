@@ -18,8 +18,9 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
 
-from base.helpers.request import parse_json_body
+from base.helpers.request import SessionCredentialConflict, parse_json_body
 from base.models import Order, User
+from base.security.auth import session_credential_conflict_response
 from base.security.hashing import verify_password, verify_password_dummy
 from base.security.rate_limit import rate_limit, rate_limit_by
 from base.services.phone import normalize_uz_phone
@@ -166,7 +167,10 @@ def courier_revoke(request):
     if error:
         return JsonResponse(error[0], status=error[1])
     refresh_token = (data.get('refresh_token') or '').strip()
-    access_token = get_courier_token(request)
+    try:
+        access_token = get_courier_token(request)
+    except SessionCredentialConflict:
+        return session_credential_conflict_response()
     if not refresh_token and not access_token:
         return JsonResponse(
             {'success': False, 'message': 'refresh_token or authorization required'},
