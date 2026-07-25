@@ -40,8 +40,8 @@ compose overrides, then builds and starts **alpha_pos**, **pos_control**, and
 admins) — run those, then verify:
 
 ```bash
-curl -fsS https://pos.<IP>.nip.io/healthz      # -> ok
-curl -fsSI https://control.<IP>.nip.io/ | head -1
+curl -fsS https://pos.<IP>.nip.io/healthz          # -> ok <12-character-git-sha>
+curl -fsS https://control.<IP>.nip.io/healthz      # -> ok
 ```
 
 > First HTTPS hit can take ~30s while Caddy obtains certificates. If it fails,
