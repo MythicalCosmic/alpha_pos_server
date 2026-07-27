@@ -376,6 +376,9 @@ class TestShiftListExtras:
     LIST_KEYS = ('net_revenue', 'expenses_total', 'cancelled_orders_count',
                  'cancelled_orders_value', 'payment_mix', 'paid_orders', 'items_sold',
                  'avg_prep_seconds', 'peak_hour', 'expected_by_tender',
+                 'cash_to_receive', 'noncash_to_receive',
+                 'all_tenders_to_receive',
+                 'total_expected_to_receive_scope',
                  'total_expected_to_receive', 'settlement', 'reconciled_count',
                  'cashbox_expenses')
 
@@ -451,6 +454,10 @@ class TestShiftListExtras:
             'CARD': '0.00',
             'PAYME': '0.00',
         }
+        assert row['cash_to_receive'] == '80.00'
+        assert row['noncash_to_receive'] == '50.00'
+        assert row['all_tenders_to_receive'] == '130.00'
+        assert row['total_expected_to_receive_scope'] == 'ALL_TENDERS'
         assert row['total_expected_to_receive'] == '130.00'
         assert row['reconciled_count'] == 0
         assert row['settlement'] == []
@@ -488,6 +495,10 @@ class TestShiftListExtras:
         assert status == 200, listed
         summary = listed['data']['summary']
         assert summary['expected_by_tender'] == row['expected_by_tender']
+        assert summary['cash_to_receive'] == '80.00'
+        assert summary['noncash_to_receive'] == '50.00'
+        assert summary['all_tenders_to_receive'] == '130.00'
+        assert summary['total_expected_to_receive_scope'] == 'ALL_TENDERS'
         assert summary['total_expected_to_receive'] == '130.00'
 
     def test_empty_shift_returns_typed_defaults(self, cashier_user):
@@ -500,6 +511,10 @@ class TestShiftListExtras:
         assert row['expenses_total'] == '0.00'
         assert row['cancelled_orders_count'] == 0
         assert row['cancelled_orders_value'] == '0.00'
+        assert row['cash_to_receive'] == '0.00'
+        assert row['noncash_to_receive'] == '0.00'
+        assert row['all_tenders_to_receive'] == '0.00'
+        assert row['total_expected_to_receive_scope'] == 'ALL_TENDERS'
         assert row['net_revenue'] == '0.00'
 
     def test_partial_frozen_tenders_fall_back_to_complete_derived_totals(
@@ -650,6 +665,11 @@ class TestShiftListExtras:
         )
         assert row['frozen_tender_evidence_complete'] is False
         assert row['tender_attribution_complete'] is False
+        assert row['cash_to_receive_complete'] is False
+        assert row['cash_to_receive'] is None
+        assert row['noncash_to_receive_complete'] is False
+        assert row['noncash_to_receive'] is None
+        assert row['all_tenders_to_receive'] == '100.00'
         assert row['unattributed_expected_amount'] == '100.00'
         assert row['frozen_tender_evidence_issues'] == [
             'UNATTRIBUTED_TENDER_EVIDENCE',
@@ -658,6 +678,24 @@ class TestShiftListExtras:
         summary = listed['data']['summary']
         assert summary['expected_by_tender'] == row['expected_by_tender']
         assert summary['total_expected_to_receive'] == '100.00'
+        assert summary['cash_to_receive'] is None
+        assert summary['cash_to_receive_complete'] is False
+        assert summary['noncash_to_receive'] is None
+        assert summary['all_tenders_to_receive'] == '100.00'
+        assert (
+            summary['awaiting_reconciliation_cash_to_receive']
+            is None
+        )
+        assert (
+            summary[
+                'awaiting_reconciliation_cash_to_receive_complete'
+            ]
+            is False
+        )
+        assert (
+            summary['awaiting_reconciliation_all_tenders_to_receive']
+            == '100.00'
+        )
         assert summary['tender_attribution_complete'] is False
         assert summary['unattributed_expected_amount'] == '100.00'
         assert summary['unattributed_expected_absolute_amount'] == '100.00'
@@ -689,7 +727,18 @@ class TestShiftListExtras:
         def unavailable_extras(shifts, now=None):
             return {
                 item.id: {
+                    'financial_evidence_available': False,
+                    'expenses_total': None,
+                    'refunds_total': None,
+                    'cancelled_orders_value': None,
                     'expected_by_tender': {},
+                    'cash_to_receive': None,
+                    'cash_to_receive_complete': False,
+                    'noncash_to_receive': None,
+                    'noncash_to_receive_complete': False,
+                    'all_tenders_to_receive': None,
+                    'all_tenders_to_receive_complete': False,
+                    'unattributed_expected_amount': None,
                     'tender_totals_source': 'UNAVAILABLE',
                 }
                 for item in shifts
@@ -708,6 +757,13 @@ class TestShiftListExtras:
 
         assert summary['expected_by_tender'] == {}
         assert summary['tender_attribution_complete'] is False
+        assert summary['financial_totals_complete'] is False
+        assert summary['total_orders'] is None
+        assert summary['total_revenue'] is None
+        assert summary['cash_collected'] is None
+        assert summary['cash_to_receive'] is None
+        assert summary['all_tenders_to_receive'] is None
+        assert summary['awaiting_reconciliation_cash_to_receive'] == '0.00'
         assert summary['tender_totals_sources'] == {
             'frozen_closed_shifts': 0,
             'derived_closed_shifts': 0,
@@ -715,6 +771,352 @@ class TestShiftListExtras:
             'partial_frozen_shifts': 0,
             'unavailable_shifts': 1,
         }
+
+    def test_awaiting_reconciliation_kpi_uses_complete_filtered_population(
+        self, cashier_user, admin_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import (
+            CashReconciliation, Order, OrderPayment, Shift,
+        )
+        from cashbox.models import PAYMENT_METHODS, ShiftPaymentTotal
+        from admins.services.shift_service import ShiftService
+
+        now = timezone.now()
+        branch = cashier_user.branch_id
+
+        def shift_with_cash(*, start, end, status, amount, display_id):
+            shift = Shift.objects.create(
+                user=cashier_user,
+                branch_id=branch,
+                start_time=start,
+                end_time=end,
+                status=status,
+                total_orders=1,
+                total_revenue=amount,
+                cash_collected=amount,
+            )
+            paid_at = start + (end - start) / 2 if end else now
+            order = Order.objects.create(
+                user=cashier_user,
+                cashier=cashier_user,
+                branch_id=branch,
+                display_id=display_id,
+                status=Order.Status.COMPLETED,
+                is_paid=True,
+                payment_method=Order.PaymentMethod.CASH,
+                subtotal=amount,
+                total_amount=amount,
+                paid_at=paid_at,
+            )
+            OrderPayment.objects.create(
+                order=order,
+                method=Order.PaymentMethod.CASH,
+                amount=amount,
+                branch_id=branch,
+            )
+            return shift
+
+        ended = shift_with_cash(
+            start=now - timedelta(hours=8),
+            end=now - timedelta(hours=7),
+            status=Shift.Status.ENDED,
+            amount='100.00',
+            display_id=1001,
+        )
+        completed = shift_with_cash(
+            start=now - timedelta(hours=6),
+            end=now - timedelta(hours=5),
+            status=Shift.Status.COMPLETED,
+            amount='30.00',
+            display_id=1002,
+        )
+        shift_with_cash(
+            start=now - timedelta(hours=4),
+            end=now - timedelta(hours=3),
+            status=Shift.Status.ABANDONED,
+            amount='20.00',
+            display_id=1003,
+        )
+        shift_with_cash(
+            start=now - timedelta(minutes=30),
+            end=None,
+            status=Shift.Status.ACTIVE,
+            amount='50.00',
+            display_id=1004,
+        )
+        for method in PAYMENT_METHODS:
+            amount = '30.00' if method == 'CASH' else '0.00'
+            ShiftPaymentTotal.objects.create(
+                shift=completed,
+                branch_id=branch,
+                method=method,
+                expected_amount=amount,
+                counted_amount=amount,
+                confirmed_amount=amount,
+                difference='0.00',
+            )
+        CashReconciliation.objects.create(
+            shift=completed,
+            branch_id=branch,
+            expected_cash='30.00',
+            actual_cash='30.00',
+            difference='0.00',
+            reconciled_by=admin_user,
+            treasury_posted_at=now,
+        )
+
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id,
+            per_page=1,
+        )
+
+        assert status == 200, listed
+        assert len(listed['data']['shifts']) == 1
+        assert listed['data']['pagination']['total'] == 4
+        summary = listed['data']['summary']
+        assert summary['cash_to_receive'] == '200.00'
+        assert summary['cash_to_receive_scope'] == 'ALL_FILTERED_SHIFTS'
+        assert summary['unreconciled_count'] == 3
+        assert summary['awaiting_reconciliation_count'] == 1
+        assert summary['awaiting_reconciliation_scope'] == (
+            'ENDED_WITHOUT_RECONCILIATION'
+        )
+        assert (
+            summary['awaiting_reconciliation_cash_to_receive']
+            == '100.00'
+        )
+        assert summary[
+            'awaiting_reconciliation_cash_to_receive_complete'
+        ] is True
+        assert summary[
+            'awaiting_reconciliation_all_tenders_to_receive'
+        ] == '100.00'
+        assert ended.id != completed.id
+
+    def test_confirmed_summary_requires_reconciliation_and_stays_frozen(
+        self, cashier_user, admin_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import (
+            CashReconciliation, Order, OrderPayment, Shift,
+        )
+        from cashbox.models import PAYMENT_METHODS, ShiftPaymentTotal
+        from admins.services.shift_service import ShiftService
+
+        now = timezone.now()
+        branch = cashier_user.branch_id
+        legacy_reconciled = Shift.objects.create(
+            user=cashier_user,
+            branch_id=branch,
+            start_time=now - timedelta(hours=6),
+            end_time=now - timedelta(hours=5),
+            status=Shift.Status.COMPLETED,
+        )
+        legacy_reconciled_order = Order.objects.create(
+            user=cashier_user,
+            cashier=cashier_user,
+            branch_id=branch,
+            display_id=1099,
+            status=Order.Status.COMPLETED,
+            is_paid=True,
+            payment_method=Order.PaymentMethod.HUMO,
+            subtotal='40.00',
+            total_amount='40.00',
+            paid_at=now - timedelta(hours=5, minutes=30),
+        )
+        OrderPayment.objects.create(
+            order=legacy_reconciled_order,
+            method=Order.PaymentMethod.HUMO,
+            amount='40.00',
+            branch_id=branch,
+        )
+        for method in PAYMENT_METHODS:
+            ShiftPaymentTotal.objects.create(
+                shift=legacy_reconciled,
+                branch_id=branch,
+                method=method,
+                expected_amount='0.00',
+                counted_amount='0.00',
+                confirmed_amount='0.00',
+                difference='0.00',
+            )
+        CashReconciliation.objects.create(
+            shift=legacy_reconciled,
+            branch_id=branch,
+            expected_cash='0.00',
+            actual_cash='0.00',
+            difference='0.00',
+            reconciled_by=admin_user,
+            # No treasury_posted_at: historical reconciliation proves CASH only.
+        )
+        reconciled = Shift.objects.create(
+            user=cashier_user,
+            branch_id=branch,
+            start_time=now - timedelta(hours=4),
+            end_time=now - timedelta(hours=3),
+            status=Shift.Status.COMPLETED,
+        )
+        for index, amount in enumerate(('100.00', '50.00'), start=1):
+            order = Order.objects.create(
+                user=cashier_user,
+                cashier=cashier_user,
+                branch_id=branch,
+                display_id=1100 + index,
+                status=Order.Status.COMPLETED,
+                is_paid=True,
+                payment_method=Order.PaymentMethod.HUMO,
+                subtotal=amount,
+                total_amount=amount,
+                paid_at=(
+                    now - timedelta(hours=3, minutes=40 - index * 10)
+                ),
+            )
+            OrderPayment.objects.create(
+                order=order,
+                method=Order.PaymentMethod.HUMO,
+                amount=amount,
+                branch_id=branch,
+            )
+        for method in PAYMENT_METHODS:
+            amount = '100.00' if method == 'HUMO' else '0.00'
+            ShiftPaymentTotal.objects.create(
+                shift=reconciled,
+                branch_id=branch,
+                method=method,
+                expected_amount=amount,
+                counted_amount=amount,
+                confirmed_amount=amount,
+                difference='0.00',
+            )
+        CashReconciliation.objects.create(
+            shift=reconciled,
+            branch_id=branch,
+            expected_cash='0.00',
+            actual_cash='0.00',
+            difference='0.00',
+            reconciled_by=admin_user,
+            treasury_posted_at=now,
+        )
+
+        legacy = Shift.objects.create(
+            user=cashier_user,
+            branch_id=branch,
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1),
+            status=Shift.Status.ENDED,
+        )
+        legacy_order = Order.objects.create(
+            user=cashier_user,
+            cashier=cashier_user,
+            branch_id=branch,
+            display_id=1201,
+            status=Order.Status.COMPLETED,
+            is_paid=True,
+            payment_method=Order.PaymentMethod.UZCARD,
+            subtotal='20.00',
+            total_amount='20.00',
+            paid_at=now - timedelta(minutes=90),
+        )
+        OrderPayment.objects.create(
+            order=legacy_order,
+            method=Order.PaymentMethod.UZCARD,
+            amount='20.00',
+            branch_id=branch,
+        )
+        ShiftPaymentTotal.objects.create(
+            shift=legacy,
+            branch_id=branch,
+            method='UZCARD',
+            expected_amount='20.00',
+            counted_amount='20.00',
+            confirmed_amount='999.00',
+            difference='0.00',
+        )
+
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id,
+            per_page=1,
+        )
+
+        assert status == 200, listed
+        summary = listed['data']['summary']
+        assert summary['confirmed_by_tender']['HUMO'] == '100.00'
+        assert summary['confirmed_by_tender']['CASH'] == '0.00'
+        assert summary['confirmed_by_tender']['UZCARD'] == '0.00'
+        assert summary['confirmed_by_tender']['UZCARD'] != '999.00'
+        assert summary['total_confirmed_received'] is None
+        assert summary['known_total_confirmed_received'] == '100.00'
+        assert summary['confirmed_all_tenders_complete'] is False
+        assert summary['legacy_cash_only_reconciliation_count'] == 1
+        assert summary['expected_by_tender']['HUMO'] == '100.00'
+        assert summary['all_tenders_to_receive'] is None
+        assert summary['all_tenders_to_receive_complete'] is False
+        assert summary['frozen_tender_discrepancy_shifts'] >= 1
+
+    def test_confirmed_summary_requires_full_posted_tender_bundle(
+        self, cashier_user, admin_user,
+    ):
+        from datetime import timedelta
+        from django.utils import timezone
+        from base.models import CashReconciliation, Shift
+        from cashbox.models import ShiftPaymentTotal
+        from admins.services.shift_service import ShiftService
+
+        now = timezone.now()
+        shift = Shift.objects.create(
+            user=cashier_user,
+            branch_id=cashier_user.branch_id,
+            start_time=now - timedelta(hours=2),
+            end_time=now - timedelta(hours=1),
+            status=Shift.Status.COMPLETED,
+        )
+        for method, amount in (
+            ('CASH', '30.00'),
+            ('HUMO', '70.00'),
+        ):
+            ShiftPaymentTotal.objects.create(
+                shift=shift,
+                branch_id=cashier_user.branch_id,
+                method=method,
+                expected_amount=amount,
+                counted_amount=amount,
+                confirmed_amount=amount,
+                difference='0.00',
+            )
+        CashReconciliation.objects.create(
+            shift=shift,
+            branch_id=cashier_user.branch_id,
+            expected_cash='30.00',
+            actual_cash='30.00',
+            difference='0.00',
+            reconciled_by=admin_user,
+            treasury_posted_at=now,
+        )
+
+        listed, status = ShiftService.list(
+            user_id=cashier_user.id,
+            per_page=1,
+        )
+
+        assert status == 200, listed
+        summary = listed['data']['summary']
+        assert summary['confirmed_by_tender'] == {
+            'CASH': '30.00',
+            'HUMO': '70.00',
+        }
+        assert summary['known_total_confirmed_received'] == '100.00'
+        assert summary['total_confirmed_received'] is None
+        assert summary['confirmed_all_tenders_complete'] is False
+        assert summary['legacy_cash_only_reconciliation_count'] == 0
+        assert (
+            summary[
+                'incomplete_posted_all_tender_reconciliation_count'
+            ]
+            == 1
+        )
 
     def test_reconciled_shift_exposes_tenders_expenses_and_posting(
         self, cashier_user, admin_user, regular_user,

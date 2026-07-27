@@ -138,9 +138,18 @@ class ShiftService(CoreShiftService):
         for row in base.values('status').annotate(count=Count('id')):
             by_status[row['status']] = row['count']
 
-        reconciled = base.filter(
+        reconciled_qs = base.filter(
             reconciliation__is_deleted=False,
-        ).count()
+        )
+        reconciled_shift_ids = set(
+            reconciled_qs.values_list('id', flat=True)
+        )
+        posted_reconciled_shift_ids = set(
+            reconciled_qs.filter(
+                reconciliation__treasury_posted_at__isnull=False,
+            ).values_list('id', flat=True)
+        )
+        reconciled = len(reconciled_shift_ids)
         from cashbox.models import PAYMENT_METHODS, ShiftPaymentTotal
         settlement_rows = ShiftPaymentTotal.objects.filter(
             is_deleted=False,
@@ -169,11 +178,27 @@ class ShiftService(CoreShiftService):
         settlement_shift_ids = set(
             settlement_rows.values_list('shift_id', flat=True).distinct()
         )
+        posted_methods_by_shift = {
+            shift_id: set() for shift_id in posted_reconciled_shift_ids
+        }
+        for shift_id, method in settlement_rows.filter(
+            shift_id__in=posted_reconciled_shift_ids,
+        ).values_list('shift_id', 'method'):
+            posted_methods_by_shift.setdefault(shift_id, set()).add(method)
+        required_tender_methods = set(PAYMENT_METHODS)
+        posted_full_method_shift_ids = {
+            shift_id
+            for shift_id, methods in posted_methods_by_shift.items()
+            if methods == required_tender_methods
+        }
+        incomplete_posted_all_tender_shift_ids = (
+            posted_reconciled_shift_ids - posted_full_method_shift_ids
+        )
         tender_rows = (
             settlement_rows.filter(
-                shift_id__in=complete_frozen_shift_ids,
+                shift_id__in=posted_reconciled_shift_ids,
                 method__in=PAYMENT_METHODS,
-            )
+            ).exclude(method='CASH')
             .values('method')
             .annotate(
                 confirmed=Coalesce(
@@ -186,9 +211,30 @@ class ShiftService(CoreShiftService):
         confirmed_totals = {
             row['method']: Decimal(row['confirmed'] or 0) for row in tender_rows
         }
+        confirmed_totals['CASH'] = Decimal(
+            reconciled_qs.aggregate(
+                cash=Coalesce(
+                    Sum('reconciliation__actual_cash'),
+                    Decimal('0.00'),
+                    output_field=DecimalField(
+                        max_digits=20, decimal_places=2,
+                    ),
+                ),
+            )['cash'] or 0
+        )
+        legacy_cash_only_reconciliation_count = (
+            len(reconciled_shift_ids - posted_reconciled_shift_ids)
+        )
+        confirmed_all_tenders_complete = (
+            legacy_cash_only_reconciliation_count == 0
+            and not incomplete_posted_all_tender_shift_ids
+        )
         derived_closed_rows = [
             shift for shift in closed_rows
-            if shift.id not in complete_frozen_shift_ids
+            if (
+                shift.id not in complete_frozen_shift_ids
+                and shift.id not in reconciled_shift_ids
+            )
         ]
         partial_frozen_count = len(
             settlement_shift_ids - complete_frozen_shift_ids
@@ -197,7 +243,11 @@ class ShiftService(CoreShiftService):
         evidence_issue_counts = {}
         discrepancy_shift_ids = set()
         incomplete_attribution_shift_ids = set()
+        incomplete_cash_shift_ids = set()
+        incomplete_noncash_shift_ids = set()
+        incomplete_all_tenders_shift_ids = set()
         absolute_unattributed = Decimal('0.00')
+        unattributed_evidence_count = 0
         for shift in evidence_rows:
             extras = evidence_extras.get(shift.id, {})
             for issue in extras.get('frozen_tender_evidence_issues', []):
@@ -217,22 +267,34 @@ class ShiftService(CoreShiftService):
                 discrepancy_shift_ids.add(shift.id)
             if extras.get('tender_attribution_complete') is not True:
                 incomplete_attribution_shift_ids.add(shift.id)
-            absolute_unattributed += abs(Decimal(
-                extras.get('unattributed_expected_amount', '0.00')
-            ))
+            if extras.get('cash_to_receive_complete') is not True:
+                incomplete_cash_shift_ids.add(shift.id)
+            if extras.get('noncash_to_receive_complete') is not True:
+                incomplete_noncash_shift_ids.add(shift.id)
+            if extras.get('all_tenders_to_receive_complete') is not True:
+                incomplete_all_tenders_shift_ids.add(shift.id)
+            unattributed = extras.get('unattributed_expected_amount')
+            if unattributed is not None:
+                absolute_unattributed += abs(Decimal(unattributed))
+            event_count = extras.get('unattributed_evidence_count')
+            if event_count is not None:
+                unattributed_evidence_count += int(event_count)
         # The batch pass already read and bucketed all live order/payment/refund
         # evidence. Reuse its private totals instead of issuing several queries
         # per live shift here and again while serializing the page.
         for shift in live_rows:
-            live_totals = evidence_extras.get(shift.id, {}).get('_live_totals')
-            if live_totals is None:
-                live_orders, live_revenue, live_cash = (
-                    CoreShiftService._live_totals(shift, now)
-                )
-            else:
-                live_orders = live_totals['total_orders']
-                live_revenue = live_totals['total_revenue']
-                live_cash = live_totals['cash_collected']
+            extras = evidence_extras.get(shift.id, {})
+            live_totals = extras.get('_live_totals')
+            if (
+                extras.get('tender_totals_source') == 'UNAVAILABLE'
+                or live_totals is None
+            ):
+                # Do not retry a failed evidence pass and accidentally turn a
+                # partial second snapshot into an apparently complete summary.
+                continue
+            live_orders = live_totals['total_orders']
+            live_revenue = live_totals['total_revenue']
+            live_cash = live_totals['cash_collected']
             orders += int(live_orders or 0)
             revenue += Decimal(live_revenue or 0)
             cash += Decimal(live_cash or 0)
@@ -266,8 +328,113 @@ class ShiftService(CoreShiftService):
             (Decimal(value) for value in confirmed_by_tender.values()),
             Decimal('0.00'),
         )
+        cash_to_receive = Decimal(
+            expected_by_tender.get('CASH', '0.00'),
+        )
+        noncash_to_receive = sum(
+            (
+                Decimal(value)
+                for method, value in expected_by_tender.items()
+                if method not in {'CASH', 'UNKNOWN'}
+            ),
+            Decimal('0.00'),
+        )
         unknown_expected = Decimal(
             expected_by_tender.get('UNKNOWN', '0.00')
+        )
+        financial_totals_complete = not unavailable_shift_ids
+        cash_to_receive_complete = (
+            financial_totals_complete and not incomplete_cash_shift_ids
+        )
+        noncash_to_receive_complete = (
+            financial_totals_complete and not incomplete_noncash_shift_ids
+        )
+        all_tenders_to_receive_complete = (
+            financial_totals_complete
+            and not incomplete_all_tenders_shift_ids
+        )
+        settlement_totals_complete = all_tenders_to_receive_complete
+
+        # Outstanding handover money is only ENDED shifts with no manager
+        # reconciliation. ACTIVE, reconciled COMPLETED, and ABANDONED rows must
+        # never inflate a "cash still to receive" KPI.
+        awaiting_rows = [
+            shift for shift in closed_rows
+            if (
+                shift.status == Shift.Status.ENDED
+                and shift.id not in reconciled_shift_ids
+            )
+        ]
+        awaiting_unavailable_ids = {
+            shift.id for shift in awaiting_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'tender_totals_source',
+            ) == 'UNAVAILABLE'
+        }
+        awaiting_incomplete_cash_ids = {
+            shift.id for shift in awaiting_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'cash_to_receive_complete',
+            ) is not True
+        }
+        awaiting_incomplete_noncash_ids = {
+            shift.id for shift in awaiting_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'noncash_to_receive_complete',
+            ) is not True
+        }
+        awaiting_incomplete_all_tenders_ids = {
+            shift.id for shift in awaiting_rows
+            if evidence_extras.get(shift.id, {}).get(
+                'all_tenders_to_receive_complete',
+            ) is not True
+        }
+        awaiting_expected_totals = {}
+        for shift in awaiting_rows:
+            for method, amount in (
+                evidence_extras.get(shift.id, {}).get(
+                    'expected_by_tender', {}
+                )
+            ).items():
+                awaiting_expected_totals[method] = (
+                    awaiting_expected_totals.get(
+                        method, Decimal('0.00'),
+                    )
+                    + Decimal(amount)
+                )
+        awaiting_expected_by_tender = {
+            method: _money(amount)
+            for method, amount in sorted(awaiting_expected_totals.items())
+        }
+        awaiting_total = sum(
+            (
+                Decimal(value)
+                for value in awaiting_expected_by_tender.values()
+            ),
+            Decimal('0.00'),
+        )
+        awaiting_cash = Decimal(
+            awaiting_expected_by_tender.get('CASH', '0.00')
+        )
+        awaiting_noncash = sum(
+            (
+                Decimal(value)
+                for method, value in awaiting_expected_by_tender.items()
+                if method not in {'CASH', 'UNKNOWN'}
+            ),
+            Decimal('0.00'),
+        )
+        awaiting_totals_available = (
+            not awaiting_unavailable_ids
+            and not awaiting_incomplete_all_tenders_ids
+        )
+        awaiting_cash_complete = (
+            awaiting_totals_available
+            and not awaiting_incomplete_cash_ids
+        )
+        awaiting_noncash_complete = (
+            awaiting_totals_available
+            and not awaiting_incomplete_noncash_ids
         )
         return {
             'shift_count': total,
@@ -275,14 +442,85 @@ class ShiftService(CoreShiftService):
             'closed_count': total - len(live_rows),
             'reconciled_count': reconciled,
             'unreconciled_count': total - reconciled,
+            'unreconciled_count_scope':
+                'ALL_FILTERED_WITHOUT_RECONCILIATION',
             'by_status': by_status,
-            'total_orders': orders,
-            'total_revenue': _money(revenue),
-            'cash_collected': _money(cash),
+            'total_orders': (
+                orders if financial_totals_complete else None
+            ),
+            'total_revenue': (
+                _money(revenue) if financial_totals_complete else None
+            ),
+            'cash_collected': (
+                _money(cash) if financial_totals_complete else None
+            ),
             'expected_by_tender': expected_by_tender,
             'confirmed_by_tender': confirmed_by_tender,
-            'total_expected_to_receive': _money(total_expected),
-            'total_confirmed_received': _money(total_confirmed),
+            # Explicit settlement semantics for clients: physical banknotes
+            # must be compared with cash_to_receive, never the legacy
+            # all-tender total_expected_to_receive field.
+            'cash_to_receive': (
+                _money(cash_to_receive)
+                if cash_to_receive_complete else None
+            ),
+            'cash_to_receive_scope': 'ALL_FILTERED_SHIFTS',
+            'cash_to_receive_complete': cash_to_receive_complete,
+            'noncash_to_receive': (
+                _money(noncash_to_receive)
+                if noncash_to_receive_complete else None
+            ),
+            'noncash_to_receive_complete': noncash_to_receive_complete,
+            'all_tenders_to_receive': (
+                _money(total_expected)
+                if settlement_totals_complete else None
+            ),
+            'all_tenders_to_receive_complete':
+                all_tenders_to_receive_complete,
+            'total_expected_to_receive_scope': 'ALL_TENDERS',
+            'total_expected_to_receive': (
+                _money(total_expected)
+                if settlement_totals_complete else None
+            ),
+            'settlement_totals_complete': settlement_totals_complete,
+            'financial_totals_complete': financial_totals_complete,
+            'awaiting_reconciliation_count': len(awaiting_rows),
+            'awaiting_reconciliation_scope':
+                'ENDED_WITHOUT_RECONCILIATION',
+            'awaiting_reconciliation_expected_by_tender': (
+                awaiting_expected_by_tender
+                if awaiting_totals_available else None
+            ),
+            'awaiting_reconciliation_cash_to_receive': (
+                _money(awaiting_cash)
+                if awaiting_cash_complete else None
+            ),
+            'awaiting_reconciliation_cash_to_receive_complete':
+                awaiting_cash_complete,
+            'awaiting_reconciliation_noncash_to_receive': (
+                _money(awaiting_noncash)
+                if awaiting_noncash_complete else None
+            ),
+            'awaiting_reconciliation_noncash_to_receive_complete':
+                awaiting_noncash_complete,
+            'awaiting_reconciliation_all_tenders_to_receive': (
+                _money(awaiting_total)
+                if awaiting_totals_available else None
+            ),
+            'awaiting_reconciliation_totals_available':
+                awaiting_totals_available,
+            'awaiting_reconciliation_unavailable_shift_count':
+                len(awaiting_unavailable_ids),
+            'total_confirmed_received': (
+                _money(total_confirmed)
+                if confirmed_all_tenders_complete else None
+            ),
+            'known_total_confirmed_received': _money(total_confirmed),
+            'confirmed_all_tenders_complete':
+                confirmed_all_tenders_complete,
+            'legacy_cash_only_reconciliation_count':
+                legacy_cash_only_reconciliation_count,
+            'incomplete_posted_all_tender_reconciliation_count':
+                len(incomplete_posted_all_tender_shift_ids),
             # UNKNOWN=0 proves only that no known amount was left without a
             # tender identity. It cannot prove completeness when the derived
             # evidence pass itself failed and returned UNAVAILABLE for a shift.
@@ -295,6 +533,7 @@ class ShiftService(CoreShiftService):
             'unattributed_expected_absolute_amount': _money(
                 absolute_unattributed
             ),
+            'unattributed_evidence_count': unattributed_evidence_count,
             'unattributed_shift_count': len(
                 incomplete_attribution_shift_ids - unavailable_shift_ids
             ),
@@ -309,8 +548,9 @@ class ShiftService(CoreShiftService):
                 'partial_frozen_shifts': partial_frozen_count,
                 'unavailable_shifts': len(unavailable_shift_ids),
             },
-            'average_revenue_per_shift': _money(
-                revenue / total if total else Decimal('0')
+            'average_revenue_per_shift': (
+                _money(revenue / total if total else Decimal('0'))
+                if financial_totals_complete else None
             ),
         }
 

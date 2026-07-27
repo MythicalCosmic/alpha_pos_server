@@ -210,6 +210,28 @@ def _metric_value(metric, value):
     return _excel_value(value, numeric=True)
 
 
+def _settlement_rows_for_export(rows):
+    """Render omitted tender counts as missing evidence, never as shortages."""
+    rendered = []
+    for source in rows or ():
+        row = dict(source)
+        count_unsubmitted = (
+            row.get('cashier_count_submitted') is False
+            or str(row.get('cashier_count_status') or '').upper()
+            == 'UNCOUNTED'
+            or str(row.get('status') or '').upper() == 'UNCOUNTED'
+        )
+        if count_unsubmitted:
+            row['counted'] = None
+            row['difference'] = None
+        if not row.get('reconciled') and (
+            str(row.get('status') or '').upper() != 'CONFIRMED'
+        ):
+            row['confirmed'] = None
+        rendered.append(row)
+    return rendered
+
+
 def build_dashboard_workbook(data, *, filters=None, generated_at=None):
     """Render the exact ``dashboard_service.get_range`` result to XLSX."""
     filters = filters or {}
@@ -361,8 +383,11 @@ def build_shift_report_workbook(report, *, generated_at=None):
         (
             'Settlement',
             'Tender Settlement',
-            report.get('settlement') or [],
-            ('method', 'expected', 'counted', 'confirmed', 'difference'),
+            _settlement_rows_for_export(report.get('settlement')),
+            (
+                'method', 'expected', 'counted', 'confirmed', 'difference',
+                'status',
+            ),
             {'expected', 'counted', 'confirmed', 'difference'},
         ),
         (

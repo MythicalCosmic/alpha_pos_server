@@ -1098,18 +1098,25 @@ def shift_handover_report(shift, *, now=None):
         [shift], now=now,
     )  # by_hour / peak_hour for this shift
 
-    # Per-type settlement (P2): expected (system) / counted / confirmed /
-    # difference per tender type, frozen at close.
-    from cashbox.models import ShiftPaymentTotal
-    settlement = [{
-        'method': spt.method,
-        'expected': _money(spt.expected_amount),
-        'counted': _money(spt.counted_amount),
-        'confirmed': _money(spt.confirmed_amount),
-        'difference': _money(spt.difference),
-    } for spt in ShiftPaymentTotal.objects.filter(
-        shift=shift, branch_id=shift.branch_id, is_deleted=False,
-    )]
+    # Reuse the core settlement contract so an ENDED shift is not silently
+    # treated as proof that the cashier submitted a physical count.  Historical
+    # rows store an omitted count as zero and a matching ``-expected``
+    # difference; those placeholders must never be presented as a real
+    # shortage.  Keep the raw frozen evidence in the core detail endpoint, but
+    # make this manager-facing handover payload truthful and nullable.
+    from core.shifts.service import ShiftService
+    settlement = ShiftService._shift_settlement(shift)
+    for tender in settlement:
+        if (
+            tender.get('cashier_count_submitted') is False
+            or tender.get('cashier_count_status') == 'UNCOUNTED'
+            or tender['status'] == 'UNCOUNTED'
+        ):
+            tender['counted'] = None
+            tender['difference'] = None
+        if not tender.get('reconciled'):
+            tender['confirmed'] = None
+            tender['confirmation_difference'] = None
 
     # Cash paid OUT of the drawer this shift, grouped by category (P4).
     from cashbox.models import CashboxExpense
