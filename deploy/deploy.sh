@@ -79,7 +79,7 @@ A_OPENAIMODEL="$(keep "$A_ENV" OPENAI_MODEL)"; A_OPENAIMODEL="${A_OPENAIMODEL:-g
 A_LLMCONNECT="$(keep "$A_ENV" LLM_CONNECT_TIMEOUT_SECONDS)"; A_LLMCONNECT="${A_LLMCONNECT:-10}"
 A_LLMREAD="$(keep "$A_ENV" LLM_READ_TIMEOUT_SECONDS)"; A_LLMREAD="${A_LLMREAD:-45}"
 A_AIDEADLINE="$(keep "$A_ENV" AI_REQUEST_DEADLINE_SECONDS)"; A_AIDEADLINE="${A_AIDEADLINE:-110}"
-A_AITOOLS="$(keep "$A_ENV" AI_MAX_TOOL_ITERATIONS)"; A_AITOOLS="${A_AITOOLS:-5}"
+A_AITOOLS="$(keep "$A_ENV" AI_MAX_TOOL_ITERATIONS)"; A_AITOOLS="${A_AITOOLS:-8}"
 A_AIFALLBACKS="$(keep "$A_ENV" AI_FALLBACK_PROVIDERS)"; A_AIFALLBACKS="${A_AIFALLBACKS:-gemini,claude,openai}"
 # Smart Food customer Telegram bot (Mini App). A real token is never committed;
 # set it once in .env and subsequent deploys preserve it.
