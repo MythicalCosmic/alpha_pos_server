@@ -76,6 +76,48 @@ services:
       redis:
         condition: service_healthy
 
+  staff_notifications:
+    # Single durable retry worker for the staff order-notification bot. Normal
+    # sends/edits happen immediately in `web`; only Telegram failures and
+    # temporarily missing root-message ids land in the Redis-backed retry queue.
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: alpha_pos_server:local
+    command:
+      - python
+      - manage.py
+      - notification_retry_worker
+      - --interval
+      - "15"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    env_file:
+      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: '${SECRET_KEY:?SECRET_KEY must be set in .env}'
+      DB_ENGINE: ${DB_ENGINE:-django.db.backends.postgresql}
+      DB_NAME: ${DB_NAME:-alpha_pos}
+      DB_USER: ${DB_USER:-alpha_pos}
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      USE_REDIS: ${USE_REDIS:-True}
+    depends_on:
+      web:
+        # The retry worker imports the newest notification model and may drain
+        # Redis immediately.  Wait until web has completed migrations and its
+        # healthcheck passes; processing against the old schema could deliver a
+        # root message without being able to persist its Telegram message id.
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   bot:
     # Customer Telegram bot poller (getUpdates). Reuses the web image (built
     # SINGLE instance only — Telegram forbids two getUpdates pollers. The HTTP API

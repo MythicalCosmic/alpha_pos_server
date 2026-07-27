@@ -74,6 +74,13 @@ A_AIKEY="$(keep "$A_ENV" ANTHROPIC_API_KEY)"
 A_AIMODEL="$(keep "$A_ENV" ANTHROPIC_MODEL)"; A_AIMODEL="${A_AIMODEL:-claude-sonnet-4-6}"
 A_GEMKEY="$(keep "$A_ENV" GEMINI_API_KEY)"
 A_GEMMODEL="$(keep "$A_ENV" GEMINI_MODEL)"; A_GEMMODEL="${A_GEMMODEL:-gemini-2.5-flash}"
+A_OPENAIKEY="$(keep "$A_ENV" OPENAI_API_KEY)"
+A_OPENAIMODEL="$(keep "$A_ENV" OPENAI_MODEL)"; A_OPENAIMODEL="${A_OPENAIMODEL:-gpt-5.5}"
+A_LLMCONNECT="$(keep "$A_ENV" LLM_CONNECT_TIMEOUT_SECONDS)"; A_LLMCONNECT="${A_LLMCONNECT:-10}"
+A_LLMREAD="$(keep "$A_ENV" LLM_READ_TIMEOUT_SECONDS)"; A_LLMREAD="${A_LLMREAD:-45}"
+A_AIDEADLINE="$(keep "$A_ENV" AI_REQUEST_DEADLINE_SECONDS)"; A_AIDEADLINE="${A_AIDEADLINE:-110}"
+A_AITOOLS="$(keep "$A_ENV" AI_MAX_TOOL_ITERATIONS)"; A_AITOOLS="${A_AITOOLS:-5}"
+A_AIFALLBACKS="$(keep "$A_ENV" AI_FALLBACK_PROVIDERS)"; A_AIFALLBACKS="${A_AIFALLBACKS:-gemini,claude,openai}"
 # Smart Food customer Telegram bot (Mini App). A real token is never committed;
 # set it once in .env and subsequent deploys preserve it.
 A_CBOT="$(keep "$A_ENV" CUSTOMER_BOT_TOKEN)"
@@ -131,13 +138,21 @@ DESKTOP_BRANCH_TOKEN=${A_BRANCHTOK}
 BRANCH_TOKEN_MAP={"${A_BRANCHTOK}":"${A_BRANCHID}"}
 ALLOWED_BRANCH_IDS=${A_BRANCHID}
 
-# AI assistant + demand forecast. AI_PROVIDER picks claude|gemini; fill the
-# matching key. Empty key => AI endpoints return a clean "key missing".
+# AI assistant + demand forecast. AI_PROVIDER selects the primary provider;
+# AI_FALLBACK_PROVIDERS is an explicit operator-approved cross-vendor order.
+# Empty key => AI endpoints return a clean "key missing".
 AI_PROVIDER=${A_AIPROVIDER}
 ANTHROPIC_API_KEY=${A_AIKEY}
 ANTHROPIC_MODEL=${A_AIMODEL}
 GEMINI_API_KEY=${A_GEMKEY}
 GEMINI_MODEL=${A_GEMMODEL}
+OPENAI_API_KEY=${A_OPENAIKEY}
+OPENAI_MODEL=${A_OPENAIMODEL}
+LLM_CONNECT_TIMEOUT_SECONDS=${A_LLMCONNECT}
+LLM_READ_TIMEOUT_SECONDS=${A_LLMREAD}
+AI_REQUEST_DEADLINE_SECONDS=${A_AIDEADLINE}
+AI_MAX_TOOL_ITERATIONS=${A_AITOOLS}
+AI_FALLBACK_PROVIDERS=${A_AIFALLBACKS}
 
 # Smart Food customer Telegram bot (Mini App delivery). The bot poller service
 # (docker-compose 'bot') reads these; CUSTOMER_WEBAPP_URL should be the Mini App's
