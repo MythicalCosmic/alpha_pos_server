@@ -69,7 +69,7 @@ A_CLOUDTOK="$(keep "$A_ENV" CLOUD_SYNC_TOKEN)"; A_CLOUDTOK="${A_CLOUDTOK:-$(rand
 A_BRANCHTOK="$(keep "$A_ENV" DESKTOP_BRANCH_TOKEN)"; A_BRANCHTOK="${A_BRANCHTOK:-$(rand 32)}"
 A_BRANCHID="branch1"
 # AI — operator picks the provider + pastes the matching key once; preserved.
-A_AIPROVIDER="$(keep "$A_ENV" AI_PROVIDER)"; A_AIPROVIDER="${A_AIPROVIDER:-claude}"
+A_AIPROVIDER="$(keep "$A_ENV" AI_PROVIDER)"; A_AIPROVIDER="${A_AIPROVIDER:-openai}"
 A_AIKEY="$(keep "$A_ENV" ANTHROPIC_API_KEY)"
 A_AIMODEL="$(keep "$A_ENV" ANTHROPIC_MODEL)"; A_AIMODEL="${A_AIMODEL:-claude-sonnet-4-6}"
 A_GEMKEY="$(keep "$A_ENV" GEMINI_API_KEY)"
