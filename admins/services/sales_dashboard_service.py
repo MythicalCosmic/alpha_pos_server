@@ -1,9 +1,9 @@
 """Sales dashboard (admin panel): revenue/expense series, last-period comparison,
 hour-of-week heatmap, and per-day channel mix.
 
-All windows bound on the BUSINESS day (AppSettings.business_day_start, default
-03:00) — a 01:00 sale counts toward the night before. Pure derivations over
-Order / OrderItem / CashboxExpense; no new models.
+Business-date windows use the canonical 07:00 -> next-day 03:00 operating
+interval. Pure derivations over Order / OrderItem / CashboxExpense; no new
+models.
 """
 from datetime import datetime, timedelta
 from decimal import Decimal

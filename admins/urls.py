@@ -1,5 +1,11 @@
 from django.urls import path
-from admins.views import auth_views, category_views, product_views, order_views
+from admins.views import (
+    auth_views,
+    category_views,
+    customer_views,
+    order_views,
+    product_views,
+)
 from admins.views import place_views, app_settings_views, shift_views, user_views, inkassa_views
 from admins.views import (
     audit_views, export_views, dashboard_views, forecast_views,
@@ -80,6 +86,13 @@ urlpatterns = [
 
     path('users', user_views.users, name='users'),
     path('users/<int:user_id>', user_views.user_detail, name='user_detail'),
+
+    path('customers', customer_views.customers, name='customers'),
+    path(
+        'customers/<int:customer_id>',
+        customer_views.customer_detail,
+        name='customer_detail',
+    ),
 
     path('inkassa/balance', inkassa_views.inkassa_balance, name='inkassa_balance'),
     path('inkassa/stats', inkassa_views.inkassa_stats, name='inkassa_stats'),

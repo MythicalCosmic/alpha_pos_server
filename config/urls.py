@@ -1,7 +1,8 @@
-"""Server edition URLconf — the back-office surface.
+"""Server edition URLconf — the cloud/back-office surface.
 
-No POS order-taking, no Telegram/QR self-order webhooks, no customers.urls.
-Order-WRITE endpoints under admins are not mounted (read/analytics only).
+The customer Telegram/Smartfood APIs and authenticated Admin order-management
+routes are intentionally mounted here. Local POS-only ``customers.urls`` and
+waiter routes remain exclusive to the desktop edition.
 """
 import os
 

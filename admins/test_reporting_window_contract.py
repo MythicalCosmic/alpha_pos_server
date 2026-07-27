@@ -39,6 +39,17 @@ def _order(user, cashier, when, amount='100'):
     return order
 
 
+def _line(order, product, *, quantity=1, price='100'):
+    from base.models import OrderItem
+    return OrderItem.objects.create(
+        order=order,
+        product=product,
+        quantity=quantity,
+        price=Decimal(price),
+        original_price=Decimal(price),
+    )
+
+
 def _auth(user):
     from base.models import Session
     token = secrets.token_hex(32)
@@ -94,6 +105,100 @@ def test_exact_iso_custom_range_is_one_continuous_interval(
     assert data['range']['end_at'] == _at(last, 22).isoformat()
     assert data['revenue'] == '50'
     assert data['orders'] == 2
+
+
+def test_exact_iso_range_is_not_clipped_to_operating_hours(
+        admin_user, regular_user, cashier_user):
+    from base.models import Category, Product
+
+    day = date(2026, 7, 10)
+    order = _order(regular_user, cashier_user, _at(day, 6, 15), '100')
+    category = Category.objects.create(name='Early', slug='early')
+    product = Product.objects.create(
+        name='Early breakfast',
+        category=category,
+        price=Decimal('100'),
+    )
+    _line(order, product)
+    query = {
+        'from_at': _at(day, 6).isoformat(),
+        'to_at': _at(day, 6, 30).isoformat(),
+    }
+
+    response = Client().get(
+        '/api/admins/analytics/products/overview',
+        query,
+        **_auth(admin_user),
+    )
+    assert response.status_code == 200, response.content
+    data = response.json()['data']
+    assert data['range']['mode'] == 'custom'
+    assert data['range']['start_at'] == query['from_at']
+    assert data['range']['end_at'] == query['to_at']
+    assert data['total_revenue'] == '100'
+    assert data['total_units'] == 1
+
+
+def test_multiday_quiet_gap_is_excluded_from_affinity_and_staff_shifts(
+        admin_user, regular_user, cashier_user):
+    from base.models import Category, Product, Shift
+
+    first = date(2026, 7, 10)
+    category = Category.objects.create(name='Pairs', slug='pairs')
+    first_product = Product.objects.create(
+        name='Pair A', category=category, price=Decimal('50'),
+    )
+    second_product = Product.objects.create(
+        name='Pair B', category=category, price=Decimal('50'),
+    )
+
+    operating_order = _order(
+        regular_user, cashier_user, _at(first, 12), '100',
+    )
+    _line(operating_order, first_product, price='50')
+    _line(operating_order, second_product, price='50')
+    gap_order = _order(
+        regular_user,
+        cashier_user,
+        _at(first + timedelta(days=1), 4),
+        '100',
+    )
+    _line(gap_order, first_product, price='50')
+    _line(gap_order, second_product, price='50')
+
+    Shift.objects.create(
+        user=cashier_user,
+        start_time=_at(first, 11),
+        end_time=_at(first, 13),
+        status=Shift.Status.ENDED,
+    )
+    Shift.objects.create(
+        user=cashier_user,
+        start_time=_at(first + timedelta(days=1), 4),
+        end_time=_at(first + timedelta(days=1), 5),
+        status=Shift.Status.ENDED,
+    )
+    query = {'from': first.isoformat(), 'to': '2026-07-11'}
+    client = Client()
+    auth = _auth(admin_user)
+
+    affinity_response = client.get(
+        '/api/admins/analytics/products/affinity', query, **auth,
+    )
+    assert affinity_response.status_code == 200, affinity_response.content
+    affinity = affinity_response.json()['data']
+    assert affinity['totalOrders'] == 1
+    assert len(affinity['pairs']) == 1
+    assert affinity['pairs'][0]['count'] == 1
+
+    staff_response = client.get(
+        '/api/admins/staff/performance', query, **auth,
+    )
+    assert staff_response.status_code == 200, staff_response.content
+    staff = staff_response.json()['data']['staff']
+    row = next(item for item in staff if item['user_id'] == cashier_user.id)
+    assert row['orders_total'] == 1
+    assert row['shifts_worked'] == 1
 
 
 def test_legacy_multiday_overnight_clock_ends_after_final_selected_date():
@@ -333,3 +438,43 @@ def test_dashboard_sales_expenses_itemized_total_reconciles(
     assert sum(Decimal(value) for value in sales['expense30']) == Decimal(
         data['total_expense'],
     )
+
+
+def test_1c_export_uses_canonical_bounds_and_exact_custom_interval(
+        admin_user, regular_user, cashier_user):
+    from admins.services.export_service import build_export
+
+    day = date(2026, 7, 10)
+    custom_order = _order(
+        regular_user, cashier_user, _at(day, 6, 59), '10',
+    )
+    included = _order(regular_user, cashier_user, _at(day, 7), '20')
+    _order(
+        regular_user,
+        cashier_user,
+        _at(day + timedelta(days=1), 3),
+        '40',
+    )
+
+    _xml, count = build_export(day, day)
+    assert count == 1
+
+    query = {
+        'from_at': _at(day, 6, 30).isoformat(),
+        'to_at': _at(day, 7).isoformat(),
+    }
+    response = Client().get(
+        '/api/admins/exports/1c', query, **_auth(admin_user),
+    )
+    assert response.status_code == 200, response.content
+    assert response['X-Export-Count'] == '1'
+    assert response['X-Range-Start'] == query['from_at']
+    assert response['X-Range-End'] == query['to_at']
+    assert response['X-Range-Mode'] == 'custom'
+    from xml.etree import ElementTree as ET
+    exported_ids = {
+        int(document.find('Ид').text)
+        for document in ET.fromstring(response.content).findall('Документ')
+    }
+    assert exported_ids == {custom_order.id}
+    assert included.id not in exported_ids

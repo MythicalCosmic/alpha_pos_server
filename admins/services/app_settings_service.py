@@ -30,21 +30,21 @@ class AppSettingsService:
         data = {
             'hr_enabled': settings.hr_enabled,
             'waiter_enabled': settings.waiter_enabled,
-            # Operating-day cutover as "HH:MM" (e.g. "03:00") — the FE uses it to
-            # compute business dates for its date-preset chips.
+            # Canonical operating-day opening. Reporting itself deliberately
+            # enforces 07:00 -> next-day 03:00 independently of this display
+            # setting, so an old database row cannot change money membership.
             'business_day_start': (
                 settings.business_day_start.strftime('%H:%M')
-                if settings.business_day_start else '03:00'
+                if settings.business_day_start else '07:00'
             ),
-            # Working hours the venue trades — the FE's "Working hours" preset for
-            # the tod_from/tod_to dashboard filter.
+            # Working-hour defaults exposed to the FE.
             'business_open': (
                 settings.business_open.strftime('%H:%M')
-                if settings.business_open else '09:00'
+                if settings.business_open else '07:00'
             ),
             'business_close': (
                 settings.business_close.strftime('%H:%M')
-                if settings.business_close else '23:00'
+                if settings.business_close else '03:00'
             ),
         }
 

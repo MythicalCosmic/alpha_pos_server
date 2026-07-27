@@ -1,6 +1,7 @@
 """Operations dashboard (item 17): live table grid, order funnel, prep-by-category,
-and orders-by-hour. Defaults to TODAY's business day (AppSettings.business_day_start);
-an explicit ?from=&to= overrides. Pure derivations over Order / OrderItem / Table.
+and orders-by-hour. Defaults to today's canonical 07:00 -> next-day 03:00
+operating date; an explicit range overrides it. Pure derivations over Order /
+OrderItem / Table.
 """
 from datetime import datetime
 

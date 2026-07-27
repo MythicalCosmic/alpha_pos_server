@@ -880,7 +880,8 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def create_order(user_id, items, order_type='HALL', phone_number=None,
-                     description=None, cashier_id=None, delivery_person_id=None):
+                     description=None, cashier_id=None, delivery_person_id=None,
+                     customer_name=None):
         if not UserRepository.exists(id=user_id):
             return ServiceResponse.not_found('User not found')
 
@@ -895,6 +896,22 @@ class AdminOrderService:
         except SettlementInvariantError as exc:
             return ServiceResponse.error(str(exc))
         target_branch = str(owner_shift.branch_id or '').strip()
+
+        customer = None
+        clean_customer_name = (
+            customer_name.strip()[:120]
+            if isinstance(customer_name, str)
+            else ''
+        )
+        from base.models import Customer
+        normalized_customer_phone = Customer.normalize_phone(phone_number)
+        if normalized_customer_phone and clean_customer_name:
+            customer, _created = Customer.resolve(
+                phone=normalized_customer_phone,
+                name=clean_customer_name,
+                branch_id=target_branch,
+                create=True,
+            )
 
         if not items:
             return ServiceResponse.validation_error(
@@ -979,6 +996,7 @@ class AdminOrderService:
             subtotal=total_amount,
             total_amount=total_amount,
             delivery_person=delivery_person,
+            customer=customer,
             branch_id=target_branch,
         )
 
@@ -1040,6 +1058,24 @@ class AdminOrderService:
         order = OrderRepository.get_by_id(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
+
+        customer_name = kwargs.get('customer_name')
+        resulting_phone = kwargs.get('phone_number', order.phone_number)
+        clean_customer_name = (
+            customer_name.strip()[:120]
+            if isinstance(customer_name, str)
+            else ''
+        )
+        from base.models import Customer
+        normalized_customer_phone = Customer.normalize_phone(resulting_phone)
+        if normalized_customer_phone and clean_customer_name:
+            customer, _created = Customer.resolve(
+                phone=normalized_customer_phone,
+                name=clean_customer_name,
+                branch_id=order.branch_id,
+                create=True,
+            )
+            order.customer = customer
 
         allowed = {'phone_number', 'description', 'order_type'}
         for key, value in kwargs.items():

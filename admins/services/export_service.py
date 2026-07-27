@@ -90,16 +90,21 @@ def _serialize_order(parent, order, document_at=None):
         ET.SubElement(item_el, 'Сумма').text = _decimal(item.price * item.quantity)
 
 
-def build_export(date_from, date_to, include_unpaid=False):
+def build_export(date_from=None, date_to=None, include_unpaid=False, *,
+                 window=None):
     """Return (xml_bytes, count) for completed orders in the window.
 
-    `date_from`/`date_to` are date objects (inclusive on both ends).
-    Cancelled orders are always excluded. Unpaid completed orders are
-    only included when include_unpaid is True — most 1C ingest flows
-    want only realized revenue.
+    Bare dates use the same canonical 07:00 -> next-day 03:00 operating
+    interval as the dashboards. ``window`` may instead be an exact custom ISO
+    interval resolved by the HTTP view. Cancelled orders are always excluded.
+    Unpaid completed orders are only included when include_unpaid is True —
+    most 1C ingest flows want only realized revenue.
     """
     from django.db.models import Prefetch
     from base.models import OrderItem
+    from base.services.business_day import resolve_reporting_window
+
+    window = window or resolve_reporting_window(date_from, date_to)
     qs = (
         Order.objects.filter(status='COMPLETED', is_deleted=False)
         .select_related('user', 'cashier', 'customer')
@@ -113,19 +118,12 @@ def build_export(date_from, date_to, include_unpaid=False):
     if include_unpaid:
         # A mixed operational export can include tickets with no settlement
         # event, so its window and document date remain creation-based.
-        qs = qs.filter(
-            created_at__date__gte=date_from,
-            created_at__date__lte=date_to,
-        ).order_by('created_at')
+        qs = window.filter(qs, 'created_at').order_by('created_at')
     else:
         # The default export is realized accounting data. Both selection and
         # document ordering follow settlement, preventing a cross-midnight sale
         # from landing in the wrong 1C period.
-        qs = qs.filter(
-            is_paid=True,
-            paid_at__date__gte=date_from,
-            paid_at__date__lte=date_to,
-        ).order_by('paid_at')
+        qs = window.filter(qs.filter(is_paid=True), 'paid_at').order_by('paid_at')
 
     root = ET.Element('КоммерческаяИнформация', {
         'ВерсияСхемы': '2.05',

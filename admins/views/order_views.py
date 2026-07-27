@@ -103,6 +103,7 @@ def orders(request):
         items=data['items'],
         order_type=data.get('order_type', 'HALL'),
         phone_number=data.get('phone_number'),
+        customer_name=data.get('customer_name'),
         description=data.get('description'),
         cashier_id=data.get('cashier_id'),
         delivery_person_id=data.get('delivery_person_id'),

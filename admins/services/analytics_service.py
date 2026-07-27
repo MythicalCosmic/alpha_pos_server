@@ -388,7 +388,15 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None, *, window=
     # handled the same way shift_performance does it.
     shift_map = {}
     now = timezone.now()
-    for s in Shift.objects.filter(is_deleted=False, start_time__gte=lo, start_time__lt=hi):
+    shift_qs = scoped(
+        Shift.objects.filter(
+            is_deleted=False,
+            start_time__gte=lo,
+            start_time__lt=hi,
+        ),
+        'start_time',
+    )
+    for s in shift_qs:
         end = effective_shift_end(s, now=now)
         secs = max((end - s.start_time).total_seconds(), 0)
         agg = shift_map.setdefault(s.user_id, {'shifts': 0, 'seconds': 0.0})

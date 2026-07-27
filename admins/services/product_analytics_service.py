@@ -1,8 +1,8 @@
 """Products dashboard analytics: overview, per-category, Pareto, and trends.
 
-Pure derivations over Order / OrderItem — no new models. Every window is bounded
-on the BUSINESS day (AppSettings.business_day_start, default 03:00) so a 01:00 sale
-counts toward the night before, consistent with the dashboard and order stats.
+Pure derivations over Order / OrderItem — no new models. Business-date windows
+use the canonical 07:00 -> next-day 03:00 interval, while explicit ISO datetime
+pairs remain exact continuous half-open intervals.
 """
 from decimal import Decimal
 
@@ -39,7 +39,13 @@ def _sold_items(date_from, date_to, tod_from=None, tod_to=None, *, window=None):
     """Gross sale-line events in the paid_at business window."""
     from base.models import OrderItem
     from base.services.business_day import tod_filter
-    lo, hi = _window(date_from, date_to)
+    # An explicit ISO range is authoritative even when it starts in the
+    # restaurant's normal 03:00-07:00 quiet gap.  Intersecting it with the
+    # business-date outer bounds would silently clip an exact custom interval.
+    lo, hi = (
+        (window.start_at, window.end_at)
+        if window is not None else _window(date_from, date_to)
+    )
     qs = OrderItem.objects.filter(
         is_deleted=False, order__is_deleted=False, order__is_paid=True,
         order__paid_at__gte=lo, order__paid_at__lt=hi,
@@ -336,13 +342,16 @@ def products_affinity(date_from, date_to, limit=10, *, window=None):
 
     # Sale baskets and refund baskets are distinct dated events. If both happen
     # inside the selected window they cancel without rewriting either fact.
-    rows = (
-        OrderItem.objects.filter(
-            is_deleted=False, order__is_deleted=False, order__is_paid=True,
-            order__paid_at__gte=lo, order__paid_at__lt=hi,
-        )
-        .values_list('order_id', 'product_id')
+    sale_rows = OrderItem.objects.filter(
+        is_deleted=False, order__is_deleted=False, order__is_paid=True,
+        order__paid_at__gte=lo, order__paid_at__lt=hi,
     )
+    if window is not None:
+        # Multi-date business windows have quiet gaps between their outer
+        # bounds; use the same canonical membership predicate as every other
+        # product KPI instead of counting those rows only in affinity.
+        sale_rows = window.filter(sale_rows, 'order__paid_at')
+    rows = sale_rows.values_list('order_id', 'product_id')
     refund_rows = (
         _refunded_items(date_from, date_to, window=window)
         .filter(refund_event__source='ORDER_CANCEL')
