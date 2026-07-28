@@ -14,7 +14,6 @@ from django.db.models import (
     Avg, Count, DecimalField, DurationField, ExpressionWrapper, F, Q, Sum,
 )
 from django.db.models.functions import Coalesce, ExtractHour
-from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +65,8 @@ def _uzs(value):
 
 
 def _today_window():
-    # "Today" = the current BUSINESS day (cutover at AppSettings.business_day_start,
-    # default 03:00), so a 01:00 sale still counts toward the night before.
+    # "Today" uses the canonical [07:00, next-day 03:00) operating window.
+    # A 01:00 sale still belongs to the preceding operating date.
     from base.services.business_day import today_window
     return today_window()
 
@@ -331,8 +330,8 @@ def get_today():
 
 def _range_window(date_from, date_to):
     """Parse YYYY-MM-DD from/to into an aware [start, end) BUSINESS-DAY window
-    (defaults to the current business date, swapped if reversed; end is the next
-    business-day cutover after `to` so the whole operating day is included)."""
+    (defaults to the current operating date, swapped if reversed). Each selected
+    date runs from 07:00 through the following 03:00 close."""
     from datetime import datetime
     from base.services.business_day import business_date, range_window
 
@@ -368,7 +367,6 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None,
         datetime_from=datetime_from, datetime_to=datetime_to,
         from_at=from_at, to_at=to_at,
     )
-    d_from, d_to = window.date_from, window.date_to
     start, end = window.start_at, window.end_at
     sold = window.filter(
         Order.objects.filter(is_deleted=False), 'created_at',

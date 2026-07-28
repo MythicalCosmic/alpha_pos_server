@@ -4,7 +4,7 @@ Mounted under api/smartfood/ — every endpoint requires a customer session.
 """
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_GET, require_POST, require_http_methods
+from django.views.decorators.http import require_GET, require_http_methods
 from django.urls import path
 
 from base.helpers.request import parse_json_body, safe_int

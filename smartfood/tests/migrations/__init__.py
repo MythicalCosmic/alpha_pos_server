@@ -1,0 +1,1 @@
+"""Smart Food migration tests."""

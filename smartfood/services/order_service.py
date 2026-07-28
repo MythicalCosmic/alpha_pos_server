@@ -7,7 +7,6 @@ import logging
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
 
 from base.helpers.response import ServiceResponse
 from smartfood.models import Address, BotOrder, BotOrderItem, Customer

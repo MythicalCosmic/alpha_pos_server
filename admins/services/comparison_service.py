@@ -21,8 +21,7 @@ Conventions (matching the rest of admins/services):
 - Every aggregation happens in the DB (annotate/aggregate + Trunc/Extract), two
   filtered passes — one per period.
 """
-from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 from django.db.models import (
@@ -79,11 +78,12 @@ def _kpi(a, b, is_up_good, money=True):
 
 
 def _window(start_date, end_date, tz=None):
-    """Business-day window [start@cutover, (end+1)@cutover) — the 03:00-cutover
-    operating day shared with the dashboard, so a Compare period reconciles with
-    the dashboard totals for the same dates instead of using a plain calendar day.
-    `tz` is ignored (business_day uses the configured TIME_ZONE); it stays in the
-    signature for call-site compatibility."""
+    """Canonical [start 07:00, end+1 day 03:00) operating-date window.
+
+    This is shared with the dashboard so equal date selections reconcile instead
+    of using calendar-day bounds. ``tz`` remains for call-site compatibility;
+    the business-day helper uses the configured timezone.
+    """
     from base.services.business_day import range_window
     return range_window(start_date, end_date)
 
@@ -152,11 +152,11 @@ def _period_raw(start_date, end_date, branch_id, tz, granularity):
     # -- revenue timeseries (bucket -> so'm) --------------------------------
     trunc = _TRUNC.get(granularity, TruncDay)
     from base.services.business_day import business_day_start
-    cutover = business_day_start()
+    opening = business_day_start()
     offset = timedelta(
-        hours=cutover.hour,
-        minutes=cutover.minute,
-        seconds=cutover.second,
+        hours=opening.hour,
+        minutes=opening.minute,
+        seconds=opening.second,
     )
     settlement_clock = ExpressionWrapper(
         F('paid_at') - offset,

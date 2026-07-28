@@ -662,8 +662,8 @@ def _business_start():
 
 def _parse_date(date_str):
     """Parse a start-of-range bound. A bare YYYY-MM-DD anchors to the BUSINESS-day
-    start (AppSettings.business_day_start, default 03:00) so reports bound on the
-    operating day, not the calendar day. An explicit timestamp is honored as-is."""
+    opening at 07:00 so reports use the operating day rather than the calendar
+    day. An explicit timestamp is honored as-is."""
     if not date_str:
         return None
     s = date_str.strip()
@@ -680,10 +680,9 @@ def _parse_date(date_str):
 def _parse_date_to(date_str):
     """Parse an inclusive end-of-range bound.
 
-    A bare date rolls to the last microsecond before the NEXT business-day cutover,
-    so the whole operating day is included — an order at 01:00 still counts toward
-    the previous business day (the stats filters use created_at__lte=date_to). An
-    explicit timestamp is honored as-is.
+    A bare date rolls to the last microsecond before the following 03:00 close, so
+    the whole operating day is included. An order at 01:00 therefore still counts
+    toward the preceding operating date. Explicit timestamps are honored as-is.
     """
     if not date_str:
         return None

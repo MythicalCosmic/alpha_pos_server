@@ -19,9 +19,13 @@ db.sqlite3
 
 # Secrets / deploy-generated (NEVER commit)
 .env
+.env.bak.*
 *.pem
 deploy/caddy/Caddyfile
 docker-compose.edge.yml
+/.django_admin_rotated
+/backups/
+/caddy/
 
 # Tests / tooling
 .pytest_cache/

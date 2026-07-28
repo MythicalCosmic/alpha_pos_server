@@ -322,7 +322,7 @@ def staff_performance(date_from, date_to, tod_from=None, tod_to=None, *, window=
     # Settlement metrics have their own event clock. Keeping them on the
     # created-at queryset silently assigns a late payment to the day the ticket
     # was opened, which breaks revenue, AOV and tender reconciliation around the
-    # business-day cutover.
+    # operating-date boundary.
     paid_rows = list(
         scoped(
             Order.objects.filter(

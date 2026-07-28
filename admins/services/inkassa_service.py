@@ -254,8 +254,8 @@ class AdminInkassaService:
         branch_id, auth_error = _authorized_branch(actor, branch_id)
         if auth_error:
             return auth_error
-        # Match every other money surface: "today" is the configured business
-        # day (03:00 by default), not calendar midnight.
+        # Match every other money surface: "today" is the canonical
+        # [07:00, next-day 03:00) operating window, not a calendar day.
         from base.services.business_day import today_window
         today_start, today_end = today_window()
 

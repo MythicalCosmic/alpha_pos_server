@@ -245,7 +245,8 @@ def products_trends(date_from, date_to, top_n=5, tod_from=None, tod_to=None,
     from admins.services.refund_reporting import net_grouped_items
 
     # Completed product sales follow settlement, not ticket creation. The
-    # business-date expression also moves a pre-cutover paid_at back one day.
+    # business-date expression labels after-midnight, pre-close sales with the
+    # preceding operating date.
     sale_bday = business_day_date_expr('order__paid_at')
     refund_bday = business_day_date_expr(
         f'{REFUND_EVENT_ALIAS}__refunded_at'

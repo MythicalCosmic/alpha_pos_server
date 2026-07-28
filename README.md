@@ -1,32 +1,80 @@
-# alpha_pos_server
+# Alpha POS Server
 
-The **cloud back-office** edition (Docker). Consumes `alpha_pos_core` as a submodule +
-editable install, and adds only its own server-side apps.
+Cloud back-office edition of Alpha POS. The repository pins the shared business
+core as the `alpha_pos_core` Git submodule and adds server-only applications,
+deployment configuration, and integration tests.
 
-## Owns
+## Server applications
 
-- `admins` — analytics, dashboards, role/user admin, audit, exports, treasury/inkassa
-  consolidation. **Order WRITE endpoints are not mounted here** (the server doesn't take
-  orders); only read/analytics views.
-- `hr` — departments, payroll, contracts, leave, performance, expenses, cash ledger.
-  (HR *tables* also exist on local for the AUTO_POS attendance row, but the UI is here.)
+- `admins` — dashboards, analytics, users, shifts, treasury, Inkassa, exports,
+  and admin APIs.
+- `couriers` — courier identity, dispatch, location, settlement, and realtime
+  rider APIs.
+- `smartfood` — Telegram Mini App catalog, ordering, loyalty, support, and
+  customer realtime APIs.
+- `config` — server settings, URL routing, ASGI, and WSGI entry points.
 
-## From `core` (shared)
+Shared applications such as `base`, `core`, `cashbox`, `discounts`,
+`fiscalization`, `hr`, `licensing`, `notifications`, `stock`, and sync are
+provided by the pinned `alpha_pos_core` commit.
 
-`base` + sync engine, `stock`, `discounts`, `cashbox`, `fiscalization`, `licensing`,
-`notifications` — installed as apps so their **tables** exist and sync, even where the
-UI is local-only.
+## Repository layout
 
-## Edition specifics
+```text
+admins/                  Admin server application
+couriers/                Courier server application
+smartfood/               Customer ordering application
+alpha_pos_core/          Pinned shared-core submodule
+config/                  Django server configuration
+deploy/                  Deployment and support-relay assets
+postman/                 Generated manual API collection
+tests/                   Repository and deployment tests
+```
 
-- **ASGI:** gunicorn-WSGI → **uvicorn workers** (`channels` + `channels-redis`).
-- **Channel layer:** **Redis** (`channels_redis`) — multiple workers share groups.
-- **DB:** Postgres (existing `docker-compose.yaml` Postgres service).
-- Websocket consumers: `SyncIngestConsumer` (cloud side of WS sync), `DashboardConsumer`,
-  `AlertsConsumer`, `CashierControlConsumer` (server side of lock/remove).
+Each application keeps tests under its own `tests/` package, grouped by domain.
+The server test run intentionally excludes the core submodule; run the core
+suite from `alpha_pos_core` when changing shared code.
 
-## Status
+## Development
 
-`admins`, `hr` + deploy chain copied. Next: `config/settings.py` (extends
-`core.alpha_pos_core.settings_base`, `EDITION=server`), `config/asgi.py`
-(`ProtocolTypeRouter`), wire core as a submodule, `manage.py check`.
+Clone with the submodule, create a virtual environment, and install the
+development dependencies:
+
+```bash
+git clone --recurse-submodules <repository-url>
+cd alpha_pos_server
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
+
+Run server checks and tests:
+
+```bash
+python manage.py check
+pytest
+```
+
+Production uses PostgreSQL and Redis through `docker-compose.yaml`. Runtime
+secrets belong only in the ignored `.env`; no live credentials are stored in
+the repository.
+
+Validate and start the local Docker stack:
+
+```bash
+docker compose config --quiet
+docker compose up --build
+```
+
+The ignored `.env` must be supplied out of band. Never copy SSH keys from the
+workspace key directory into the application environment.
+
+## Deployment
+
+The container runs the ASGI application with Uvicorn workers and a Redis
+channel layer. See [deploy/DEPLOY.md](deploy/DEPLOY.md) for first deployment,
+continuous deployment, rollback, and support-relay setup.
+
+Historical financial corrections require a reviewed, quiescent maintenance
+window. Follow [the financial repair runbook](docs/operations/financial-repair.md)
+without bypassing its evidence or synchronization gates.

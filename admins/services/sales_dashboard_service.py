@@ -132,8 +132,8 @@ def _series(d_from, d_to, tod_from=None, tod_to=None, *, window=None):
             if hcol is not None:
                 heat[local.weekday()][hcol] += 1
 
-    # Revenue is a settlement event. A ticket opened before the cutover but
-    # paid afterwards belongs to the later money bucket, not its placement day.
+    # Revenue follows its settlement timestamp. A ticket opened in one
+    # operating date but paid in another belongs to the later money bucket.
     _pqs = scoped(Order.objects.filter(
         is_deleted=False, is_paid=True,
         paid_at__gte=lo, paid_at__lt=hi,

@@ -36,7 +36,6 @@ def operations_dashboard(date_from=None, date_to=None, tod_from=None, tod_to=Non
         datetime_from=datetime_from, datetime_to=datetime_to,
         from_at=from_at, to_at=to_at,
     )
-    lo, hi = window.start_at, window.end_at
     # Base querysets for the window, restricted to the working-hours (tod) window
     # per day when tod_from/tod_to are given — every operations block derives from these.
     _o = window.filter(

@@ -566,7 +566,7 @@ def _hourly_daily(shifts, *, cashier_owned=True, now=None):
     unbucketed_refund_count = 0
     unbucketed_refund_revenue = Decimal('0')
     from base.services.business_day import business_date, business_day_start
-    cutover = business_day_start()
+    opening = business_day_start()
 
     for branch_id, cashier_id, created_at in operational_rows:
         if not belongs(branch_id, cashier_id, created_at):
@@ -574,7 +574,7 @@ def _hourly_daily(shifts, *, cashier_owned=True, now=None):
         local = timezone.localtime(created_at)
         h = local.hour
         by_hour[h]['orders'] += 1
-        d = business_date(created_at, cutover).isoformat()
+        d = business_date(created_at, opening).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         slot['orders'] += 1
 
@@ -583,7 +583,7 @@ def _hourly_daily(shifts, *, cashier_owned=True, now=None):
             continue
         local = timezone.localtime(paid_at)
         h = local.hour
-        d = business_date(paid_at, cutover).isoformat()
+        d = business_date(paid_at, opening).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         if total_amount:
             by_hour[h]['revenue'] += total_amount
@@ -619,7 +619,7 @@ def _hourly_daily(shifts, *, cashier_owned=True, now=None):
             continue
         local = timezone.localtime(refunded_at)
         h = local.hour
-        d = business_date(refunded_at, cutover).isoformat()
+        d = business_date(refunded_at, opening).isoformat()
         slot = by_date.setdefault(d, {'orders': 0, 'revenue': Decimal('0')})
         if amount:
             by_hour[h]['revenue'] -= amount

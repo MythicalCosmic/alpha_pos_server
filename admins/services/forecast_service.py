@@ -170,9 +170,8 @@ def forecast_tomorrow():
     """Return a bounded local forecast as ``(data, error)``."""
     history = gather_history()
 
-    # Forecast the next operating day, not UTC now + 24h. Around midnight in
-    # Tashkent the UTC calendar may still be yesterday; before the cutover the
-    # current operating day is intentionally still the previous date.
+    # Forecast the next operating date, not UTC now + 24h. Before the 03:00
+    # close, the current service still carries the preceding calendar date.
     from base.services.business_day import business_date
 
     tomorrow = business_date() + timedelta(days=1)

@@ -164,8 +164,8 @@ def _parse_range(request):
 
     df_str = request.GET.get('from')
     dt_str = request.GET.get('to')
-    # Default "today" = current BUSINESS day (03:00 cutover), matching
-    # _parse_range_token and every business-day report, not the calendar date.
+    # Default "today" is the current canonical operating date, matching
+    # _parse_range_token and every business-day report.
     today = business_date()
     df = parse_date(df_str) if df_str else today
     dt = parse_date(dt_str) if dt_str else (df or today)

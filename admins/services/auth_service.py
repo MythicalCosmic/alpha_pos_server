@@ -118,14 +118,13 @@ class AdminAuthService:
             return ServiceResponse.forbidden("Admin access required")
         data = AdminAuthService._user_data(user)
         data['last_login_at'] = user.last_login_at.isoformat() if user.last_login_at else None
-        # The operating-day cutover (default 03:00) so the FE's date-preset chips
-        # ("today", "yesterday") can compute business dates client-side: before the
-        # cutover, "today" is still the previous calendar day. Best-effort.
+        # The canonical 07:00 opening lets the frontend label operating dates.
+        # Reporting closes at 03:00 and excludes the 03:00-07:00 quiet gap.
         try:
             from base.services.business_day import business_day_start
             data['business_day_start'] = business_day_start().strftime('%H:%M')
         except Exception:
-            data['business_day_start'] = '03:00'
+            data['business_day_start'] = '07:00'
         return ServiceResponse.success(data=data, message="User data retrieved")
 
     @staticmethod
