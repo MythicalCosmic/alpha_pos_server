@@ -39,9 +39,7 @@ ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Multi-worker cloud: a shared Redis channel layer so websocket groups fan out
-# across uvicorn workers. (Activates once 'channels' is added in the websocket
-# phase; inert until then.)
+# Shared Redis channel layer fans websocket groups across Uvicorn workers.
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',

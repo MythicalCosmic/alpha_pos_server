@@ -58,6 +58,7 @@ services:
       DB_PORT: "5432"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       USE_REDIS: ${USE_REDIS:-True}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
       # This installation currently has one operational branch. Branch-scoped
       # cloud CRUD that omits branch_id targets it explicitly instead of
       # creating invisible branch_id=cloud rows. Multi-branch deployments must

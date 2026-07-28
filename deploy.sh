@@ -58,16 +58,19 @@ ADMIN_PASS="$(keep ALPHA_POS_ADMIN_PASSWORD)"; ADMIN_PASS="${ADMIN_PASS:-$(rand 
 # would reject every bot order). Flip to true in .env once the tills are updated.
 SAD="$(keep SMARTFOOD_AUTO_DISPATCH)";   SAD="${SAD:-false}"
 CAA="$(keep COURIER_AUTO_ASSIGN)";       CAA="${CAA:-false}"
+WEBCONCURRENCY="$(keep WEB_CONCURRENCY)"; WEBCONCURRENCY="${WEBCONCURRENCY:-3}"
 # AI assistant. Keys are preserved across redeploys via keep() — set each once in
 # .env (never committed to git). Provider + model are safe to bake. OpenAI is the
 # active provider; Claude + Gemini config are kept as fallbacks.
 GAPI="$(keep GEMINI_API_KEY)"
 GMODEL="$(keep GEMINI_MODEL)"; GMODEL="${GMODEL:-gemini-2.5-flash}"
 AAPI="$(keep ANTHROPIC_API_KEY)"
-AMODEL="$(keep ANTHROPIC_MODEL)"; AMODEL="${AMODEL:-claude-sonnet-4-5}"
+AMODEL="$(keep ANTHROPIC_MODEL)"; AMODEL="${AMODEL:-claude-sonnet-4-6}"
 OAPI="$(keep OPENAI_API_KEY)"
 OMODEL="$(keep OPENAI_MODEL)"; OMODEL="${OMODEL:-gpt-5.6-luna}"
 OREASONING="$(keep OPENAI_REASONING_EFFORT)"; OREASONING="${OREASONING:-low}"
+OPENAISEED="$(keep OPENAI_SEED)"; OPENAISEED="${OPENAISEED:-7}"
+AITEMPERATURE="$(keep AI_TEMPERATURE)"; AITEMPERATURE="${AITEMPERATURE:-0}"
 AIPROVIDER="$(keep AI_PROVIDER)"; AIPROVIDER="${AIPROVIDER:-openai}"
 LLMCONNECT="$(keep LLM_CONNECT_TIMEOUT_SECONDS)"; LLMCONNECT="${LLMCONNECT:-10}"
 LLMREAD="$(keep LLM_READ_TIMEOUT_SECONDS)"; LLMREAD="${LLMREAD:-45}"
@@ -88,6 +91,7 @@ DB_PASSWORD=${DBPASS}
 DB_HOST=db
 DB_PORT=5432
 WEB_PORT=127.0.0.1:8000
+WEB_CONCURRENCY=${WEBCONCURRENCY}
 # Make a later bare "docker compose up" retain the Caddy edge attachment.
 # Without this, Compose recreates the web service from only docker-compose.yaml and the
 # healthy app becomes publicly unreachable with a 502 until the overlay is
@@ -120,6 +124,8 @@ AI_PROVIDER=${AIPROVIDER}
 OPENAI_API_KEY=${OAPI}
 OPENAI_MODEL=${OMODEL}
 OPENAI_REASONING_EFFORT=${OREASONING}
+OPENAI_SEED=${OPENAISEED}
+AI_TEMPERATURE=${AITEMPERATURE}
 ANTHROPIC_API_KEY=${AAPI}
 ANTHROPIC_MODEL=${AMODEL}
 GEMINI_MODEL=${GMODEL}
