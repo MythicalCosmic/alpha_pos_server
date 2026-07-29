@@ -75,6 +75,7 @@ def test_mark_paid_reconcile_then_inkassa_books_sale_once(
         'close',
         actor=cashier_user,
         counted={'CASH': '100.00'},
+        terminal_origin=True,
     )
     assert status == 200, result
     result, status = ShiftService.reconcile(

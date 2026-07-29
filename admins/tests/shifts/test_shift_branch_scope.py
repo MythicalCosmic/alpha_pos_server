@@ -90,3 +90,84 @@ def test_shift_list_summary_and_active_endpoint_are_branch_scoped(admin_user):
         shift_a.id, shift_b.id,
     }
     assert global_result['data']['summary']['shift_count'] == 2
+
+
+@override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
+def test_cloud_endpoint_cannot_close_terminal_eligible_shift():
+    from base.models import Shift, User
+
+    manager = _user(
+        'terminal-close-manager@test.local',
+        User.RoleChoices.MANAGER,
+        'branch-a',
+    )
+    cashier = _user(
+        'terminal-close-cashier@test.local',
+        User.RoleChoices.CASHIER,
+        'branch-a',
+    )
+    shift = Shift.objects.create(
+        user=cashier,
+        branch_id='branch-a',
+        status=Shift.Status.ACTIVE,
+        start_time=timezone.now() - timedelta(hours=1),
+        device_id='restaurant-terminal',
+        treasury_settlement_eligible=True,
+    )
+
+    response = Client().post(
+        f'/api/admins/shifts/{shift.id}/end',
+        data={
+            'counted': {
+                'CASH': '0',
+                'UZCARD': '0',
+                'HUMO': '0',
+                'CARD': '0',
+                'PAYME': '0',
+            },
+        },
+        content_type='application/json',
+        **_auth(manager),
+    )
+
+    assert response.status_code == 409, response.content
+    assert response.json()['code'] == 'terminal_close_required'
+    shift.refresh_from_db()
+    assert shift.status == Shift.Status.ACTIVE
+    assert shift.end_time is None
+    assert shift.settlement_manifest == {}
+
+
+@override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
+def test_cloud_endpoint_can_close_legacy_nonsettleable_shift():
+    from base.models import Shift, User
+
+    manager = _user(
+        'legacy-close-manager@test.local',
+        User.RoleChoices.MANAGER,
+        'branch-a',
+    )
+    cashier = _user(
+        'legacy-close-cashier@test.local',
+        User.RoleChoices.CASHIER,
+        'branch-a',
+    )
+    shift = Shift.objects.create(
+        user=cashier,
+        branch_id='branch-a',
+        status=Shift.Status.ACTIVE,
+        start_time=timezone.now() - timedelta(hours=1),
+        treasury_settlement_eligible=False,
+    )
+
+    response = Client().post(
+        f'/api/admins/shifts/{shift.id}/end',
+        data={'notes': 'Legacy recovery close'},
+        content_type='application/json',
+        **_auth(manager),
+    )
+
+    assert response.status_code == 200, response.content
+    shift.refresh_from_db()
+    assert shift.status == Shift.Status.ENDED
+    assert shift.end_time is not None

@@ -15,6 +15,11 @@ from admins.services.export_service import build_export, parse_date_range
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _stable_business_clock(open_business_clock):
+    return open_business_clock
+
+
 def _make_order(user, total='100000', status='COMPLETED', is_paid=True,
                 payment_method='CASH', phone='998901111111',
                 created_at=None, display_id=None):

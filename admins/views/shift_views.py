@@ -160,6 +160,7 @@ def shift_end(request, shift_id):
         actor=request.user,
         # {method: counted_amount} from the cashier's blind per-type count.
         counted=data.get('counted'),
+        terminal_origin=False,
     )
     return JsonResponse(result, status=status_code)
 
