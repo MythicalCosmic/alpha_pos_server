@@ -10653,7 +10653,7 @@
                     "description": "**Edition:** local POS  \n**Registered route:** `/shifts/:shift_id/end`  \n**Authentication:** Local POS bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                      "raw": "{\n  \"notes\": \"Manager-assisted close after a physical tender count\",\n  \"counted\": {\n    \"CASH\": \"{{amount}}\",\n    \"UZCARD\": \"0.00\",\n    \"HUMO\": \"0.00\",\n    \"CARD\": \"0.00\",\n    \"PAYME\": \"0.00\"\n  }\n}",
                       "options": {
                         "raw": {
                           "language": "json"

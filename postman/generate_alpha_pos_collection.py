@@ -860,6 +860,17 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
                 "PAYME": "0.00",
             },
         }
+    if path.startswith("/shifts/") and path.endswith("/end"):
+        return {
+            "notes": "Manager-assisted close after a physical tender count",
+            "counted": {
+                "CASH": "{{amount}}",
+                "UZCARD": "0.00",
+                "HUMO": "0.00",
+                "CARD": "0.00",
+                "PAYME": "0.00",
+            },
+        }
     if path.startswith("/api/admins/shifts/") and path.endswith("/end"):
         return {
             "notes": "Verified closing count",
