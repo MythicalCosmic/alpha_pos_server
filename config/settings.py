@@ -11,6 +11,13 @@ from alpha_pos_core.settings_base import *  # noqa: F401,F403
 
 EDITION = 'server'
 
+# Temporary, presentation-only compatibility dashboard.  The page contains no
+# financial data until the browser authenticates through the existing custom
+# admin session and calls the canonical reporting APIs.
+LEGACY_COMPAT_DASHBOARD_ENABLED = os.environ.get(
+    'LEGACY_COMPAT_DASHBOARD_ENABLED', 'True',
+).strip().lower() in ('1', 'true', 'yes', 'on')
+
 # Back-office app on top of the shared spine. customers / waiters are NOT installed
 # here (no POS order-taking on the server). hr IS installed (shared) and its UI is
 # mounted in config.urls; admins' order-WRITE routes are intentionally not mounted.

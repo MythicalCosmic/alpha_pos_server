@@ -1,0 +1,372 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <title>Alpha POS · Trusted Sales Ledger</title>
+    <link rel="stylesheet" href="{% static 'admins/legacy_dashboard.css' %}">
+    <script src="{% static 'admins/legacy_dashboard.js' %}" defer></script>
+</head>
+<body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <noscript>
+        <div class="noscript">JavaScript is required to load the authenticated reporting APIs.</div>
+    </noscript>
+
+    <main class="page-shell">
+        <section id="login-view" class="auth-layout" aria-labelledby="login-title" hidden>
+            <div class="auth-card">
+                <div class="brand-mark" aria-hidden="true">A</div>
+                <p class="eyebrow">Alpha POS · Cloud</p>
+                <h1 id="login-title">Trusted sales ledger</h1>
+                <p class="muted">
+                    Sign in with the existing Alpha POS administrator account.
+                    Authentication stays in the secure, HttpOnly session cookie.
+                </p>
+                <form id="login-form" class="auth-form">
+                    <label>
+                        Email
+                        <input id="login-email" name="email" type="email"
+                               autocomplete="username" required>
+                    </label>
+                    <label>
+                        Password
+                        <input id="login-password" name="password" type="password"
+                               autocomplete="current-password" required>
+                    </label>
+                    <p id="login-error" class="form-error" role="alert" hidden></p>
+                    <button id="login-button" class="button primary" type="submit">
+                        Sign in securely
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <section id="dashboard-view" hidden>
+            <header class="topbar">
+                <div class="brand">
+                    <div class="brand-mark small" aria-hidden="true">A</div>
+                    <div>
+                        <p class="eyebrow">Alpha POS · Proof view</p>
+                        <h1>Trusted sales ledger</h1>
+                    </div>
+                </div>
+                <div class="account">
+                    <span id="account-name" class="account-name"></span>
+                    <button id="logout-button" class="button ghost" type="button">Sign out</button>
+                </div>
+            </header>
+
+            <section class="filter-panel" aria-labelledby="range-heading">
+                <div>
+                    <p class="eyebrow">Operating dates</p>
+                    <h2 id="range-heading">Select the reporting period</h2>
+                    <p class="muted compact">
+                        Each date uses the restaurant window 07:00 → next day 03:00.
+                    </p>
+                </div>
+                <form id="range-form" class="range-form">
+                    <label>
+                        From
+                        <input id="date-from" name="from" type="date" required>
+                    </label>
+                    <span class="range-arrow" aria-hidden="true">→</span>
+                    <label>
+                        To
+                        <input id="date-to" name="to" type="date" required>
+                    </label>
+                    <button id="apply-range" class="button primary" type="submit">Apply range</button>
+                </form>
+            </section>
+
+            <aside class="cash-warning sync-warning" aria-label="Cloud data freshness">
+                <div class="warning-icon" aria-hidden="true">↻</div>
+                <div>
+                    <strong>Cloud copy · sync freshness is not proven by this page.</strong>
+                    <p>
+                        These figures contain the records that have reached the cloud.
+                        If the till was offline or has pending sync work, the local
+                        desktop report remains the source of truth.
+                    </p>
+                </div>
+            </aside>
+
+            <div id="page-message" class="page-message" role="status" aria-live="polite"></div>
+
+            <div id="report-content" hidden>
+                <section id="range-proof" class="range-proof" aria-labelledby="proof-heading">
+                <div>
+                    <p class="eyebrow">Resolved by the server</p>
+                    <h2 id="proof-heading">Canonical counted interval</h2>
+                </div>
+                <dl class="proof-grid">
+                    <div>
+                        <dt>Effective start</dt>
+                        <dd id="effective-start">—</dd>
+                    </div>
+                    <div>
+                        <dt>Effective end (exclusive)</dt>
+                        <dd id="effective-end">—</dd>
+                    </div>
+                    <div>
+                        <dt>Mode</dt>
+                        <dd id="range-mode">—</dd>
+                    </div>
+                    <div>
+                        <dt>Timezone</dt>
+                        <dd id="range-timezone">—</dd>
+                    </div>
+                </dl>
+                <p id="range-consistency" class="consistency-note"></p>
+            </section>
+
+            <aside class="cash-warning" aria-label="Cash interpretation warning">
+                <div class="warning-icon" aria-hidden="true">!</div>
+                <div>
+                    <strong>Tender cash is not automatically the physical drawer cash.</strong>
+                    <p>
+                        The selected-range cash card is payment attribution across sales.
+                        Compare banknotes only with the separate server-calculated
+                        “Expected physical drawer cash now” section below.
+                    </p>
+                </div>
+            </aside>
+
+            <section class="kpi-grid" aria-label="Sales summary">
+                <article class="kpi featured">
+                    <span>Net sales</span>
+                    <strong id="kpi-net">—</strong>
+                    <small>Gross sales less recorded refunds</small>
+                </article>
+                <article class="kpi">
+                    <span>Gross sales</span>
+                    <strong id="kpi-gross">—</strong>
+                    <small>Paid settlement events</small>
+                </article>
+                <article class="kpi rose">
+                    <span>Refunds</span>
+                    <strong id="kpi-refunds">—</strong>
+                    <small id="kpi-refunded-orders">— refund events</small>
+                </article>
+                <article class="kpi amber">
+                    <span>Cash tender · selected range</span>
+                    <strong id="kpi-cash">—</strong>
+                    <small>Sales tender, not a drawer count</small>
+                </article>
+                <article class="kpi cyan">
+                    <span>Card tender</span>
+                    <strong id="kpi-card">—</strong>
+                    <small>Uzcard + Humo + Card</small>
+                </article>
+                <article class="kpi violet">
+                    <span>Payme tender</span>
+                    <strong id="kpi-payme">—</strong>
+                    <small>Canonical Payme attribution</small>
+                </article>
+                <article class="kpi rose">
+                    <span>Drawer expenses</span>
+                    <strong id="kpi-expenses">—</strong>
+                    <small>CashboxExpense total from the API</small>
+                </article>
+                <article class="kpi">
+                    <span>Orders created</span>
+                    <strong id="kpi-orders">—</strong>
+                    <small id="kpi-order-detail">— paid · — cancelled</small>
+                </article>
+                <article class="kpi">
+                    <span>Net units sold</span>
+                    <strong id="kpi-units">—</strong>
+                    <small>Paid units less returned units</small>
+                </article>
+            </section>
+
+            <section id="unknown-warning" class="integrity-warning" hidden>
+                <strong>Unattributed tender evidence detected</strong>
+                <span id="unknown-amount"></span>
+                <p>Do not treat this amount as cash. Review the underlying payment evidence.</p>
+            </section>
+
+            <section class="section-card drawer-proof" aria-labelledby="drawer-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Live shift proof · independent of selected dates</p>
+                        <h2 id="drawer-title">Expected physical drawer cash now</h2>
+                        <p class="muted compact">
+                            Values are displayed exactly from each active shift’s canonical
+                            expected_cash result. This page does not calculate drawer cash.
+                        </p>
+                    </div>
+                    <button id="refresh-drawer" class="button ghost" type="button">
+                        Refresh live shifts
+                    </button>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <caption>Expected physical cash for currently active shifts</caption>
+                        <thead>
+                            <tr>
+                                <th>Cashier</th>
+                                <th>Shift started</th>
+                                <th>Expected physical cash</th>
+                                <th>Evidence source</th>
+                                <th>Completeness</th>
+                            </tr>
+                        </thead>
+                        <tbody id="active-shifts-body"></tbody>
+                    </table>
+                </div>
+                <p id="active-shifts-empty" class="empty-state" hidden>No active shifts.</p>
+            </section>
+
+            <div class="two-column">
+                <section class="section-card" aria-labelledby="tender-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">Canonical payment attribution</p>
+                            <h2 id="tender-title">Tender detail</h2>
+                        </div>
+                    </div>
+                    <dl id="tender-detail" class="detail-list"></dl>
+                </section>
+
+                <section class="section-card" aria-labelledby="comparison-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">Equal preceding period</p>
+                            <h2 id="comparison-title">Previous-period comparison</h2>
+                        </div>
+                    </div>
+                    <dl id="previous-detail" class="detail-list"></dl>
+                </section>
+            </div>
+
+            <section class="section-card" aria-labelledby="daily-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Server-provided series</p>
+                        <h2 id="daily-title">Sales by operating date</h2>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <caption>Gross, refund, net and drawer expense series</caption>
+                        <thead>
+                            <tr>
+                                <th>Operating date</th>
+                                <th>Gross sales</th>
+                                <th>Refunds</th>
+                                <th>Net sales</th>
+                                <th>Drawer expenses</th>
+                            </tr>
+                        </thead>
+                        <tbody id="daily-sales-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <div class="two-column">
+                <section class="section-card" aria-labelledby="products-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">Settled item lines</p>
+                            <h2 id="products-title">Top products</h2>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <caption>Top products in the selected interval</caption>
+                            <thead>
+                                <tr><th>Product</th><th>Net units</th><th>Net revenue</th></tr>
+                            </thead>
+                            <tbody id="products-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="section-card" aria-labelledby="categories-title">
+                    <div class="section-heading">
+                        <div>
+                            <p class="eyebrow">Settled category lines</p>
+                            <h2 id="categories-title">Categories</h2>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <caption>Category performance in the selected interval</caption>
+                            <thead>
+                                <tr><th>Category</th><th>Net units</th><th>Net revenue</th></tr>
+                            </thead>
+                            <tbody id="categories-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <section class="section-card" aria-labelledby="staff-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Paid-at revenue · operational order counts</p>
+                        <h2 id="staff-title">Cashier and staff performance</h2>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <caption>Staff performance for the canonical selected interval</caption>
+                        <thead>
+                            <tr>
+                                <th>Staff member</th>
+                                <th>Role</th>
+                                <th>Orders</th>
+                                <th>Paid</th>
+                                <th>Cancelled</th>
+                                <th>Gross sales</th>
+                                <th>Refunds</th>
+                                <th>Net sales</th>
+                                <th>Hours</th>
+                            </tr>
+                        </thead>
+                        <tbody id="staff-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+                <section class="section-card" aria-labelledby="expenses-title">
+                <div class="section-heading">
+                    <div>
+                        <p class="eyebrow">Cash drawer money out</p>
+                        <h2 id="expenses-title">Itemized drawer expenses</h2>
+                        <p id="expense-pagination-note" class="muted compact"></p>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <caption>Cashbox expenses in the selected interval</caption>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Cashier</th>
+                                <th>Category</th>
+                                <th>Comment</th>
+                                <th>Shift</th>
+                                <th>Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody id="expenses-body"></tbody>
+                    </table>
+                </div>
+                <p id="expenses-empty" class="empty-state" hidden>No drawer expenses in this interval.</p>
+                </section>
+            </div>
+
+            <footer>
+                Read-only compatibility view · Cloud data comes from existing Alpha POS APIs.
+            </footer>
+        </section>
+    </main>
+</body>
+</html>

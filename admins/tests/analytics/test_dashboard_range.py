@@ -95,3 +95,30 @@ def test_order_stats_payment_breakdown():
     assert Decimal(pb['payme']) == 25
     # buckets reconcile exactly to revenue
     assert Decimal(pb['cash']) + Decimal(pb['card']) + Decimal(pb['payme']) == 165
+
+
+def test_offsetting_unknown_sale_and_refund_remain_incomplete(
+    open_business_clock,
+):
+    from admins.services import dashboard_service
+    from base.models import OrderRefund
+
+    order = _order('MIXED', '100')
+    OrderRefund.objects.create(
+        order=order,
+        branch_id=order.branch_id,
+        amount='100',
+        unknown_amount='100',
+        source=OrderRefund.Source.COURIER_PAYMENT,
+        source_id=f'dashboard-unknown-refund-{order.pk}',
+        refunded_at=order.paid_at,
+    )
+
+    dashboard = dashboard_service.get_range()
+    payments = dashboard['payment_breakdown']
+    evidence = dashboard['tender_evidence']
+
+    assert Decimal(payments.get('unknown', '0')) == 0
+    assert evidence['attribution_complete'] is False
+    assert Decimal(evidence['unknown_sales']) == 100
+    assert Decimal(evidence['unknown_refunds']) == 100

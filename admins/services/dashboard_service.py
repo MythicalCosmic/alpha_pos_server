@@ -23,24 +23,54 @@ logger = logging.getLogger(__name__)
 _TENDERS = ('cash', 'card', 'payme')
 
 
-def _tender_breakdown(paid_qs, refund_qs=None):
+def _tender_breakdown_data(paid_qs, refund_qs=None):
     """Canonical net {cash, card, payme} over dated settlement events.
 
-    Adds `unknown` only when some revenue genuinely has no determinable tender
-    (alertable, never a display value) and `card_detail` with the acquirer split.
-    Always sums exactly to the queryset's revenue.
+    Gross sale/refund unknowns remain separate so equal unattributed movements
+    cannot cancel into a falsely healthy net zero.
     """
-    from base.services.tender import breakdown_for_orders, net_breakdown
-    split, detail = (
-        net_breakdown(paid_qs, refund_qs)
-        if refund_qs is not None
-        else breakdown_for_orders(paid_qs)
+    from base.services.tender import (
+        breakdown_for_orders,
+        breakdown_for_refunds,
     )
+
+    sales, sale_detail = breakdown_for_orders(paid_qs)
+    if refund_qs is None:
+        refunds = {
+            key: Decimal('0')
+            for key in ('cash', 'card', 'payme', 'unknown')
+        }
+        refund_detail = {
+            key: Decimal('0')
+            for key in ('UZCARD', 'HUMO', 'CARD')
+        }
+    else:
+        refunds, refund_detail = breakdown_for_refunds(refund_qs)
+    split = {
+        key: sales[key] - refunds[key]
+        for key in ('cash', 'card', 'payme', 'unknown')
+    }
+    detail = {
+        key: sale_detail[key] - refund_detail[key]
+        for key in ('UZCARD', 'HUMO', 'CARD')
+    }
     out = {t: _uzs(split[t]) for t in _TENDERS}
     if split['unknown']:
         out['unknown'] = _uzs(split['unknown'])
     out['card_detail'] = {k: _uzs(v) for k, v in detail.items()}
-    return out
+    evidence = {
+        'attribution_complete': (
+            sales['unknown'] == 0
+            and refunds['unknown'] == 0
+        ),
+        'unknown_sales': _uzs(sales['unknown']),
+        'unknown_refunds': _uzs(refunds['unknown']),
+    }
+    return out, evidence
+
+
+def _tender_breakdown(paid_qs, refund_qs=None):
+    return _tender_breakdown_data(paid_qs, refund_qs)[0]
 
 
 def _safe(label, fn, default):
@@ -379,7 +409,7 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None,
     refund_agg = refunds.aggregate(total=Sum('amount'), n=Count('id'))
     counts = sold.aggregate(total=Count('id'),
                             cancelled=Count('id', filter=Q(status='CANCELED')))
-    pay = _tender_breakdown(paid, refunds)
+    pay, tender_evidence = _tender_breakdown_data(paid, refunds)
     items = window.filter(
         OrderItem.objects.filter(
             is_deleted=False, order__is_deleted=False, order__is_paid=True,
@@ -416,6 +446,7 @@ def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None,
         'cancelled': counts['cancelled'] or 0,
         'units_sold': int(units),
         'payment_breakdown': pay,
+        'tender_evidence': tender_evidence,
         'top_products': [{
             'product_id': r['product_id'], 'product_name': r['product__name'],
             'quantity': int(r['qty'] or 0), 'revenue': _uzs(r['revenue']),

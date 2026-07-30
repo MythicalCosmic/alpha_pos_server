@@ -10,6 +10,7 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import path, include
 
+from admins.views.legacy_dashboard_views import legacy_dashboard
 from base.services.sync.views import get_sync_urls
 from notifications.views import customer_bot_views
 
@@ -21,6 +22,7 @@ def healthz(_request):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('legacy-dashboard/', legacy_dashboard, name='legacy_dashboard'),
     path('healthz', healthz),
     path('api/admins/', include('admins.urls')),
     path('api/admins/stock/', include('stock.urls')),
