@@ -16,6 +16,12 @@ def _asset_text(relative_path):
     return Path(found).read_text(encoding='utf-8')
 
 
+def _asset_path(relative_path):
+    found = finders.find(relative_path)
+    assert found is not None, f'static asset not found: {relative_path}'
+    return Path(found)
+
+
 def test_legacy_dashboard_is_data_free_no_store_shell(client):
     response = client.get(reverse('legacy_dashboard'))
 
@@ -40,11 +46,26 @@ def test_legacy_dashboard_is_data_free_no_store_shell(client):
 
     body = response.content.decode()
     assert 'Trusted sales ledger' in body
+    assert 'Smart Jowi Dashboard' in body
+    assert 'class="admin-sidebar"' in body
+    assert 'Site administration' in body
+    assert 'Top 5 Products · Positive Net Units' in body
+    assert 'Positive Net Revenue by Category' in body
+    assert 'Non-cancelled Orders by Type' in body
+    assert 'Non-cancelled Classified Orders Trend' in body
+    assert 'Cashier Performance' in body
+    assert 'data-range-preset="today"' in body
+    assert 'data-range-preset="year"' in body
+    assert '7 operating dates' in body
+    assert '30 operating dates' in body
+    assert '365 operating dates' in body
+    assert 'Orders Created' in body
     assert 'Expected physical drawer cash now' in body
     assert 'Tender cash is not automatically the physical drawer cash' in body
     assert 'Cloud copy · sync freshness is not proven by this page' in body
     assert 'id="report-content" hidden' in body
     assert '/static/admins/legacy_dashboard.css' in body
+    assert '/static/admins/vendor/chart.js' in body
     assert '/static/admins/legacy_dashboard.js' in body
     assert 'http://' not in body
     assert 'https://' not in body
@@ -98,6 +119,7 @@ def test_legacy_dashboard_uses_existing_cookie_auth_for_protected_apis(
 def test_legacy_dashboard_static_contract_is_self_contained_and_read_only():
     css = _asset_text('admins/legacy_dashboard.css')
     javascript = _asset_text('admins/legacy_dashboard.js')
+    chart = _asset_text('admins/vendor/chart.js')
 
     for endpoint in (
         '/api/admins/auth-me',
@@ -129,6 +151,48 @@ def test_legacy_dashboard_static_contract_is_self_contained_and_read_only():
     assert 'evidence.unknown_refunds' in javascript
     assert 'The previous value was cleared' in javascript
     assert 'Date selection changed. Apply the range' in javascript
+    assert 'data-range-preset' in javascript
+    assert 'addDays(today, -29)' in javascript
+    assert 'addDays(today, -364)' in javascript
+    assert 'window.Chart' in javascript
+    assert 'renderCharts(dashboard, sales)' in javascript
+    assert javascript.index(
+        'renderCharts(dashboard, sales);'
+    ) < javascript.index(
+        'elements.reportContent.hidden = false;',
+        javascript.index('renderCharts(dashboard, sales);'),
+    )
+    assert 'const netRevenue = numeric(dashboard.revenue)' in javascript
+    assert 'formatMoney(netRevenue / paidOrders)' in javascript
+    assert 'document.createElement("div")' in javascript
+    assert 'innerHTML' not in javascript
+
+    assert '@font-face' in css
+    assert 'fonts/PlusJakartaSans-Variable.ttf' in css
+    assert 'fonts/Material-Symbols-Outlined.woff2' in css
+    assert 'grid-template-columns: repeat(4' in css
+    assert 'grid-template-columns: repeat(5' in css
+    assert 'version="4.4.0"' in chart
+
+    assert _asset_path(
+        'admins/fonts/PlusJakartaSans-Variable.ttf'
+    ).stat().st_size > 100_000
+    assert _asset_path(
+        'admins/fonts/Material-Symbols-Outlined.woff2'
+    ).stat().st_size > 100_000
+    assert 'SIL OPEN FONT LICENSE' in _asset_text(
+        'admins/fonts/OFL-PlusJakartaSans.txt'
+    )
+    assert 'Apache License' in _asset_text(
+        'admins/fonts/LICENSE-Material-Symbols.txt'
+    )
+    assert 'The MIT License' in _asset_text(
+        'admins/vendor/LICENSE-Chart.js.md'
+    )
+    notices = _asset_text('admins/THIRD_PARTY_NOTICES.txt')
+    assert 'Plus Jakarta Sans' in notices
+    assert 'Material Symbols Outlined' in notices
+    assert 'Chart.js 4.4.0' in notices
 
     forbidden_client_storage = (
         'localStorage',
@@ -149,3 +213,74 @@ def test_legacy_dashboard_static_contract_is_self_contained_and_read_only():
     ).read_text(encoding='utf-8')
     assert 'admins.services' not in view_source
     assert '.objects' not in view_source
+
+
+def test_legacy_dashboard_source_contract_states_event_grains_and_chart_scope():
+    template = (
+        Path(__file__).parents[2]
+        / 'templates' / 'admins' / 'legacy_dashboard.html'
+    ).read_text(encoding='utf-8')
+    javascript = _asset_text('admins/legacy_dashboard.js')
+
+    for label in (
+        'Orders Created',
+        'Top 5 Products · Positive Net Units',
+        'Positive Net Revenue by Category',
+        'Non-cancelled Orders by Type',
+        'Non-cancelled Classified Orders Trend',
+        'created_at · HALL / DELIVERY / PICKUP',
+        '7 operating dates',
+        '30 operating dates',
+        '365 operating dates',
+    ):
+        assert label in template
+
+    assert 'paid settlements (paid_at)' in javascript
+    assert 'cancellations (created_at)' in javascript
+    assert 'Non-cancelled classified orders (created_at)' in javascript
+
+    product_block_start = javascript.index('const chartProducts = products.filter')
+    product_block_end = javascript.index(
+        'const categories = Array.isArray', product_block_start,
+    )
+    product_block = javascript[product_block_start:product_block_end]
+    assert '(numeric(product.quantity) ?? 0) > 0' in product_block
+    assert '(numeric(product.revenue) ?? 0) > 0' in product_block
+    assert 'shownProductUnits' in product_block
+    assert 'dashboard.units_sold' not in product_block
+    assert 'non-positive or ' in product_block
+    assert 'refund-heavy rows were omitted' in product_block
+
+    category_block_start = javascript.index(
+        'const positiveCategories = categories.filter',
+    )
+    category_block_end = javascript.index(
+        'const channelDays = Array.isArray', category_block_start,
+    )
+    category_block = javascript[category_block_start:category_block_end]
+    assert '(numeric(category.revenue) ?? 0) > 0' in category_block
+    assert 'zero or negative refund-heavy rows were ' in category_block
+
+    login_start = javascript.index('async function handleLogin')
+    login_end = javascript.index('async function handleLogout', login_start)
+    login_block = javascript[login_start:login_end]
+    captured_at = login_block.index(
+        'const password = elements.loginPassword.value;',
+    )
+    cleared_at = login_block.index('elements.loginPassword.value = "";')
+    requested_at = login_block.index('await apiRequest(API.login')
+    assert captured_at < cleared_at < requested_at
+
+    change_start = javascript.index(
+        '[elements.dateFrom, elements.dateTo].forEach',
+    )
+    change_end = javascript.index(
+        'elements.presetButtons.forEach', change_start,
+    )
+    change_block = javascript[change_start:change_end]
+    assert 'currentRequest += 1;' in change_block
+    assert 'elements.applyRange.disabled = false;' in change_block
+    assert change_block.index('currentRequest += 1;') < change_block.index(
+        'elements.reportContent.hidden = true;',
+    )
+    assert 'if (requestId !== currentRequest)' in javascript

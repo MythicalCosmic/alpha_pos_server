@@ -6,14 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="robots" content="noindex, nofollow, noarchive">
-    <title>Alpha POS · Trusted Sales Ledger</title>
+    <title>Alpha POS · Smart Jowi Dashboard</title>
     <link rel="stylesheet" href="{% static 'admins/legacy_dashboard.css' %}">
+    <script src="{% static 'admins/vendor/chart.js' %}" defer></script>
     <script src="{% static 'admins/legacy_dashboard.js' %}" defer></script>
 </head>
 <body>
-    <div class="ambient ambient-one" aria-hidden="true"></div>
-    <div class="ambient ambient-two" aria-hidden="true"></div>
-
     <noscript>
         <div class="noscript">JavaScript is required to load the authenticated reporting APIs.</div>
     </noscript>
@@ -21,7 +19,9 @@
     <main class="page-shell">
         <section id="login-view" class="auth-layout" aria-labelledby="login-title" hidden>
             <div class="auth-card">
-                <div class="brand-mark" aria-hidden="true">A</div>
+                <div class="brand-mark" aria-hidden="true">
+                    <span class="material-symbols-outlined">local_cafe</span>
+                </div>
                 <p class="eyebrow">Alpha POS · Cloud</p>
                 <h1 id="login-title">Trusted sales ledger</h1>
                 <p class="muted">
@@ -47,325 +47,610 @@
             </div>
         </section>
 
-        <section id="dashboard-view" hidden>
-            <header class="topbar">
-                <div class="brand">
-                    <div class="brand-mark small" aria-hidden="true">A</div>
-                    <div>
-                        <p class="eyebrow">Alpha POS · Proof view</p>
-                        <h1>Trusted sales ledger</h1>
-                    </div>
+        <section id="dashboard-view" class="admin-shell" hidden>
+            <aside class="admin-sidebar" aria-label="Administration navigation">
+                <div class="sidebar-brand">
+                    <span class="sidebar-brand-icon material-symbols-outlined" aria-hidden="true">local_cafe</span>
+                    <span>Smart Jowi</span>
                 </div>
-                <div class="account">
-                    <span id="account-name" class="account-name"></span>
-                    <button id="logout-button" class="button ghost" type="button">Sign out</button>
+                <div class="sidebar-search" aria-hidden="true">
+                    <span class="material-symbols-outlined">manage_search</span>
+                    <span>Search apps and models...</span>
+                    <kbd>t</kbd>
                 </div>
-            </header>
-
-            <section class="filter-panel" aria-labelledby="range-heading">
-                <div>
-                    <p class="eyebrow">Operating dates</p>
-                    <h2 id="range-heading">Select the reporting period</h2>
-                    <p class="muted compact">
-                        Each date uses the restaurant window 07:00 → next day 03:00.
-                    </p>
-                </div>
-                <form id="range-form" class="range-form">
-                    <label>
-                        From
-                        <input id="date-from" name="from" type="date" required>
-                    </label>
-                    <span class="range-arrow" aria-hidden="true">→</span>
-                    <label>
-                        To
-                        <input id="date-to" name="to" type="date" required>
-                    </label>
-                    <button id="apply-range" class="button primary" type="submit">Apply range</button>
-                </form>
-            </section>
-
-            <aside class="cash-warning sync-warning" aria-label="Cloud data freshness">
-                <div class="warning-icon" aria-hidden="true">↻</div>
-                <div>
-                    <strong>Cloud copy · sync freshness is not proven by this page.</strong>
-                    <p>
-                        These figures contain the records that have reached the cloud.
-                        If the till was offline or has pending sync work, the local
-                        desktop report remains the source of truth.
-                    </p>
+                <nav class="sidebar-nav">
+                    <section class="sidebar-section">
+                        <h2>Dashboard</h2>
+                        <div class="sidebar-item active">
+                            <span class="material-symbols-outlined">dashboard</span>
+                            <span>Dashboard</span>
+                        </div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Orders &amp; Sales</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">shopping_cart</span><span>Orders</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">account_balance_wallet</span><span>Cash Register</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">receipt_long</span><span>Inkassa History</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Inventory</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">inventory_2</span><span>Products</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">category</span><span>Categories</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Users &amp; Access</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">group</span><span>Users</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">key</span><span>Sessions</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Stock Management</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">deployed_code</span><span>Stock Items</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">bar_chart</span><span>Stock Levels</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">layers</span><span>Batches</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">swap_vert</span><span>Transactions</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">location_on</span><span>Locations</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">folder_open</span><span>Categories</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">straighten</span><span>Units</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Supply Chain</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">local_shipping</span><span>Suppliers</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">order_approve</span><span>Purchase Orders</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">move_to_inbox</span><span>Receiving</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Production</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">menu_book</span><span>Recipes</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">precision_manufacturing</span><span>Production Orders</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">link</span><span>Product Links</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Operations</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">sync_alt</span><span>Transfers</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">fact_check</span><span>Stock Counts</span></div>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">error</span><span>Variance Codes</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>AI Assistant</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">psychology</span><span>AI Stock Assistant</span></div>
+                    </section>
+                    <section class="sidebar-section">
+                        <h2>Settings</h2>
+                        <div class="sidebar-item"><span class="material-symbols-outlined">tune</span><span>Stock Settings</span></div>
+                    </section>
+                </nav>
+                <div class="sidebar-footer">
+                    <span class="material-symbols-outlined">apps</span>
+                    <span>All applications</span>
                 </div>
             </aside>
 
-            <div id="page-message" class="page-message" role="status" aria-live="polite"></div>
-
-            <div id="report-content" hidden>
-                <section id="range-proof" class="range-proof" aria-labelledby="proof-heading">
-                <div>
-                    <p class="eyebrow">Resolved by the server</p>
-                    <h2 id="proof-heading">Canonical counted interval</h2>
-                </div>
-                <dl class="proof-grid">
-                    <div>
-                        <dt>Effective start</dt>
-                        <dd id="effective-start">—</dd>
+            <div class="admin-workspace">
+                <header class="admin-toolbar">
+                    <div class="toolbar-title">
+                        <span class="material-symbols-outlined">dock_to_left</span>
+                        <span class="toolbar-divider"></span>
+                        <strong>Site administration</strong>
                     </div>
-                    <div>
-                        <dt>Effective end (exclusive)</dt>
-                        <dd id="effective-end">—</dd>
+                    <div class="account">
+                        <span class="material-symbols-outlined toolbar-screen" aria-hidden="true">computer</span>
+                        <span class="material-symbols-outlined" aria-hidden="true">person</span>
+                        <span id="account-name" class="account-name"></span>
+                        <button id="logout-button" class="button ghost compact-button" type="button">
+                            Sign out
+                        </button>
                     </div>
-                    <div>
-                        <dt>Mode</dt>
-                        <dd id="range-mode">—</dd>
-                    </div>
-                    <div>
-                        <dt>Timezone</dt>
-                        <dd id="range-timezone">—</dd>
-                    </div>
-                </dl>
-                <p id="range-consistency" class="consistency-note"></p>
-            </section>
+                </header>
 
-            <aside class="cash-warning" aria-label="Cash interpretation warning">
-                <div class="warning-icon" aria-hidden="true">!</div>
-                <div>
-                    <strong>Tender cash is not automatically the physical drawer cash.</strong>
-                    <p>
-                        The selected-range cash card is payment attribution across sales.
-                        Compare banknotes only with the separate server-calculated
-                        “Expected physical drawer cash now” section below.
-                    </p>
-                </div>
-            </aside>
+                <div class="dashboard-container">
+                    <div class="dashboard-bg" aria-hidden="true"></div>
+                    <div class="dashboard-content">
+                        <header class="dashboard-header">
+                            <h1 class="header-title">Smart Jowi Dashboard</h1>
+                            <div class="header-subtitle">
+                                <span class="material-symbols-outlined" aria-hidden="true">schedule</span>
+                                <time id="dashboard-current-time">—</time>
+                                <span class="timezone-badge">Asia/Tashkent (UTC+5)</span>
+                                <span class="cloud-badge">Cloud compatibility view</span>
+                            </div>
+                        </header>
 
-            <section class="kpi-grid" aria-label="Sales summary">
-                <article class="kpi featured">
-                    <span>Net sales</span>
-                    <strong id="kpi-net">—</strong>
-                    <small>Gross sales less recorded refunds</small>
-                </article>
-                <article class="kpi">
-                    <span>Gross sales</span>
-                    <strong id="kpi-gross">—</strong>
-                    <small>Paid settlement events</small>
-                </article>
-                <article class="kpi rose">
-                    <span>Refunds</span>
-                    <strong id="kpi-refunds">—</strong>
-                    <small id="kpi-refunded-orders">— refund events</small>
-                </article>
-                <article class="kpi amber">
-                    <span>Cash tender · selected range</span>
-                    <strong id="kpi-cash">—</strong>
-                    <small>Sales tender, not a drawer count</small>
-                </article>
-                <article class="kpi cyan">
-                    <span>Card tender</span>
-                    <strong id="kpi-card">—</strong>
-                    <small>Uzcard + Humo + Card</small>
-                </article>
-                <article class="kpi violet">
-                    <span>Payme tender</span>
-                    <strong id="kpi-payme">—</strong>
-                    <small>Canonical Payme attribution</small>
-                </article>
-                <article class="kpi rose">
-                    <span>Drawer expenses</span>
-                    <strong id="kpi-expenses">—</strong>
-                    <small>CashboxExpense total from the API</small>
-                </article>
-                <article class="kpi">
-                    <span>Orders created</span>
-                    <strong id="kpi-orders">—</strong>
-                    <small id="kpi-order-detail">— paid · — cancelled</small>
-                </article>
-                <article class="kpi">
-                    <span>Net units sold</span>
-                    <strong id="kpi-units">—</strong>
-                    <small>Paid units less returned units</small>
-                </article>
-            </section>
+                        <section class="filter-bar" aria-label="Operating date filters">
+                            <div class="filter-group" aria-label="Quick ranges">
+                                <button class="filter-btn active" type="button" data-range-preset="today" aria-pressed="true">
+                                    <span class="material-symbols-outlined">today</span>
+                                    Today
+                                </button>
+                                <button class="filter-btn" type="button" data-range-preset="yesterday" aria-pressed="false">
+                                    <span class="material-symbols-outlined">event</span>
+                                    Yesterday
+                                </button>
+                                <button class="filter-btn" type="button" data-range-preset="week" aria-pressed="false">
+                                    <span class="material-symbols-outlined">date_range</span>
+                                    7 operating dates
+                                </button>
+                                <button class="filter-btn" type="button" data-range-preset="month" aria-pressed="false">
+                                    <span class="material-symbols-outlined">calendar_month</span>
+                                    30 operating dates
+                                </button>
+                                <button class="filter-btn" type="button" data-range-preset="year" aria-pressed="false">
+                                    <span class="material-symbols-outlined">calendar_today</span>
+                                    365 operating dates
+                                </button>
+                            </div>
+                            <span class="filter-divider" aria-hidden="true"></span>
+                            <form id="range-form" class="date-inputs">
+                                <div class="date-input-group">
+                                    <label for="date-from">From</label>
+                                    <input id="date-from" name="from" type="date" class="date-input" required>
+                                </div>
+                                <span class="date-separator" aria-hidden="true">—</span>
+                                <div class="date-input-group">
+                                    <label for="date-to">To</label>
+                                    <input id="date-to" name="to" type="date" class="date-input" required>
+                                </div>
+                                <button id="apply-range" class="filter-apply" type="submit" title="Apply selected dates">
+                                    <span class="material-symbols-outlined">check</span>
+                                    Apply
+                                </button>
+                            </form>
+                        </section>
 
-            <section id="unknown-warning" class="integrity-warning" hidden>
-                <strong>Unattributed tender evidence detected</strong>
-                <span id="unknown-amount"></span>
-                <p>Do not treat this amount as cash. Review the underlying payment evidence.</p>
-            </section>
+                        <aside class="glass-warning sync-warning" aria-label="Cloud data freshness">
+                            <div class="warning-icon" aria-hidden="true">
+                                <span class="material-symbols-outlined">sync</span>
+                            </div>
+                            <div>
+                                <strong>Cloud copy · sync freshness is not proven by this page.</strong>
+                                <p>
+                                    These figures contain records that reached the cloud. If the till was
+                                    offline or has pending sync work, the local desktop report remains the source of truth.
+                                </p>
+                            </div>
+                        </aside>
 
-            <section class="section-card drawer-proof" aria-labelledby="drawer-title">
-                <div class="section-heading">
-                    <div>
-                        <p class="eyebrow">Live shift proof · independent of selected dates</p>
-                        <h2 id="drawer-title">Expected physical drawer cash now</h2>
-                        <p class="muted compact">
-                            Values are displayed exactly from each active shift’s canonical
-                            expected_cash result. This page does not calculate drawer cash.
-                        </p>
-                    </div>
-                    <button id="refresh-drawer" class="button ghost" type="button">
-                        Refresh live shifts
-                    </button>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <caption>Expected physical cash for currently active shifts</caption>
-                        <thead>
-                            <tr>
-                                <th>Cashier</th>
-                                <th>Shift started</th>
-                                <th>Expected physical cash</th>
-                                <th>Evidence source</th>
-                                <th>Completeness</th>
-                            </tr>
-                        </thead>
-                        <tbody id="active-shifts-body"></tbody>
-                    </table>
-                </div>
-                <p id="active-shifts-empty" class="empty-state" hidden>No active shifts.</p>
-            </section>
+                        <div id="page-message" class="page-message" role="status" aria-live="polite"></div>
 
-            <div class="two-column">
-                <section class="section-card" aria-labelledby="tender-title">
-                    <div class="section-heading">
-                        <div>
-                            <p class="eyebrow">Canonical payment attribution</p>
-                            <h2 id="tender-title">Tender detail</h2>
+                        <div id="report-content" hidden>
+                            <section id="range-proof" class="period-proof" aria-labelledby="proof-heading">
+                                <div class="period-display">
+                                    <span class="material-symbols-outlined">date_range</span>
+                                    <span id="period-label" class="period-label">Selected operating period</span>
+                                </div>
+                                <div class="proof-content">
+                                    <div>
+                                        <p class="proof-kicker">Resolved by the server</p>
+                                        <h2 id="proof-heading">Canonical counted interval</h2>
+                                    </div>
+                                    <dl class="proof-grid">
+                                        <div><dt>Effective start</dt><dd id="effective-start">—</dd></div>
+                                        <div><dt>Effective end (exclusive)</dt><dd id="effective-end">—</dd></div>
+                                        <div><dt>Mode</dt><dd id="range-mode">—</dd></div>
+                                        <div><dt>Timezone</dt><dd id="range-timezone">—</dd></div>
+                                    </dl>
+                                    <p id="range-consistency" class="consistency-note"></p>
+                                </div>
+                            </section>
+
+                            <aside class="glass-warning cash-warning" aria-label="Cash interpretation warning">
+                                <div class="warning-icon" aria-hidden="true">
+                                    <span class="material-symbols-outlined">priority_high</span>
+                                </div>
+                                <div>
+                                    <strong>Tender cash is not automatically the physical drawer cash.</strong>
+                                    <p>
+                                        The cash card is selected-range tender attribution. Compare banknotes
+                                        only with “Expected physical drawer cash now” below.
+                                    </p>
+                                </div>
+                            </aside>
+
+                            <section class="kpi-grid" aria-label="Sales summary">
+                                <article class="kpi-card emerald">
+                                    <div class="kpi-header">
+                                        <span class="kpi-title">Total Revenue</span>
+                                        <span class="kpi-icon"><span class="material-symbols-outlined">payments</span></span>
+                                    </div>
+                                    <div class="kpi-value"><span id="kpi-net">—</span></div>
+                                    <div class="kpi-footer">
+                                        <span class="kpi-period">Net settled sales</span>
+                                        <span id="kpi-net-growth" class="kpi-growth">—</span>
+                                    </div>
+                                </article>
+                                <article class="kpi-card blue">
+                                    <div class="kpi-header">
+                                        <span class="kpi-title">Orders Created</span>
+                                        <span class="kpi-icon"><span class="material-symbols-outlined">shopping_cart</span></span>
+                                    </div>
+                                    <div id="kpi-orders" class="kpi-value">—</div>
+                                    <div class="kpi-footer">
+                                        <span id="kpi-order-detail" class="kpi-period">— paid · — cancelled</span>
+                                    </div>
+                                </article>
+                                <article class="kpi-card violet">
+                                    <div class="kpi-header">
+                                        <span class="kpi-title">Avg Paid Order Value</span>
+                                        <span class="kpi-icon"><span class="material-symbols-outlined">trending_up</span></span>
+                                    </div>
+                                    <div class="kpi-value"><span id="kpi-average">—</span></div>
+                                    <div class="kpi-footer">
+                                        <span class="kpi-period"><span id="kpi-units">—</span> net units sold</span>
+                                    </div>
+                                </article>
+                                <article class="kpi-card amber">
+                                    <div class="kpi-header">
+                                        <span class="kpi-title">Cash Tender</span>
+                                        <span class="kpi-icon"><span class="material-symbols-outlined">account_balance_wallet</span></span>
+                                    </div>
+                                    <div class="kpi-value"><span id="kpi-cash">—</span></div>
+                                    <div class="kpi-footer">
+                                        <span class="kpi-period">Selected range · not a drawer count</span>
+                                    </div>
+                                </article>
+                            </section>
+
+                            <section class="status-row" aria-label="Financial evidence summary">
+                                <article class="status-card blue">
+                                    <span class="status-icon"><span class="material-symbols-outlined">receipt</span></span>
+                                    <strong id="kpi-gross" class="status-count">—</strong>
+                                    <span class="status-label">Gross sales</span>
+                                </article>
+                                <article class="status-card red">
+                                    <span class="status-icon"><span class="material-symbols-outlined">undo</span></span>
+                                    <strong id="kpi-refunds" class="status-count">—</strong>
+                                    <span class="status-label">Refunds</span>
+                                    <small id="kpi-refunded-orders">— refund events</small>
+                                </article>
+                                <article class="status-card green">
+                                    <span class="status-icon"><span class="material-symbols-outlined">credit_card</span></span>
+                                    <strong id="kpi-card" class="status-count">—</strong>
+                                    <span class="status-label">Card tender</span>
+                                </article>
+                                <article class="status-card violet">
+                                    <span class="status-icon"><span class="material-symbols-outlined">account_balance</span></span>
+                                    <strong id="kpi-payme" class="status-count">—</strong>
+                                    <span class="status-label">Payme tender</span>
+                                </article>
+                                <article class="status-card orange">
+                                    <span class="status-icon"><span class="material-symbols-outlined">outbound</span></span>
+                                    <strong id="kpi-expenses" class="status-count">—</strong>
+                                    <span class="status-label">Drawer expenses</span>
+                                </article>
+                            </section>
+
+                            <section id="unknown-warning" class="integrity-warning" hidden>
+                                <span class="material-symbols-outlined" aria-hidden="true">error</span>
+                                <strong>Unattributed tender evidence detected</strong>
+                                <span id="unknown-amount"></span>
+                                <p>Do not treat this amount as cash. Review the underlying payment evidence.</p>
+                            </section>
+
+                            <section class="chart-card drawer-proof" aria-labelledby="drawer-title">
+                                <div class="chart-header">
+                                    <div>
+                                        <p class="card-kicker">Live shift proof · independent of selected dates</p>
+                                        <h2 id="drawer-title" class="chart-title">
+                                            <span class="material-symbols-outlined">point_of_sale</span>
+                                            Expected physical drawer cash now
+                                        </h2>
+                                        <p class="muted compact">
+                                            Displayed exactly from each active shift’s canonical expected_cash result.
+                                            This page does not calculate drawer cash.
+                                        </p>
+                                    </div>
+                                    <button id="refresh-drawer" class="button ghost" type="button">
+                                        <span class="material-symbols-outlined">refresh</span>
+                                        Refresh live shifts
+                                    </button>
+                                </div>
+                                <div class="table-wrap">
+                                    <table>
+                                        <caption>Expected physical cash for currently active shifts</caption>
+                                        <thead>
+                                            <tr>
+                                                <th>Cashier</th>
+                                                <th>Shift started</th>
+                                                <th class="numeric">Expected physical cash</th>
+                                                <th>Evidence source</th>
+                                                <th>Completeness</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="active-shifts-body"></tbody>
+                                    </table>
+                                </div>
+                                <p id="active-shifts-empty" class="empty-state" hidden>No active shifts.</p>
+                            </section>
+
+                            <div class="chart-grid">
+                                <section class="chart-card" aria-labelledby="product-distribution-title">
+                                    <div class="chart-header">
+                                        <h2 id="product-distribution-title" class="chart-title">
+                                            <span class="material-symbols-outlined">pie_chart</span>
+                                            Top 5 Products · Positive Net Units
+                                        </h2>
+                                        <span id="product-items-badge" class="chart-badge violet">— shown units</span>
+                                    </div>
+                                    <div class="chart-container pie">
+                                        <canvas id="product-pie-chart"></canvas>
+                                        <p id="product-chart-empty" class="chart-empty" hidden>No settled products</p>
+                                    </div>
+                                    <div id="product-legend" class="pie-legend"></div>
+                                    <p id="product-chart-note" class="chart-note"></p>
+                                </section>
+                                <section class="chart-card" aria-labelledby="category-distribution-title">
+                                    <div class="chart-header">
+                                        <h2 id="category-distribution-title" class="chart-title">
+                                            <span class="material-symbols-outlined">donut_small</span>
+                                            Positive Net Revenue by Category
+                                        </h2>
+                                        <span class="chart-badge emerald">UZS</span>
+                                    </div>
+                                    <div class="chart-container pie">
+                                        <canvas id="category-pie-chart"></canvas>
+                                        <p id="category-chart-empty" class="chart-empty" hidden>No settled categories</p>
+                                    </div>
+                                    <div id="category-legend" class="pie-legend"></div>
+                                    <p id="category-chart-note" class="chart-note"></p>
+                                </section>
+                            </div>
+
+                            <section class="chart-card full-width order-types" aria-labelledby="order-types-title">
+                                <div class="chart-header">
+                                    <h2 id="order-types-title" class="chart-title">
+                                        <span class="material-symbols-outlined">local_shipping</span>
+                                        Non-cancelled Orders by Type
+                                    </h2>
+                                    <span class="chart-badge blue">created_at · HALL / DELIVERY / PICKUP</span>
+                                </div>
+                                <div class="order-type-grid">
+                                    <article class="order-type-card hall">
+                                        <span class="order-type-icon material-symbols-outlined">restaurant</span>
+                                        <strong id="order-hall-count" class="order-type-count">—</strong>
+                                        <span class="order-type-label">Dine-in</span>
+                                    </article>
+                                    <article class="order-type-card delivery">
+                                        <span class="order-type-icon material-symbols-outlined">delivery_dining</span>
+                                        <strong id="order-delivery-count" class="order-type-count">—</strong>
+                                        <span class="order-type-label">Delivery</span>
+                                    </article>
+                                    <article class="order-type-card pickup">
+                                        <span class="order-type-icon material-symbols-outlined">takeout_dining</span>
+                                        <strong id="order-pickup-count" class="order-type-count">—</strong>
+                                        <span class="order-type-label">Pickup</span>
+                                    </article>
+                                </div>
+                                <div class="chart-container short">
+                                    <canvas id="order-type-chart"></canvas>
+                                </div>
+                            </section>
+
+                            <div class="chart-grid">
+                                <section class="chart-card" aria-labelledby="revenue-trend-title">
+                                    <div class="chart-header">
+                                        <h2 id="revenue-trend-title" class="chart-title">
+                                            <span class="material-symbols-outlined">show_chart</span>
+                                            Revenue Trend
+                                        </h2>
+                                        <span class="chart-badge emerald">Net UZS</span>
+                                    </div>
+                                    <div class="chart-container"><canvas id="revenue-chart"></canvas></div>
+                                </section>
+                                <section class="chart-card" aria-labelledby="orders-trend-title">
+                                    <div class="chart-header">
+                                        <h2 id="orders-trend-title" class="chart-title">
+                                            <span class="material-symbols-outlined">analytics</span>
+                                            Non-cancelled Classified Orders Trend
+                                        </h2>
+                                        <span class="chart-badge blue">created_at counts</span>
+                                    </div>
+                                    <div class="chart-container"><canvas id="orders-chart"></canvas></div>
+                                </section>
+                            </div>
+
+                            <div class="chart-grid">
+                                <section class="chart-card" aria-labelledby="comparison-chart-title">
+                                    <div class="chart-header">
+                                        <h2 id="comparison-chart-title" class="chart-title">
+                                            <span class="material-symbols-outlined">trending_up</span>
+                                            Previous-period Comparison
+                                        </h2>
+                                        <span class="chart-badge violet">Equal interval</span>
+                                    </div>
+                                    <div class="chart-container"><canvas id="comparison-chart"></canvas></div>
+                                </section>
+                                <section class="chart-card" aria-labelledby="tender-chart-title">
+                                    <div class="chart-header">
+                                        <h2 id="tender-chart-title" class="chart-title">
+                                            <span class="material-symbols-outlined">payments</span>
+                                            Tender Attribution
+                                        </h2>
+                                        <span class="chart-badge amber">Net UZS</span>
+                                    </div>
+                                    <div class="chart-container"><canvas id="tender-chart"></canvas></div>
+                                </section>
+                            </div>
+
+                            <div class="three-col-grid">
+                                <section class="chart-card" aria-labelledby="cashier-title">
+                                    <div class="chart-header">
+                                        <h2 id="cashier-title" class="chart-title">
+                                            <span class="material-symbols-outlined">badge</span>
+                                            Cashier Performance
+                                        </h2>
+                                        <span id="cashier-summary" class="chart-badge violet">— staff</span>
+                                    </div>
+                                    <div id="best-cashier" class="cashier-card" hidden>
+                                        <span class="best-badge">
+                                            <span class="material-symbols-outlined">emoji_events</span>
+                                            Best performer
+                                        </span>
+                                        <span id="best-cashier-avatar" class="cashier-avatar">—</span>
+                                        <div class="cashier-info">
+                                            <strong id="best-cashier-name" class="cashier-name">—</strong>
+                                            <span class="cashier-role">Top net sales</span>
+                                        </div>
+                                        <div class="cashier-stats">
+                                            <div><strong id="best-cashier-orders">—</strong><span>Orders</span></div>
+                                            <div><strong id="best-cashier-revenue">—</strong><span>Net sales</span></div>
+                                        </div>
+                                    </div>
+                                    <div id="cashier-list" class="data-list scrollable"></div>
+                                </section>
+
+                                <section class="chart-card" aria-labelledby="products-title">
+                                    <div class="chart-header">
+                                        <h2 id="products-title" class="chart-title">
+                                            <span class="material-symbols-outlined">inventory_2</span>
+                                            Top Products
+                                        </h2>
+                                        <span id="product-summary" class="chart-badge emerald">— net units</span>
+                                    </div>
+                                    <div id="product-list" class="data-list scrollable"></div>
+                                </section>
+
+                                <section class="chart-card" aria-labelledby="tender-title">
+                                    <div class="chart-header">
+                                        <h2 id="tender-title" class="chart-title">
+                                            <span class="material-symbols-outlined">account_balance_wallet</span>
+                                            Payment Evidence
+                                        </h2>
+                                    </div>
+                                    <dl id="tender-detail" class="detail-list compact-detail"></dl>
+                                </section>
+                            </div>
+
+                            <section class="audit-section" aria-labelledby="audit-title">
+                                <div class="audit-heading">
+                                    <p class="card-kicker">Canonical read-only evidence</p>
+                                    <h2 id="audit-title">Detailed reporting ledger</h2>
+                                </div>
+
+                                <div class="chart-grid audit-grid">
+                                    <section class="chart-card" aria-labelledby="daily-title">
+                                        <div class="chart-header">
+                                            <h3 id="daily-title" class="chart-title">
+                                                <span class="material-symbols-outlined">calendar_view_week</span>
+                                                Sales by operating date
+                                            </h3>
+                                        </div>
+                                        <div class="table-wrap">
+                                            <table>
+                                                <caption>Gross, refund, net and drawer expense series</caption>
+                                                <thead>
+                                                    <tr>
+                                                        <th>Operating date</th>
+                                                        <th class="numeric">Gross sales</th>
+                                                        <th class="numeric">Refunds</th>
+                                                        <th class="numeric">Net sales</th>
+                                                        <th class="numeric">Drawer expenses</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="daily-sales-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+                                    <section class="chart-card" aria-labelledby="comparison-title">
+                                        <div class="chart-header">
+                                            <h3 id="comparison-title" class="chart-title">
+                                                <span class="material-symbols-outlined">compare_arrows</span>
+                                                Equal preceding period
+                                            </h3>
+                                        </div>
+                                        <dl id="previous-detail" class="detail-list"></dl>
+                                    </section>
+                                </div>
+
+                                <div class="chart-grid audit-grid">
+                                    <section class="chart-card" aria-labelledby="products-detail-title">
+                                        <div class="chart-header">
+                                            <h3 id="products-detail-title" class="chart-title">
+                                                <span class="material-symbols-outlined">inventory</span>
+                                                Settled product lines
+                                            </h3>
+                                        </div>
+                                        <div class="table-wrap">
+                                            <table>
+                                                <caption>Top products in the selected interval</caption>
+                                                <thead><tr><th>Product</th><th class="numeric">Net units</th><th class="numeric">Net revenue</th></tr></thead>
+                                                <tbody id="products-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+                                    <section class="chart-card" aria-labelledby="categories-title">
+                                        <div class="chart-header">
+                                            <h3 id="categories-title" class="chart-title">
+                                                <span class="material-symbols-outlined">category</span>
+                                                Settled category lines
+                                            </h3>
+                                        </div>
+                                        <div class="table-wrap">
+                                            <table>
+                                                <caption>Category performance in the selected interval</caption>
+                                                <thead><tr><th>Category</th><th class="numeric">Net units</th><th class="numeric">Net revenue</th></tr></thead>
+                                                <tbody id="categories-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+                                </div>
+
+                                <section class="chart-card full-width" aria-labelledby="staff-title">
+                                    <div class="chart-header">
+                                        <h3 id="staff-title" class="chart-title">
+                                            <span class="material-symbols-outlined">groups</span>
+                                            Cashier and staff performance
+                                        </h3>
+                                        <span class="chart-badge blue">Paid-at revenue</span>
+                                    </div>
+                                    <div class="table-wrap">
+                                        <table>
+                                            <caption>Staff performance for the canonical selected interval</caption>
+                                            <thead>
+                                                <tr>
+                                                    <th>Staff member</th><th>Role</th>
+                                                    <th class="numeric">Orders</th><th class="numeric">Paid</th>
+                                                    <th class="numeric">Cancelled</th><th class="numeric">Gross sales</th>
+                                                    <th class="numeric">Refunds</th><th class="numeric">Net sales</th>
+                                                    <th class="numeric">Hours</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="staff-body"></tbody>
+                                        </table>
+                                    </div>
+                                </section>
+
+                                <section class="chart-card full-width" aria-labelledby="expenses-title">
+                                    <div class="chart-header">
+                                        <div>
+                                            <h3 id="expenses-title" class="chart-title">
+                                                <span class="material-symbols-outlined">payments</span>
+                                                Itemized drawer expenses
+                                            </h3>
+                                            <p id="expense-pagination-note" class="muted compact"></p>
+                                        </div>
+                                    </div>
+                                    <div class="table-wrap">
+                                        <table>
+                                            <caption>Cashbox expenses in the selected interval</caption>
+                                            <thead>
+                                                <tr>
+                                                    <th>Time</th><th>Cashier</th><th>Category</th>
+                                                    <th>Comment</th><th>Shift</th><th class="numeric">Amount</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="expenses-body"></tbody>
+                                        </table>
+                                    </div>
+                                    <p id="expenses-empty" class="empty-state" hidden>No drawer expenses in this interval.</p>
+                                </section>
+                            </section>
+
+                            <footer>
+                                Read-only compatibility view · Cloud data comes from existing Alpha POS APIs.
+                            </footer>
                         </div>
                     </div>
-                    <dl id="tender-detail" class="detail-list"></dl>
-                </section>
-
-                <section class="section-card" aria-labelledby="comparison-title">
-                    <div class="section-heading">
-                        <div>
-                            <p class="eyebrow">Equal preceding period</p>
-                            <h2 id="comparison-title">Previous-period comparison</h2>
-                        </div>
-                    </div>
-                    <dl id="previous-detail" class="detail-list"></dl>
-                </section>
+                </div>
             </div>
-
-            <section class="section-card" aria-labelledby="daily-title">
-                <div class="section-heading">
-                    <div>
-                        <p class="eyebrow">Server-provided series</p>
-                        <h2 id="daily-title">Sales by operating date</h2>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <caption>Gross, refund, net and drawer expense series</caption>
-                        <thead>
-                            <tr>
-                                <th>Operating date</th>
-                                <th>Gross sales</th>
-                                <th>Refunds</th>
-                                <th>Net sales</th>
-                                <th>Drawer expenses</th>
-                            </tr>
-                        </thead>
-                        <tbody id="daily-sales-body"></tbody>
-                    </table>
-                </div>
-            </section>
-
-            <div class="two-column">
-                <section class="section-card" aria-labelledby="products-title">
-                    <div class="section-heading">
-                        <div>
-                            <p class="eyebrow">Settled item lines</p>
-                            <h2 id="products-title">Top products</h2>
-                        </div>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <caption>Top products in the selected interval</caption>
-                            <thead>
-                                <tr><th>Product</th><th>Net units</th><th>Net revenue</th></tr>
-                            </thead>
-                            <tbody id="products-body"></tbody>
-                        </table>
-                    </div>
-                </section>
-
-                <section class="section-card" aria-labelledby="categories-title">
-                    <div class="section-heading">
-                        <div>
-                            <p class="eyebrow">Settled category lines</p>
-                            <h2 id="categories-title">Categories</h2>
-                        </div>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <caption>Category performance in the selected interval</caption>
-                            <thead>
-                                <tr><th>Category</th><th>Net units</th><th>Net revenue</th></tr>
-                            </thead>
-                            <tbody id="categories-body"></tbody>
-                        </table>
-                    </div>
-                </section>
-            </div>
-
-            <section class="section-card" aria-labelledby="staff-title">
-                <div class="section-heading">
-                    <div>
-                        <p class="eyebrow">Paid-at revenue · operational order counts</p>
-                        <h2 id="staff-title">Cashier and staff performance</h2>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <caption>Staff performance for the canonical selected interval</caption>
-                        <thead>
-                            <tr>
-                                <th>Staff member</th>
-                                <th>Role</th>
-                                <th>Orders</th>
-                                <th>Paid</th>
-                                <th>Cancelled</th>
-                                <th>Gross sales</th>
-                                <th>Refunds</th>
-                                <th>Net sales</th>
-                                <th>Hours</th>
-                            </tr>
-                        </thead>
-                        <tbody id="staff-body"></tbody>
-                    </table>
-                </div>
-            </section>
-
-                <section class="section-card" aria-labelledby="expenses-title">
-                <div class="section-heading">
-                    <div>
-                        <p class="eyebrow">Cash drawer money out</p>
-                        <h2 id="expenses-title">Itemized drawer expenses</h2>
-                        <p id="expense-pagination-note" class="muted compact"></p>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table>
-                        <caption>Cashbox expenses in the selected interval</caption>
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Cashier</th>
-                                <th>Category</th>
-                                <th>Comment</th>
-                                <th>Shift</th>
-                                <th>Amount</th>
-                            </tr>
-                        </thead>
-                        <tbody id="expenses-body"></tbody>
-                    </table>
-                </div>
-                <p id="expenses-empty" class="empty-state" hidden>No drawer expenses in this interval.</p>
-                </section>
-            </div>
-
-            <footer>
-                Read-only compatibility view · Cloud data comes from existing Alpha POS APIs.
-            </footer>
         </section>
     </main>
 </body>

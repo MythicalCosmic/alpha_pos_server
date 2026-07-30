@@ -1,0 +1,17 @@
+Plus Jakarta Sans
+Source: google/fonts, ofl/plusjakartasans
+Asset: fonts/PlusJakartaSans-Variable.ttf
+License: SIL Open Font License 1.1
+License file: fonts/OFL-PlusJakartaSans.txt
+
+Material Symbols Outlined
+Source: google/material-design-icons
+Asset: fonts/Material-Symbols-Outlined.woff2
+License: Apache License 2.0
+License file: fonts/LICENSE-Material-Symbols.txt
+
+Chart.js 4.4.0
+Source: chartjs/Chart.js, release v4.4.0
+Asset: vendor/chart.js
+License: MIT
+License file: vendor/LICENSE-Chart.js.md

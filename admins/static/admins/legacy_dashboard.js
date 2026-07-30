@@ -20,10 +20,30 @@
         dateStyle: "medium",
         timeStyle: "short",
     });
+    const headerTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Tashkent",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    });
+    const CHART_COLORS = Object.freeze([
+        "#6366f1",
+        "#10b981",
+        "#f59e0b",
+        "#f43f5e",
+        "#8b5cf6",
+        "#06b6d4",
+        "#3b82f6",
+        "#ec4899",
+    ]);
 
     class AuthenticationRequired extends Error {}
 
     const elements = {};
+    const charts = new Map();
     let currentRequest = 0;
 
     function element(id) {
@@ -55,6 +75,21 @@
     function formatCount(value) {
         const parsed = numeric(value);
         return parsed === null ? "—" : moneyFormatter.format(parsed);
+    }
+
+    function formatCompactNumber(value) {
+        const parsed = numeric(value);
+        if (parsed === null) {
+            return "—";
+        }
+        const absolute = Math.abs(parsed);
+        if (absolute >= 1000000) {
+            return `${(parsed / 1000000).toFixed(1)}M`;
+        }
+        if (absolute >= 1000) {
+            return `${(parsed / 1000).toFixed(0)}K`;
+        }
+        return moneyFormatter.format(parsed);
     }
 
     function formatDateTime(value) {
@@ -144,6 +179,69 @@
         ].join("-");
     }
 
+    function parseISODate(value) {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+        if (!match) {
+            return null;
+        }
+        return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    }
+
+    function formatISODate(date) {
+        return [
+            date.getUTCFullYear(),
+            String(date.getUTCMonth() + 1).padStart(2, "0"),
+            String(date.getUTCDate()).padStart(2, "0"),
+        ].join("-");
+    }
+
+    function addDays(value, days) {
+        const date = parseISODate(value);
+        if (!date) {
+            return value;
+        }
+        date.setUTCDate(date.getUTCDate() + days);
+        return formatISODate(date);
+    }
+
+    function presetRange(preset) {
+        const today = tashkentBusinessDate();
+        if (preset === "yesterday") {
+            const yesterday = addDays(today, -1);
+            return [yesterday, yesterday];
+        }
+        if (preset === "week") {
+            return [addDays(today, -6), today];
+        }
+        if (preset === "month") {
+            return [addDays(today, -29), today];
+        }
+        if (preset === "year") {
+            return [addDays(today, -364), today];
+        }
+        return [today, today];
+    }
+
+    function setActivePreset(activePreset = "") {
+        elements.presetButtons.forEach((button) => {
+            const active = button.dataset.rangePreset === activePreset;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+    }
+
+    function syncPresetState() {
+        const match = ["today", "yesterday", "week", "month", "year"].find((preset) => {
+            const [dateFrom, dateTo] = presetRange(preset);
+            return elements.dateFrom.value === dateFrom && elements.dateTo.value === dateTo;
+        });
+        setActivePreset(match || "");
+    }
+
+    function updateHeaderTime() {
+        setText("dashboard-current-time", headerTimeFormatter.format(new Date()).replace(",", ""));
+    }
+
     function setMessage(message, kind = "") {
         elements.pageMessage.textContent = message || "";
         elements.pageMessage.className = `page-message${kind ? ` ${kind}` : ""}`;
@@ -204,6 +302,114 @@
         container.replaceChildren(fragment);
     }
 
+    function replaceDataList(container, rows, emptyMessage) {
+        const fragment = document.createDocumentFragment();
+        rows.forEach(({ title, subtitle, value, tone }) => {
+            const row = document.createElement("div");
+            const main = document.createElement("div");
+            const titleNode = document.createElement("span");
+            const subtitleNode = document.createElement("span");
+            const valueNode = document.createElement("span");
+            row.className = "data-row";
+            main.className = "data-main";
+            titleNode.className = "data-title";
+            subtitleNode.className = "data-subtitle";
+            valueNode.className = `data-value${tone ? ` ${tone}` : ""}`;
+            titleNode.textContent = title || "—";
+            subtitleNode.textContent = subtitle || "";
+            valueNode.textContent = value || "—";
+            main.append(titleNode, subtitleNode);
+            row.append(main, valueNode);
+            fragment.appendChild(row);
+        });
+        if (!rows.length) {
+            const empty = document.createElement("p");
+            empty.className = "empty-state";
+            empty.textContent = emptyMessage;
+            fragment.appendChild(empty);
+        }
+        container.replaceChildren(fragment);
+    }
+
+    function replaceLegend(container, rows) {
+        const fragment = document.createDocumentFragment();
+        rows.forEach(({ label, value, color }) => {
+            const row = document.createElement("div");
+            const colorNode = document.createElement("span");
+            const labelNode = document.createElement("span");
+            const valueNode = document.createElement("span");
+            row.className = "legend-item";
+            colorNode.className = "legend-color";
+            colorNode.style.backgroundColor = color;
+            labelNode.className = "legend-label";
+            labelNode.textContent = label;
+            valueNode.className = "legend-value";
+            valueNode.textContent = value;
+            row.append(colorNode, labelNode, valueNode);
+            fragment.appendChild(row);
+        });
+        container.replaceChildren(fragment);
+    }
+
+    function destroyChart(id) {
+        const existing = charts.get(id);
+        if (existing) {
+            existing.destroy();
+            charts.delete(id);
+        }
+    }
+
+    function createChart(id, config) {
+        destroyChart(id);
+        const canvas = element(id);
+        if (!canvas || !window.Chart) {
+            return null;
+        }
+        const chart = new window.Chart(canvas, config);
+        charts.set(id, chart);
+        return chart;
+    }
+
+    function numericSeries(values) {
+        return Array.isArray(values)
+            ? values.map((value) => numeric(value) ?? 0)
+            : [];
+    }
+
+    function lineChartOptions({ money = false, legend = false } = {}) {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: "index" },
+            plugins: {
+                legend: {
+                    display: legend,
+                    position: "top",
+                    labels: { usePointStyle: true, padding: 14 },
+                },
+                tooltip: {
+                    backgroundColor: "rgba(15, 23, 42, 0.96)",
+                    padding: 12,
+                    cornerRadius: 10,
+                    callbacks: money
+                        ? { label: (context) => `${context.dataset.label}: ${formatMoney(context.parsed.y)}` }
+                        : {},
+                },
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: "rgba(255, 255, 255, 0.035)" },
+                    ticks: money ? { callback: (value) => formatCompactNumber(value) } : {},
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { maxRotation: 45, minRotation: 0 },
+                },
+            },
+        };
+    }
+
     function assertMatchingRanges(dashboard, sales, expenses, staff) {
         const expected = dashboard && dashboard.range;
         const ranges = [sales && sales.range, expenses && expenses.range, staff && staff.range];
@@ -231,6 +437,12 @@
         setText("effective-end", formatDateTime(range.end_at));
         setText("range-mode", humanize(range.mode));
         setText("range-timezone", range.timezone);
+        setText(
+            "period-label",
+            range.from && range.to
+                ? (range.from === range.to ? range.from : `${range.from} → ${range.to}`)
+                : "Selected operating period",
+        );
 
         elements.rangeConsistency.textContent =
             "All selected-range endpoints resolved to the same effective interval.";
@@ -251,9 +463,34 @@
         setText("kpi-orders", formatCount(dashboard.orders));
         setText(
             "kpi-order-detail",
-            `${formatCount(dashboard.paid_orders)} paid · ${formatCount(dashboard.cancelled)} cancelled`,
+            `${formatCount(dashboard.paid_orders)} paid settlements (paid_at) · `
+            + `${formatCount(dashboard.cancelled)} cancellations (created_at)`,
         );
         setText("kpi-units", formatCount(dashboard.units_sold));
+        const netRevenue = numeric(dashboard.revenue);
+        const paidOrders = numeric(dashboard.paid_orders);
+        setText(
+            "kpi-average",
+            netRevenue !== null && paidOrders !== null && paidOrders > 0
+                ? formatMoney(netRevenue / paidOrders)
+                : "—",
+        );
+
+        const previousRevenue = numeric(
+            dashboard.previous_period && dashboard.previous_period.revenue,
+        );
+        const currentRevenue = numeric(dashboard.revenue);
+        const growthNode = element("kpi-net-growth");
+        growthNode.classList.remove("negative");
+        if (previousRevenue === null || currentRevenue === null) {
+            growthNode.textContent = "—";
+        } else if (previousRevenue === 0) {
+            growthNode.textContent = currentRevenue === 0 ? "0.0%" : "New";
+        } else {
+            const growth = ((currentRevenue - previousRevenue) / Math.abs(previousRevenue)) * 100;
+            growthNode.textContent = `${growth >= 0 ? "↗" : "↘"} ${growth.toFixed(1)}%`;
+            growthNode.classList.toggle("negative", growth < 0);
+        }
 
         const attributionComplete = evidence.attribution_complete === true;
         elements.unknownWarning.hidden = attributionComplete;
@@ -319,6 +556,17 @@
 
     function renderProducts(dashboard) {
         const products = Array.isArray(dashboard.top_products) ? dashboard.top_products : [];
+        setText("product-summary", `${formatCount(dashboard.units_sold)} net units`);
+        replaceDataList(
+            elements.productList,
+            products.map((product) => ({
+                title: product.product_name || "Unnamed product",
+                subtitle: `${formatCount(product.quantity)} net units sold`,
+                value: formatMoney(product.revenue),
+                tone: "emerald",
+            })),
+            "No settled products in this interval.",
+        );
         replaceRows(elements.productsBody, products, (product) => {
             const row = document.createElement("tr");
             appendCell(row, product.product_name || "Unnamed product");
@@ -355,6 +603,34 @@
 
     function renderStaff(staffData) {
         const staff = Array.isArray(staffData.staff) ? staffData.staff : [];
+        setText("cashier-summary", `${formatCount(staff.length)} staff`);
+        replaceDataList(
+            elements.cashierList,
+            staff.map((member) => ({
+                title: member.name || "Unnamed staff member",
+                subtitle: (
+                    `${humanize(member.role)} · ${formatCount(member.orders_total)} orders`
+                    + ` · ${formatCount(member.orders_cancelled)} cancelled`
+                ),
+                value: formatMoney(member.revenue),
+                tone: "violet",
+            })),
+            "No staff activity in this interval.",
+        );
+
+        const ranked = staff
+            .filter((member) => numeric(member.revenue) !== null)
+            .sort((left, right) => numeric(right.revenue) - numeric(left.revenue));
+        const best = ranked[0];
+        elements.bestCashier.hidden = !best;
+        if (best) {
+            const name = best.name || "Unnamed staff member";
+            setText("best-cashier-avatar", name.trim().charAt(0).toUpperCase() || "—");
+            setText("best-cashier-name", name);
+            setText("best-cashier-orders", formatCount(best.orders_total));
+            setText("best-cashier-revenue", formatMoney(best.revenue));
+        }
+
         replaceRows(elements.staffBody, staff, (member) => {
             const row = document.createElement("tr");
             appendCell(row, member.name || "Unnamed staff member");
@@ -396,6 +672,308 @@
         elements.expensePaginationNote.textContent = total !== null && total > shown
             ? `Showing the newest ${shown} of ${formatCount(total)} expenses.`
             : `${formatCount(total === null ? shown : total)} expense records.`;
+    }
+
+    function renderDoughnut({
+        chartId,
+        emptyId,
+        legend,
+        labels,
+        values,
+        valueFormatter,
+    }) {
+        const rows = labels
+            .map((label, index) => ({
+                label,
+                value: numeric(values[index]) ?? 0,
+                color: CHART_COLORS[index % CHART_COLORS.length],
+            }))
+            .filter((row) => row.value > 0);
+        const canvas = element(chartId);
+        const empty = element(emptyId);
+        const total = rows.reduce((sum, row) => sum + row.value, 0);
+        canvas.hidden = rows.length === 0;
+        empty.hidden = rows.length !== 0;
+        replaceLegend(
+            legend,
+            rows.slice(0, 6).map((row) => ({
+                label: row.label,
+                value: valueFormatter(row.value, total),
+                color: row.color,
+            })),
+        );
+        if (!rows.length) {
+            destroyChart(chartId);
+            return;
+        }
+        createChart(chartId, {
+            type: "doughnut",
+            data: {
+                labels: rows.map((row) => row.label),
+                datasets: [{
+                    data: rows.map((row) => row.value),
+                    backgroundColor: rows.map((row) => row.color),
+                    borderColor: "rgba(0, 0, 0, 0.3)",
+                    borderWidth: 2,
+                    hoverBorderColor: "#ffffff",
+                    hoverBorderWidth: 3,
+                    hoverOffset: 10,
+                }],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: "65%",
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: "rgba(15, 23, 42, 0.96)",
+                        padding: 12,
+                        cornerRadius: 10,
+                        callbacks: {
+                            label: (context) => valueFormatter(context.raw, total),
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function renderCharts(dashboard, sales) {
+        if (!window.Chart) {
+            return;
+        }
+        window.Chart.defaults.color = "#94a3b8";
+        window.Chart.defaults.borderColor = "rgba(255, 255, 255, 0.05)";
+        window.Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
+
+        const products = Array.isArray(dashboard.top_products) ? dashboard.top_products : [];
+        const chartProducts = products.filter(
+            (product) => (
+                (numeric(product.quantity) ?? 0) > 0
+                && (numeric(product.revenue) ?? 0) > 0
+            ),
+        );
+        const shownProductUnits = chartProducts.reduce(
+            (sum, product) => sum + (numeric(product.quantity) ?? 0),
+            0,
+        );
+        const omittedProducts = products.length - chartProducts.length;
+        setText(
+            "product-items-badge",
+            `${formatCount(shownProductUnits)} shown units`,
+        );
+        setText(
+            "product-chart-note",
+            "Only server-provided top-five rows with positive net revenue and positive "
+            + `net units are charted. ${formatCount(omittedProducts)} non-positive or `
+            + "refund-heavy rows were omitted; returned rows remain in the detailed ledger.",
+        );
+        renderDoughnut({
+            chartId: "product-pie-chart",
+            emptyId: "product-chart-empty",
+            legend: elements.productLegend,
+            labels: chartProducts.map(
+                (product) => product.product_name || "Unnamed product",
+            ),
+            values: chartProducts.map((product) => product.quantity),
+            valueFormatter: (value, total) => (
+                total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%"
+            ),
+        });
+
+        const categories = Array.isArray(dashboard.category_stats)
+            ? dashboard.category_stats
+            : [];
+        const positiveCategories = categories.filter(
+            (category) => (numeric(category.revenue) ?? 0) > 0,
+        );
+        const omittedCategories = categories.length - positiveCategories.length;
+        setText(
+            "category-chart-note",
+            "The doughnut includes positive net-revenue categories only. "
+            + `${formatCount(omittedCategories)} zero or negative refund-heavy rows were `
+            + "omitted; all returned categories remain in the detailed ledger.",
+        );
+        renderDoughnut({
+            chartId: "category-pie-chart",
+            emptyId: "category-chart-empty",
+            legend: elements.categoryLegend,
+            labels: positiveCategories.map(
+                (category) => category.category || "Uncategorized",
+            ),
+            values: positiveCategories.map((category) => category.revenue),
+            valueFormatter: (value) => formatCompactNumber(value),
+        });
+
+        const channelDays = Array.isArray(sales.channelDays) ? sales.channelDays : [];
+        const channelTotals = channelDays.reduce(
+            (totals, day) => ({
+                hall: totals.hall + (numeric(day.hall) ?? 0),
+                delivery: totals.delivery + (numeric(day.delivery) ?? 0),
+                pickup: totals.pickup + (numeric(day.pickup) ?? 0),
+            }),
+            { hall: 0, delivery: 0, pickup: 0 },
+        );
+        setText("order-hall-count", formatCount(channelTotals.hall));
+        setText("order-delivery-count", formatCount(channelTotals.delivery));
+        setText("order-pickup-count", formatCount(channelTotals.pickup));
+        createChart("order-type-chart", {
+            type: "bar",
+            data: {
+                labels: ["Dine-in", "Delivery", "Pickup"],
+                datasets: [{
+                    data: [channelTotals.hall, channelTotals.delivery, channelTotals.pickup],
+                    backgroundColor: [
+                        "rgba(99, 102, 241, 0.5)",
+                        "rgba(245, 158, 11, 0.5)",
+                        "rgba(16, 185, 129, 0.5)",
+                    ],
+                    borderColor: ["#818cf8", "#fbbf24", "#34d399"],
+                    borderWidth: 2,
+                    borderRadius: 8,
+                }],
+            },
+            options: {
+                ...lineChartOptions(),
+                plugins: { legend: { display: false } },
+            },
+        });
+
+        const labels = Array.isArray(sales.dayLabels) ? sales.dayLabels : [];
+        const revenue = numericSeries(sales.revenue30);
+        const orderSeries = channelDays.map(
+            (day) => (
+                (numeric(day.hall) ?? 0)
+                + (numeric(day.delivery) ?? 0)
+                + (numeric(day.pickup) ?? 0)
+            ),
+        );
+        createChart("revenue-chart", {
+            type: "line",
+            data: {
+                labels,
+                datasets: [{
+                    label: "Net revenue",
+                    data: revenue,
+                    borderColor: "#10b981",
+                    backgroundColor: "rgba(16, 185, 129, 0.1)",
+                    borderWidth: 2,
+                    pointBackgroundColor: "#10b981",
+                    pointBorderColor: "#ffffff",
+                    pointRadius: 3,
+                    tension: 0.35,
+                    fill: true,
+                }],
+            },
+            options: lineChartOptions({ money: true }),
+        });
+        createChart("orders-chart", {
+            type: "line",
+            data: {
+                labels,
+                datasets: [{
+                    label: "Non-cancelled classified orders (created_at)",
+                    data: orderSeries,
+                    borderColor: "#6366f1",
+                    backgroundColor: "rgba(99, 102, 241, 0.1)",
+                    borderWidth: 2,
+                    pointBackgroundColor: "#6366f1",
+                    pointBorderColor: "#ffffff",
+                    pointRadius: 3,
+                    tension: 0.35,
+                    fill: true,
+                }],
+            },
+            options: lineChartOptions(),
+        });
+
+        const previousRevenue = numericSeries(
+            Array.isArray(sales.lastMonthRev)
+                ? sales.lastMonthRev
+                : sales.previous_period && sales.previous_period.revenue_series,
+        );
+        createChart("comparison-chart", {
+            type: "line",
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: "Selected period",
+                        data: revenue,
+                        borderColor: "#8b5cf6",
+                        backgroundColor: "rgba(139, 92, 246, 0.08)",
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        tension: 0.35,
+                        fill: true,
+                    },
+                    {
+                        label: "Previous equal period",
+                        data: previousRevenue,
+                        borderColor: "#f59e0b",
+                        borderDash: [6, 5],
+                        borderWidth: 2,
+                        pointRadius: 2,
+                        tension: 0.35,
+                        fill: false,
+                    },
+                ],
+            },
+            options: lineChartOptions({ money: true, legend: true }),
+        });
+
+        const payments = dashboard.payment_breakdown || {};
+        const tenderLabels = ["Cash", "All cards", "Payme"];
+        const tenderValues = [
+            numeric(payments.cash) ?? 0,
+            numeric(payments.card) ?? 0,
+            numeric(payments.payme) ?? 0,
+        ];
+        if (Object.prototype.hasOwnProperty.call(payments, "unknown")) {
+            tenderLabels.push("Unknown");
+            tenderValues.push(numeric(payments.unknown) ?? 0);
+        }
+        createChart("tender-chart", {
+            type: "bar",
+            data: {
+                labels: tenderLabels,
+                datasets: [{
+                    label: "Net attributed amount",
+                    data: tenderValues,
+                    backgroundColor: tenderLabels.map(
+                        (_label, index) => `${CHART_COLORS[index % CHART_COLORS.length]}88`,
+                    ),
+                    borderColor: tenderLabels.map(
+                        (_label, index) => CHART_COLORS[index % CHART_COLORS.length],
+                    ),
+                    borderWidth: 2,
+                    borderRadius: 7,
+                }],
+            },
+            options: {
+                ...lineChartOptions({ money: true }),
+                indexAxis: "y",
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: "rgba(15, 23, 42, 0.96)",
+                        padding: 12,
+                        cornerRadius: 10,
+                        callbacks: {
+                            label: (context) => formatMoney(context.parsed.x),
+                        },
+                    },
+                },
+                scales: {
+                    x: {
+                        grid: { color: "rgba(255, 255, 255, 0.035)" },
+                        ticks: { callback: (value) => formatCompactNumber(value) },
+                    },
+                    y: { grid: { display: false } },
+                },
+            },
+        });
     }
 
     function completeExpectedCashEvidence(shift) {
@@ -494,12 +1072,16 @@
             renderStaff(staff);
             renderExpenses(expenses);
             renderActiveShifts(activeShifts);
+            renderCharts(dashboard, sales);
             elements.reportContent.hidden = false;
             setMessage(
                 "Canonical data loaded from the cloud copy; sync freshness is not independently verified.",
                 "success",
             );
         } catch (error) {
+            if (requestId !== currentRequest) {
+                return;
+            }
             if (error instanceof AuthenticationRequired) {
                 showLogin("Your administrator session expired. Sign in again.");
                 return;
@@ -530,12 +1112,15 @@
         event.preventDefault();
         elements.loginButton.disabled = true;
         elements.loginError.hidden = true;
+        const email = elements.loginEmail.value.trim();
+        const password = elements.loginPassword.value;
+        elements.loginPassword.value = "";
         try {
             await apiRequest(API.login, {
                 method: "POST",
                 body: JSON.stringify({
-                    email: elements.loginEmail.value.trim(),
-                    password: elements.loginPassword.value,
+                    email,
+                    password,
                 }),
             });
             await establishSession();
@@ -607,6 +1192,12 @@
             activeShiftsBody: element("active-shifts-body"),
             activeShiftsEmpty: element("active-shifts-empty"),
             refreshDrawer: element("refresh-drawer"),
+            productLegend: element("product-legend"),
+            categoryLegend: element("category-legend"),
+            productList: element("product-list"),
+            cashierList: element("cashier-list"),
+            bestCashier: element("best-cashier"),
+            presetButtons: Array.from(document.querySelectorAll("[data-range-preset]")),
         });
     }
 
@@ -615,16 +1206,31 @@
         const defaultDate = tashkentBusinessDate();
         elements.dateFrom.value = defaultDate;
         elements.dateTo.value = defaultDate;
+        updateHeaderTime();
         elements.loginForm.addEventListener("submit", handleLogin);
         elements.logoutButton.addEventListener("click", handleLogout);
         elements.rangeForm.addEventListener("submit", (event) => {
             event.preventDefault();
+            syncPresetState();
             loadDashboard();
         });
         [elements.dateFrom, elements.dateTo].forEach((input) => {
             input.addEventListener("change", () => {
+                currentRequest += 1;
+                elements.applyRange.disabled = false;
+                syncPresetState();
                 elements.reportContent.hidden = true;
                 setMessage("Date selection changed. Apply the range to load verified figures.");
+            });
+        });
+        elements.presetButtons.forEach((button) => {
+            button.addEventListener("click", () => {
+                const preset = button.dataset.rangePreset || "today";
+                const [dateFrom, dateTo] = presetRange(preset);
+                elements.dateFrom.value = dateFrom;
+                elements.dateTo.value = dateTo;
+                setActivePreset(preset);
+                loadDashboard();
             });
         });
         elements.refreshDrawer.addEventListener("click", handleDrawerRefresh);
