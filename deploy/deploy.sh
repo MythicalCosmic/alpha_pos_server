@@ -88,6 +88,7 @@ A_AIFALLBACKS="$(keep "$A_ENV" AI_FALLBACK_PROVIDERS)"; A_AIFALLBACKS="${A_AIFAL
 # Smart Food customer Telegram bot (Mini App). A real token is never committed;
 # set it once in .env and subsequent deploys preserve it.
 A_CBOT="$(keep "$A_ENV" CUSTOMER_BOT_TOKEN)"
+A_CWEBAPP="$(keep "$A_ENV" CUSTOMER_WEBAPP_URL)"; A_CWEBAPP="${A_CWEBAPP:-https://smartfood.${IP}.nip.io/webapp/}"
 A_CWHSEC="$(keep "$A_ENV" CUSTOMER_WEBHOOK_SECRET)"; A_CWHSEC="${A_CWHSEC:-$(rand 32)}"
 A_YGEO="$(keep "$A_ENV" YANDEX_GEOCODER_KEY)"
 # Generate the application bootstrap password once, preserve it in the
@@ -166,7 +167,7 @@ AI_FALLBACK_PROVIDERS=${A_AIFALLBACKS}
 # (docker-compose 'bot') reads these; CUSTOMER_WEBAPP_URL should be the Mini App's
 # hosted URL.
 CUSTOMER_BOT_TOKEN=${A_CBOT}
-CUSTOMER_WEBAPP_URL=${CUSTOMER_WEBAPP_URL:-https://${POS_HOST}/webapp/}
+CUSTOMER_WEBAPP_URL=${A_CWEBAPP}
 CUSTOMER_WEBHOOK_SECRET=${A_CWHSEC}
 SMARTFOOD_AUTH_TTL=86400
 YANDEX_GEOCODER_KEY=${A_YGEO}

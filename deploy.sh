@@ -47,6 +47,7 @@ BTOK="$(keep DESKTOP_BRANCH_TOKEN)";    BTOK="${BTOK:-$(rand 32)}"
 # server-side .env; deploys preserve it. Never bake a live bot credential into
 # source. Set YANDEX_GEOCODER_KEY there for server-side address geocoding.
 CBOT="$(keep CUSTOMER_BOT_TOKEN)"
+CWEBAPP="$(keep CUSTOMER_WEBAPP_URL)"; CWEBAPP="${CWEBAPP:-https://smartfood.${IP}.nip.io/webapp/}"
 CWHSEC="$(keep CUSTOMER_WEBHOOK_SECRET)"; CWHSEC="${CWHSEC:-$(rand 32)}"
 YGEO="$(keep YANDEX_GEOCODER_KEY)"
 # Bootstrap credentials are generated once and kept only in the server-side
@@ -111,7 +112,7 @@ BRANCH_TOKEN_MAP={"${BTOK}":"branch1"}
 TRUST_FORWARDED_PROTO=True
 # --- Smart Food customer Telegram bot (Mini App delivery) ---
 CUSTOMER_BOT_TOKEN=${CBOT}
-CUSTOMER_WEBAPP_URL=${CUSTOMER_WEBAPP_URL:-https://${HOST}/webapp/}
+CUSTOMER_WEBAPP_URL=${CWEBAPP}
 CUSTOMER_WEBHOOK_SECRET=${CWHSEC}
 SMARTFOOD_AUTH_TTL=86400
 SMARTFOOD_AUTO_DISPATCH=${SAD}
