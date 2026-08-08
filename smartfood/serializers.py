@@ -119,10 +119,23 @@ def bot_order_item_dict(it):
     }
 
 
+def bot_order_effective_status(o):
+    if o.status != 'DISPATCHED':
+        return o.status
+    pos = o.pos_order
+    if pos and pos.status in {'PREPARING', 'READY', 'COMPLETED', 'CANCELED'}:
+        return pos.status
+    return 'DISPATCHED'
+
+
 def bot_order_dict(o):
     pos = o.pos_order
     return {
-        'id': o.id, 'code': o.code, 'status': o.status, 'order_type': o.order_type,
+        'id': o.id, 'code': o.code,
+        'client_order_id': str(o.client_order_id) if o.client_order_id else None,
+        'status': o.status,
+        'effective_status': bot_order_effective_status(o),
+        'order_type': o.order_type,
         'created_at': o.created_at.isoformat() if o.created_at else None,
         'phone': o.phone_number, 'note': o.note, 'address_text': o.address_text,
         'payment_method': o.payment_method,

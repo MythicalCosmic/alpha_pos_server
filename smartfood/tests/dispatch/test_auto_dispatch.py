@@ -2,6 +2,7 @@
 POS (presence registry), and REJECT when no POS is online (product decision).
 Plus auto courier-assign (Phase 4, default OFF)."""
 import secrets
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -34,7 +35,9 @@ class TestAutoDispatch:
 
     def test_rejects_when_no_pos_online(self, cfg, active_shift, cashier, product, customer):
         # cashier is on shift but NO presence heartbeat -> no connected POS -> reject
+        from django.core.cache import cache
         from smartfood.services.dispatch_service import DispatchService
+        cache.clear()
         o = _bot_order(customer, product)
         body, st = DispatchService.auto_dispatch(o.id)
         assert st == 200
@@ -63,34 +66,55 @@ class TestAutoDispatch:
 
 @pytest.mark.django_db(transaction=True)
 class TestCreateAutoDispatchIntegration:
-    """End-to-end: placing an order auto-dispatches it (on_commit) when a POS is
-    online — the customer's order lands on a cashier with no operator action."""
+    """The durable worker dispatches accepted orders without operator action."""
 
     def test_create_auto_dispatches_when_pos_online(self, settings, cfg, active_shift,
                                                     cashier, product, customer, address):
         from base.services import presence
         from smartfood.services.order_service import BotOrderService
-        from smartfood.models import BotOrder
+        from smartfood.models import BotOrder, BotOrderDispatchJob
+        from smartfood.services.dispatch_job_service import DispatchJobService
         settings.SMARTFOOD_AUTO_DISPATCH = True
         presence.mark_device_live('till-1', 'branch-a', cashier.id)
         res, st = BotOrderService.create(
             customer, items=[{'product_id': product.id, 'quantity': 1}],
-            order_type='DELIVERY', address_id=address.id)
+            order_type='DELIVERY', address_id=address.id,
+            client_order_id=uuid.uuid4())
         assert st == 201, res
         bo = BotOrder.objects.get(id=res['data']['id'])
-        assert bo.status == 'DISPATCHED' and bo.pos_order_id   # on_commit -> auto_dispatch
+        job = BotOrderDispatchJob.objects.get(bot_order=bo)
+        assert bo.status == 'PENDING' and bo.pos_order_id is None
+        assert job.status == 'PENDING' and job.attempts == 0
+        assert DispatchJobService.process_due(limit=10) == {
+            'claimed': 1,
+            'completed': 1,
+        }
+        bo.refresh_from_db()
+        assert bo.status == 'DISPATCHED' and bo.pos_order_id
 
-    def test_create_rejects_when_no_pos_online(self, settings, cfg, active_shift,
-                                               cashier, product, customer, address):
+    def test_create_retries_durably_when_pos_disappears(self, settings, cfg, active_shift,
+                                                        cashier, product, customer, address):
+        from django.core.cache import cache
+        from base.services import presence
         from smartfood.services.order_service import BotOrderService
-        from smartfood.models import BotOrder
-        settings.SMARTFOOD_AUTO_DISPATCH = True            # no presence heartbeat
+        from smartfood.models import BotOrder, BotOrderDispatchJob
+        from smartfood.services.dispatch_job_service import DispatchJobService
+        settings.SMARTFOOD_AUTO_DISPATCH = True
+        presence.mark_device_live('till-1', 'branch-a', cashier.id)
         res, st = BotOrderService.create(
             customer, items=[{'product_id': product.id, 'quantity': 1}],
-            order_type='DELIVERY', address_id=address.id)
-        assert st == 201
+            order_type='DELIVERY', address_id=address.id,
+            client_order_id=uuid.uuid4())
+        assert st == 201, res
         bo = BotOrder.objects.get(id=res['data']['id'])
-        assert bo.status == 'REJECTED'
+        cache.clear()
+        assert DispatchJobService.process_due(limit=10) == {
+            'claimed': 1,
+            'completed': 0,
+        }
+        assert bo.status == 'PENDING'
+        job = BotOrderDispatchJob.objects.get(bot_order=bo)
+        assert job.status == 'PENDING' and job.attempts == 1
 
 
 @pytest.mark.django_db(transaction=True)

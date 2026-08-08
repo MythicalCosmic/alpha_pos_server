@@ -3,28 +3,39 @@
 Money is recomputed server-side via cart_service; redeemed loyalty points are
 reserved at create and refunded on reject (in dispatch_service).
 """
-import logging
+import hashlib
+import json
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 
 from base.helpers.response import ServiceResponse
 from smartfood.models import Address, BotOrder, BotOrderItem, Customer
 from smartfood.serializers import bot_order_dict, instore_order_dict
 from smartfood.services.cart_service import price_cart, CartError
+from smartfood.services.order_input import (
+    OrderInputError,
+    error_response,
+    normalize_address_id,
+    normalize_cart_items,
+    normalize_client_order_id,
+    normalize_note,
+    normalize_order_type,
+    normalize_payment_method,
+    normalize_phone,
+    normalize_points,
+    normalize_tip,
+)
 
-logger = logging.getLogger(__name__)
-
-
-def _auto_dispatch_safe(bot_order_id):
-    """Run auto-dispatch outside the create transaction; never surface its errors
-    to the customer (the order is already created PENDING — worst case it falls
-    back to the manual operator queue)."""
-    try:
-        from smartfood.services.dispatch_service import DispatchService
-        DispatchService.auto_dispatch(bot_order_id)
-    except Exception:
-        logger.exception('auto-dispatch failed (bot_order=%s)', bot_order_id)
+def _request_fingerprint(payload):
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(',', ':'),
+        sort_keys=True,
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _instore_orders_for(sf_customer, limit=30):
@@ -51,34 +62,112 @@ class BotOrderService:
     @staticmethod
     @transaction.atomic
     def create(customer, items, order_type='DELIVERY', address_id=None, phone='',
-               note='', tip=0, points_used=0, payment_method='CASH', lang='uz'):
-        order_type = 'PICKUP' if str(order_type).upper() == 'PICKUP' else 'DELIVERY'
+               note='', tip=0, points_used=0, payment_method='CASH', lang='uz',
+               client_order_id=None):
+        try:
+            client_order_id = normalize_client_order_id(client_order_id)
+            order_type = normalize_order_type(order_type)
+            payment_method = normalize_payment_method(payment_method)
+            address_id = normalize_address_id(
+                address_id,
+                required=(order_type == 'DELIVERY'),
+            )
+            items = normalize_cart_items(items)
+            tip = normalize_tip(tip)
+            points_used = normalize_points(points_used)
+            note = normalize_note(note)
+        except OrderInputError as exc:
+            return error_response(exc)
+
         # Lock the customer row so loyalty redemption can't over-redeem under
         # concurrent order creation — the clamp in price_cart must read a fresh,
         # locked balance, and the reserve below happens within the same lock.
         customer = Customer.objects.select_for_update().get(id=customer.id)
         try:
+            phone = normalize_phone(phone, fallback=customer.phone_number)
+        except OrderInputError as exc:
+            return error_response(exc)
+
+        fingerprint = _request_fingerprint({
+            'items': items,
+            'order_type': order_type,
+            'address_id': address_id,
+            'phone': phone,
+            'note': note,
+            'tip': str(tip),
+            'points_used': points_used,
+            'payment_method': payment_method,
+        })
+        existing = (BotOrder.objects.filter(
+            customer=customer,
+            client_order_id=client_order_id,
+        ).prefetch_related('items').select_related('pos_order').first())
+        if existing:
+            if existing.request_fingerprint != fingerprint:
+                return {
+                    'success': False,
+                    'code': 'idempotency_conflict',
+                    'message': (
+                        'client_order_id was already used with a different '
+                        'order payload'
+                    ),
+                }, 409
+            if (
+                existing.status == BotOrder.Status.PENDING
+                and getattr(settings, 'SMARTFOOD_AUTO_DISPATCH', True)
+            ):
+                from smartfood.models import BotOrderDispatchJob
+                BotOrderDispatchJob.objects.get_or_create(
+                    bot_order=existing,
+                )
+            return ServiceResponse.success(
+                data=bot_order_dict(existing),
+                message='Order already created',
+            )
+
+        # Only a genuinely new request needs current store availability.
+        # Idempotency replay/conflict above must remain recoverable after a till
+        # disconnect or an operator temporarily closes the bot; otherwise a
+        # client retry cannot discover whether its first request was accepted.
+        from smartfood.gating import bot_open
+        is_open, reason = bot_open()
+        if not is_open:
+            return {
+                'success': False,
+                'closed': True,
+                'reason': reason,
+            }, 200
+        from base.services.presence import resolve_active_cashier
+        if resolve_active_cashier() is None:
+            return {
+                'success': False,
+                'closed': True,
+                'reason': 'no_cashier',
+            }, 200
+
+        try:
             priced = price_cart(items, order_type, tip, points_used, customer, lang)
         except CartError as e:
             return {'success': False, 'code': e.code, 'message': e.message}, e.http
+        except OrderInputError as exc:
+            return error_response(exc)
 
         address = None
         address_text = ''
         if order_type == 'DELIVERY':
-            if not address_id:
-                return ServiceResponse.validation_error({'address_id': 'required'},
-                                                        'A delivery address is required')
             address = Address.objects.filter(id=address_id, customer=customer).first()
             if not address:
                 return ServiceResponse.not_found('Address not found')
             address_text = address.line
 
-        payment_method = 'CARD' if str(payment_method).upper() == 'CARD' else 'CASH'
-
         order = BotOrder.objects.create(
-            customer=customer, status=BotOrder.Status.PENDING, order_type=order_type,
+            customer=customer,
+            client_order_id=client_order_id,
+            request_fingerprint=fingerprint,
+            status=BotOrder.Status.PENDING,
+            order_type=order_type,
             address=address, address_text=address_text,
-            phone_number=(phone or customer.phone_number or ''), note=note or '',
+            phone_number=phone, note=note,
             subtotal=priced['subtotal'], delivery_fee=priced['delivery_fee'],
             discount=priced['discount'], tip=priced['tip'], total=priced['total'],
             loyalty_points_used=priced['points_used'],
@@ -105,13 +194,9 @@ class BotOrderService:
                 reason=f'Redeemed on order {order.code}', bot_order=order)
 
         order = BotOrder.objects.prefetch_related('items').select_related('pos_order').get(id=order.id)
-        # Phase 3: auto-dispatch to the active cashier on a connected POS the
-        # moment the order lands (or reject if none online). Gated by a setting so
-        # the manual operator queue can be restored. Runs after commit so the
-        # order row is durable before dispatch reads/locks it.
         if getattr(settings, 'SMARTFOOD_AUTO_DISPATCH', True):
-            _oid = order.id
-            transaction.on_commit(lambda: _auto_dispatch_safe(_oid))
+            from smartfood.models import BotOrderDispatchJob
+            BotOrderDispatchJob.objects.create(bot_order=order)
         return ServiceResponse.created(data=bot_order_dict(order))
 
     @staticmethod
@@ -119,9 +204,19 @@ class BotOrderService:
         qs = (BotOrder.objects.filter(customer=customer)
               .prefetch_related('items').select_related('pos_order').order_by('-id'))
         if status == 'active':
-            qs = qs.filter(status__in=[BotOrder.Status.PENDING, BotOrder.Status.DISPATCHED])
+            qs = qs.filter(
+                Q(status=BotOrder.Status.PENDING)
+                | Q(status=BotOrder.Status.DISPATCHED)
+                & ~Q(pos_order__status__in=['COMPLETED', 'CANCELED'])
+            )
         elif status == 'history':
-            qs = qs.filter(status__in=[BotOrder.Status.REJECTED, BotOrder.Status.CANCELED])
+            qs = qs.filter(
+                Q(status__in=[BotOrder.Status.REJECTED, BotOrder.Status.CANCELED])
+                | Q(
+                    status=BotOrder.Status.DISPATCHED,
+                    pos_order__status__in=['COMPLETED', 'CANCELED'],
+                )
+            )
         data = {'items': [bot_order_dict(o) for o in qs]}
         # In-store orders made OUTSIDE the bot, surfaced for the phone-matched
         # unified client. Skipped on the 'active' tab (that's in-flight bot orders).
@@ -146,14 +241,12 @@ class BotOrderService:
         if order.status != BotOrder.Status.PENDING:
             return {'success': False, 'code': 'cannot_cancel',
                     'message': 'Only pending orders can be canceled'}, 409
-        if order.loyalty_points_used:
-            from smartfood.models import LoyaltyTransaction
-            from smartfood.services.loyalty_service import LoyaltyService
-            LoyaltyService.record(
-                customer.id, LoyaltyTransaction.Kind.REFUND, order.loyalty_points_used,
-                reason=f'Refund canceled order {order.code}', bot_order=order)
         order.status = BotOrder.Status.CANCELED
         order.save(update_fields=['status', 'updated_at'])
+        from smartfood.services.loyalty_settlement_service import (
+            reconcile_bot_order_loyalty,
+        )
+        reconcile_bot_order_loyalty(order.id)
         # Push the cancellation to the customer's Mini App over WS after commit.
         from smartfood.realtime import publish_bot_order_event
         _oid = order.id

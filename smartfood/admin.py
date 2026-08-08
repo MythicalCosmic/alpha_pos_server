@@ -12,6 +12,7 @@ from django.contrib import admin
 from .models import (
     BotConfig, BotCategory, BotProduct, Size, ToppingGroup, Topping,
     Customer, CustomerSession, Address, BotOrder, BotOrderItem,
+    BotOrderDispatchJob,
     SupportTicket, SupportMessage, Reward, Redemption, LoyaltyTransaction,
 )
 
@@ -219,6 +220,22 @@ class BotOrderItemAdmin(admin.ModelAdmin):
                     'line_total')
     search_fields = ('bot_order__id', 'product__name')
     autocomplete_fields = ('bot_order', 'product', 'size')
+
+
+@admin.register(BotOrderDispatchJob)
+class BotOrderDispatchJobAdmin(admin.ModelAdmin):
+    list_display = (
+        'bot_order', 'status', 'attempts', 'next_attempt_at', 'last_error',
+    )
+    list_filter = ('status',)
+    search_fields = ('bot_order__id', 'bot_order__client_order_id')
+    readonly_fields = (
+        'bot_order', 'status', 'attempts', 'next_attempt_at', 'locked_at',
+        'claim_token', 'finished_at', 'last_error', 'created_at', 'updated_at',
+    )
+
+    def has_add_permission(self, request):
+        return False
 
 
 # --------------------------------------------------------------------------- #

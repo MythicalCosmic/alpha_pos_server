@@ -5,6 +5,7 @@ gating, server-side money recompute (sizes + toppings), runtime stop-selling,
 the cashier-dispatch flow (attribution + price integrity), tracking, and IDOR.
 """
 import json
+import uuid
 
 import pytest
 
@@ -17,6 +18,8 @@ A = '/api/admins/smartfood'
 
 
 def _post(client, path, payload):
+    if path == f'{C}/orders' and 'client_order_id' not in payload:
+        payload = {**payload, 'client_order_id': str(uuid.uuid4())}
     return client.post(path, data=json.dumps(payload), content_type='application/json')
 
 

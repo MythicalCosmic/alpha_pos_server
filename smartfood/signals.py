@@ -34,3 +34,10 @@ def _customer_order_status_bridge(sender, instance, created, **kwargs):
     bo_id = bot_order.id
     from smartfood.realtime import publish_bot_order_event
     transaction.on_commit(lambda: publish_bot_order_event(bo_id, 'status'))
+    from smartfood.services.loyalty_settlement_service import (
+        reconcile_bot_order_loyalty_safe,
+    )
+    transaction.on_commit(
+        lambda: reconcile_bot_order_loyalty_safe(bo_id),
+        robust=True,
+    )

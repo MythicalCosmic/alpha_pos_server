@@ -31,7 +31,8 @@ def active_cashiers():
 
 
 def has_active_cashier():
-    return active_cashiers().exists()
+    from base.services.presence import resolve_active_cashier
+    return resolve_active_cashier() is not None
 
 
 def _closed(reason):
@@ -50,13 +51,16 @@ def require_open(view_func):
 
 
 def require_open_with_cashier(view_func):
-    """Order creation: bot ON *and* at least one cashier on duty."""
+    """Order creation: bot ON and an on-shift cashier on a live POS."""
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
         ok, reason = bot_open()
         if not ok:
             return _closed(reason)
-        if not has_active_cashier():
+        from base.services.presence import resolve_active_cashier
+        resolved = resolve_active_cashier()
+        if not resolved:
             return _closed('no_cashier')
+        request.smartfood_dispatch_target = resolved
         return view_func(request, *args, **kwargs)
     return wrapper

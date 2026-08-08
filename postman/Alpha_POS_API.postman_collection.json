@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1fa66fb-c18d-4c13-8e3e-5481f86ddf55",
     "name": "Alpha POS — Cloud, Local POS & Realtime API",
-    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **397** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **521** edition/path HTTP entries in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEach distinct registered HTTP path appears exactly once per deployed edition.\nFor multi-method Django views, the item description lists every allowed method\nand the request uses one representative method. Django's generated `/admin/`\nHTML application and the standalone core test URLconf are deliberately excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
+    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **397** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **521** distinct edition/path HTTP registrations in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEvery registered HTTP path is covered. Most multi-method Django views use one\nrepresentative request with all methods documented; safety-critical workflows may\nalso include dedicated method-specific examples. Smart Food order listing and\nidempotent order creation are intentionally separate requests. Django's generated\n`/admin/` HTML application and standalone core test URLconf are excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\nThe Smart Food create request generates `smartfoodClientOrderId` once and reuses\nit so an ambiguous response can be retried without duplicating an order; clear\nthat collection variable only when intentionally starting a new checkout.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -294,6 +294,11 @@
     {
       "key": "botOrderId",
       "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "smartfoodClientOrderId",
+      "value": "",
       "type": "string"
     },
     {
@@ -7556,6 +7561,70 @@
               "name": "Orders",
               "item": [
                 {
+                  "name": "[POST] Create Order (Idempotent)",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/orders",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed method for this item:** POST\n\nCreates a customer order and due-now durable automatic-dispatch job. The HTTP request never attempts POS dispatch; the five-second `smartfood_dispatch` worker owns all attempts, crash recovery, and backoff. `client_order_id` is required and must be a UUID. This request generates `smartfoodClientOrderId` once; resend the identical request with the same value after a timeout to retrieve the original order without double creation, loyalty reservation, or POS dispatch. An identical existing-key replay remains discoverable even if the bot closes or the till disconnects, and it never bypasses worker backoff. Clear `smartfoodClientOrderId` only when starting a genuinely new checkout, and use a new UUID whenever cart, address, phone, note, tip, points, or payment changes. A conflicting payload returns `idempotency_conflict` (409), independently of current availability.\n\nA genuinely new checkout is accepted only when the bot is enabled and a live connected restaurant till has an active on-shift cashier. The first create returns 201; an idempotent replay returns 200. A successful response is initially PENDING while the crash-recoverable worker sends it to the till. Poll detail/track and render `effective_status`; delivery `address_text` is copied into the POS order and status returns through sync. `loyalty_points_earned` is prospective: it is credited exactly once only after COMPLETED + paid + paid_at + valid concrete tender evidence. Cancel/reject restores reserved points once, and linked POS cancellation reverses any released earn once. Technical dispatch exhaustion becomes a customer-safe localized REJECTED response with configured support details.\n\nThe example uses DELIVERY and therefore `addressId` must belong to the authenticated customer. Set valid `productId` and `addressId` collection variables before sending.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"client_order_id\": \"{{smartfoodClientOrderId}}\",\n  \"items\": [\n    {\n      \"product_id\": {{productId}},\n      \"quantity\": 1,\n      \"topping_ids\": []\n    }\n  ],\n  \"order_type\": \"DELIVERY\",\n  \"address_id\": {{addressId}},\n  \"phone\": \"{{phone}}\",\n  \"note\": \"Postman Smart Food launch-contract test\",\n  \"tip\": 0,\n  \"points_used\": 0,\n  \"payment_method\": \"CASH\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  },
+                  "event": [
+                    {
+                      "listen": "prerequest",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "if (!pm.collectionVariables.get('smartfoodClientOrderId')) {",
+                          "  pm.collectionVariables.set('smartfoodClientOrderId', pm.variables.replaceIn('{{$guid}}'));",
+                          "}"
+                        ]
+                      }
+                    },
+                    {
+                      "listen": "test",
+                      "script": {
+                        "type": "text/javascript",
+                        "exec": [
+                          "let payload = {};",
+                          "try { payload = pm.response.json(); } catch (e) { payload = {}; }",
+                          "pm.test('Order is created/replayed or checkout is safely closed', function () {",
+                          "  if (payload.closed === true) {",
+                          "    pm.expect(['bot_off', 'no_cashier']).to.include(payload.reason);",
+                          "  } else {",
+                          "    pm.expect([200, 201]).to.include(pm.response.code);",
+                          "    pm.expect(payload.success).to.eql(true);",
+                          "    pm.expect(payload.data).to.be.an('object');",
+                          "    pm.expect(payload.data.client_order_id).to.eql(pm.collectionVariables.get('smartfoodClientOrderId'));",
+                          "  }",
+                          "});",
+                          "if (payload.success === true && payload.data && payload.data.id) {",
+                          "  pm.collectionVariables.set('botOrderId', String(payload.data.id));",
+                          "  pm.collectionVariables.set('orderId', String(payload.data.id));",
+                          "}"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
                   "name": "[GET] List Orders",
                   "request": {
                     "method": "GET",
@@ -7565,8 +7634,8 @@
                         "value": "Bearer {{customerToken}}"
                       }
                     ],
-                    "url": "{{cloudBaseUrl}}/api/smartfood/orders?page={{page}}&per_page={{perPage}}",
-                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nExample query parameters:\n- `page` — 1-based page\n- `per_page` — Page size\n\nReplace example values and identifiers before sending a mutating request."
+                    "url": "{{cloudBaseUrl}}/api/smartfood/orders?status=active",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed method for this item:** GET\n\nCustomer order lists are not paginated. `status=active` returns PENDING orders plus dispatched orders whose linked POS order is not terminal; `status=history` returns rejected/canceled bot orders plus dispatched POS orders that are COMPLETED/CANCELED. Omit `status` for all. Each Smart Food order includes the raw durable `status`, derived customer-facing `effective_status`, `client_order_id`, delivery `address_text`, and linked `pos_order` after dispatch."
                   }
                 },
                 {
@@ -8472,7 +8541,7 @@
                 "method": "GET",
                 "header": [],
                 "url": "{{cloudWsBaseUrl}}/ws/smartfood/orders/{{orderId}}/?token={{customerToken}}",
-                "description": "Registered cloud server ASGI WebSocket route. Postman supports WebSocket requests through its New → WebSocket flow; copy this URL there. The URL includes the expected `?token=` transport because a cookie alone does not authenticate the cloud consumers."
+                "description": "Ownership-scoped, read-only Smart Food customer order stream. Postman supports WebSocket requests through New → WebSocket; copy this URL there. Authenticate with the Smart Food customer token and an `orderId` owned by that customer. The server first sends `{event: connected, data: {order_id}}`, then full `bot_order_dict` lifecycle frames for dispatch, rejection, cancellation, and synced POS kitchen status. Render `data.effective_status` and keep `GET /api/smartfood/orders/:id/track` polling as the durable fallback because realtime delivery is best-effort."
               }
             }
           ]

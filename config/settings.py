@@ -36,6 +36,16 @@ COURIER_PAYMENT_WEBHOOK_SECRET = os.environ.get('COURIER_PAYMENT_WEBHOOK_SECRET'
 # lands (WS Phase 3). ON by default; set false to restore the manual operator queue.
 SMARTFOOD_AUTO_DISPATCH = os.environ.get(
     'SMARTFOOD_AUTO_DISPATCH', 'True').strip().lower() in ('1', 'true', 'yes', 'on')
+SMARTFOOD_DISPATCH_MAX_ATTEMPTS = int(os.environ.get(
+    'SMARTFOOD_DISPATCH_MAX_ATTEMPTS', '12'))
+SMARTFOOD_DISPATCH_RETRY_BASE_SECONDS = int(os.environ.get(
+    'SMARTFOOD_DISPATCH_RETRY_BASE_SECONDS', '5'))
+SMARTFOOD_DISPATCH_RETRY_MAX_SECONDS = int(os.environ.get(
+    'SMARTFOOD_DISPATCH_RETRY_MAX_SECONDS', '60'))
+SMARTFOOD_DISPATCH_LEASE_SECONDS = int(os.environ.get(
+    'SMARTFOOD_DISPATCH_LEASE_SECONDS', '60'))
+SMARTFOOD_MAX_ITEM_QUANTITY = int(os.environ.get(
+    'SMARTFOOD_MAX_ITEM_QUANTITY', '100'))
 
 # Auto-assign an available courier to a DELIVERY order right after dispatch. OFF by
 # default — couriers are chosen by hand via POST /api/admins/couriers/assign.

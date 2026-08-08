@@ -24,7 +24,8 @@ The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a web
 Two things make this API unusual and you must handle both:
 
 - **There is no server-side cart.** The cart lives entirely in the client. `POST /cart/quote` is a stateless reprice/validate call; you send the full items array every time.
-- **"Closed" is not an error.** When the store/bot is off there is no active cashier, gated endpoints return **HTTP 200** with `{"success": false, "closed": true, "reason": "..."}`. You must check `closed` before `success` and render a closed screen — never treat it as a network/error failure.
+- **"Closed" is not an error.** When the store/bot is off or no connected till has an active on-shift cashier, gated endpoints return **HTTP 200** with `{"success": false, "closed": true, "reason": "..."}`. You must check `closed` before `success` and render a closed screen — never treat it as a network/error failure.
+- **Checkout is retry-safe and dispatch is automatic.** Every create request carries a client-generated UUID `client_order_id`. Reuse that UUID and the identical payload after a timeout; the API returns the already-created order instead of charging or dispatching twice. With `SMARTFOOD_AUTO_DISPATCH=true`, a durable worker sends the order to a live restaurant till and retries transient failures.
 
 > **First-boot default: the store is closed.** `BotConfig.enabled` defaults to **false** on a fresh install (models.py:44). The very first `/config` the Mini App ever sees returns `enabled: false`, and catalog/quote return `bot_off` (200), until an operator turns the bot ON via the admin `/config/enable` toggle. Render the closed screen by default and only open ordering once `config.enabled === true`.
 
@@ -177,6 +178,24 @@ if (!cfg.enabled) { /* render closed screen */ }
 const cats = await api.categories(); // -> { items: [...] }
 ```
 
+For checkout, create and persist the retry UUID **before** the first request:
+
+```js
+const checkout = {
+  client_order_id: crypto.randomUUID(),
+  items: [{ product_id: 42, quantity: 1 }],
+  order_type: 'PICKUP',
+  payment_method: 'CASH',
+};
+localStorage.setItem('smartfood.pendingCheckout', JSON.stringify(checkout));
+
+// If this call times out, reload the stored object and resend it unchanged.
+// Clear it only after an authoritative success response; use a new UUID when
+// the customer changes the checkout payload.
+const order = await api.createOrder(checkout);
+localStorage.removeItem('smartfood.pendingCheckout');
+```
+
 ---
 
 ## 3. Conventions
@@ -195,7 +214,7 @@ The `data` key is **omitted** when there is no payload (e.g. deletes, set-defaul
 ```json
 { "success": true, "message": "Created", "data": { } }
 ```
-Only three customer endpoints return 201/"Created": `POST /addresses`, `POST /support/tickets`, and `POST /orders` (order create). Everything else — including `POST /auth` — returns 200/"Success".
+`POST /addresses`, `POST /support/tickets`, and the **first successful** `POST /orders` for a `client_order_id` return 201/"Created". An idempotent replay of that order returns 200/"Order already created" with the same order. Everything else — including `POST /auth` — returns 200/"Success".
 
 **Standard (JSON-envelope) errors** — these come from the smartfood views via `ServiceResponse` and always have a top-level `message`:
 | Variant | HTTP | Shape |
@@ -363,19 +382,21 @@ These are the states that block ordering. **Closed states are HTTP 200, not erro
 
 | State | Where it's signalled | Exact server signal | UI should show |
 |---|---|---|---|
-| **Store/bot closed** (operator turned bot OFF, or it has never been enabled; `BotConfig.enabled == false`, default on fresh install) | `GET /catalog/categories`, `GET /catalog/products`, `GET /catalog/products/:id`, `POST /cart/quote`, `POST /orders`. Also surfaced as `config.enabled === false`. | HTTP 200 `{"success": false, "closed": true, "reason": "bot_off"}` | "Store is currently closed" screen; hide ordering. Note: the gating decorator runs **before** auth on catalog/quote, so even an unauthenticated/expired caller gets `bot_off` (200) rather than 401. |
-| **No active cashier** (bot ON but zero on-duty cashiers) | **Only** `POST /orders` (order creation). Browsing & quote are NOT cashier-gated. | HTTP 200 `{"success": false, "closed": true, "reason": "no_cashier"}` | "We can't take orders right now" at checkout. Let the user keep browsing/quoting. |
+| **Store/bot closed** (operator turned bot OFF, or it has never been enabled; `BotConfig.enabled == false`, default on fresh install) | `GET /catalog/categories`, `GET /catalog/products`, `GET /catalog/products/:id`, `POST /cart/quote`, and genuinely new `POST /orders` attempts. Also surfaced as `config.enabled === false`. | HTTP 200 `{"success": false, "closed": true, "reason": "bot_off"}` | "Store is currently closed" screen; hide ordering. Note: the gating decorator runs **before** auth on catalog/quote, so even an unauthenticated/expired caller gets `bot_off` (200) rather than 401. An authenticated replay of an existing `client_order_id` remains discoverable while closed. |
+| **No connected till/cashier** (bot ON, but there is no live connected POS terminal with an active on-shift cashier) | **Only genuinely new** `POST /orders` attempts. Browsing, quote, and an existing-key replay are NOT cashier-gated. | HTTP 200 `{"success": false, "closed": true, "reason": "no_cashier"}` | "We can't take new orders right now" at checkout. Let the user keep browsing/quoting and offer configured support contact details. An old/stale ACTIVE shift alone does not open checkout. Retry the same persisted key after an ambiguous response; it still returns the accepted order if the first request committed before disconnect. |
 | **Category disabled / sold-out item (browse)** | Catalog list/detail filtering | Disabled categories & sold-out products are **silently absent** from `items` (still `success: true`, 200). A hidden/sold-out/disabled-category product detail → **404** `{"success": false, "message": "Product not found"}`. | Render only what's returned. On a 404 for a product the user had cached, show "no longer available" and refresh the menu. |
 | **Item unavailable (quote/submit re-validation)** | `POST /cart/quote`, `POST /orders` | `409` `{"success": false, "code": "item_unavailable", "message": "<...>"}`. The message is one of these **exact** strings: `"Product is not available"`, `"<name> is sold out"`, `"Selected size is invalid"`, `"Selected size is unavailable"`, `"A selected topping is invalid"`, `"A selected topping is sold out"`. | Mark the offending line, prompt to remove/re-pick, re-quote. **Branch on `code === "item_unavailable"`, not on the message text** (the strings are display copy and may change). |
 | **Empty cart** | `cart/quote`, `orders` | `422` code `empty_cart` ("Cart is empty") | Disable checkout. |
 | **Invalid quantity** | `cart/quote`, `orders` | `422` code `invalid_quantity` ("Quantity must be greater than 0") | See note below — send clean positive ints. |
 | **Topping group rules** | `cart/quote`, `orders` | `422` `topping_required` ("Choose at least N for `<group>`"), `topping_min` (same text), `topping_max` ("Choose at most N for `<group>`") | Enforce min/max selection in the configurator. |
 | **Below minimum order** | `cart/quote`, `orders` | `422` code `min_order` ("Minimum order is `<amount>`") | Show "add `X` more to reach the minimum". |
-| **Delivery without address** | `POST /orders` (order_type DELIVERY) | `422` `{"success": false, "message": "A delivery address is required", "errors": {"address_id": "required"}}` | Force address selection before checkout. |
+| **Delivery without address** | `POST /orders` (order_type DELIVERY) | `422` `{"success": false, "code": "address_required", "message": "A delivery address is required", "errors": {"address_id": "required"}}` | Force address selection before checkout. |
 | **Address not owned/missing** | `POST /orders` | `404` `{"success": false, "message": "Address not found"}` | Refresh address list. |
-| **Cancel non-PENDING order** | `POST /orders/:id/cancel` | `409` `{"success": false, "code": "cannot_cancel", "message": "Only pending orders can be canceled"}` | Hide/disable the cancel button once status ≠ PENDING. |
+| **Missing/invalid retry key** | `POST /orders` | `422` code `invalid_client_order_id`; `client_order_id` is required and must be a UUID. | Generate one UUID when checkout begins, persist it locally, and reuse it for retries of the same payload. |
+| **Retry key reused for different payload** | `POST /orders` | `409` code `idempotency_conflict`. | Do not mutate a checkout attempt in place. Generate a new UUID for the changed cart/address/payment payload. |
+| **Cancel non-PENDING order** | `POST /orders/:id/cancel` | `409` `{"success": false, "code": "cannot_cancel", "message": "Only pending orders can be canceled"}` | Hide/disable the cancel button once status ≠ PENDING. A successful PENDING cancellation restores reserved points exactly once. |
 
-> **Quantity coercion gotcha:** `quantity` is parsed server-side as `int(item.get('quantity', 1))` inside a try/except. So: an **omitted** quantity defaults to **1** (no error); a fractional value is **truncated** (`2.9 → 2`, accepted); a non-numeric/garbage value coerces to `0` and raises `invalid_quantity` (422); and any value `<= 0` raises `invalid_quantity` (422). It does **not** use the stricter `coerce_quantity` helper, so do not rely on the server to reject fractional quantities — always send clean positive integers from the client.
+> **Strict cart input:** an omitted `quantity` defaults to 1. Otherwise it must be an integer from 1 through `SMARTFOOD_MAX_ITEM_QUANTITY` (default 100); booleans, fractional numbers, negatives, zero, and garbage are rejected with `invalid_quantity` (422). A cart may contain at most 100 lines and each line at most 50 distinct topping ids. The server also strictly validates UUIDs, IDs, order/payment enums, tip, points, phone, and note lengths.
 
 > There is **no** separate "store hours / selling stopped" flag. Store-level open/closed is purely `BotConfig.enabled` (`bot_off`). "Selling stopped" is expressed per item/category (filtering + `item_unavailable`).
 
@@ -542,11 +563,12 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
 }
 ```
   - `items` required, non-empty. Each item: `product_id` (int, required), `size_id` (int, optional), `topping_ids` (int[], optional), `quantity` (optional). IDs are integer DB ids, not UUIDs.
-  - `quantity`: **optional, defaults to 1**. Must coerce to a positive int; non-numeric/garbage → 0 → `invalid_quantity` (422); fractional values are truncated (`2.9 → 2`). See the quantity-coercion note in §5. Send clean positive ints.
-  - `size_id`: must be a **truthy positive int** to select a size. `0`, `null`, or omitted all mean "no size selected" — sending `0` as a sentinel silently yields the base product (no size), **not** a validation error.
-  - `order_type`: `"DELIVERY"` (default) or `"PICKUP"`; PICKUP → `delivery_fee` 0.
-  - `tip`: UZS int, default 0; negative coerced to 0.
-  - `points_used`: loyalty points to redeem, default 0; clamped to balance; discount capped at subtotal.
+  - `quantity`: **optional, defaults to 1**. Otherwise it must be a positive integer no greater than `SMARTFOOD_MAX_ITEM_QUANTITY` (default 100). Fractional, boolean, zero, negative, and malformed values are rejected.
+  - `size_id`: omit or send `null`/`""` for no size. Any supplied id must be a positive integer; `0` is rejected.
+  - `topping_ids`: optional array of distinct positive integers; duplicates and non-array values are rejected.
+  - `order_type`: `"DELIVERY"` (default) or `"PICKUP"`; other values are rejected. PICKUP → `delivery_fee` 0.
+  - `tip`: finite non-negative UZS amount, default 0, maximum two decimal places and 99,999,999.99.
+  - `points_used`: non-negative integer loyalty points, default 0; clamped to balance; discount capped at subtotal.
   - There is **no per-item notes** field — notes are order-level only (sent on create).
 - **Success (200):**
 ```json
@@ -586,11 +608,12 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
 ### 6.4 Orders
 
 #### `POST /orders`  (create / checkout)
-- **Auth:** Bearer required; gated by store-open **and** active-cashier (`bot_off` then `no_cashier`). The create path is authenticated first, then gated.
-- **Purpose:** Place an order. Re-prices server-side (same engine as `cart/quote`), creates a `BotOrder` in **PENDING** with frozen line snapshots, reserves redeemed loyalty points. Does **not** dispatch — an operator later sends it to a cashier.
+- **Auth:** Bearer required. A genuinely new `client_order_id` is gated by store-open **and** a connected till with an active on-shift cashier (`bot_off` then `no_cashier`). Existing-key replay/conflict resolution happens before current availability checks, so an accepted order remains discoverable after the bot closes or the till disconnects.
+- **Purpose:** Place an idempotent order. The server re-prices it (same engine as `cart/quote`), creates a `BotOrder` in **PENDING** with frozen line snapshots, reserves redeemed loyalty points, and enqueues durable automatic dispatch to the live restaurant POS. A manual admin dispatch route remains an operational fallback.
 - **Request:**
 ```json
 {
+  "client_order_id": "6f1b3e66-5503-4bd3-8592-0fea75134359",
   "items": [ { "product_id": 42, "size_id": 7, "topping_ids": [3, 9], "quantity": 2 } ],
   "order_type": "DELIVERY",
   "address_id": 15,
@@ -601,13 +624,14 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
   "payment_method": "CASH"
 }
 ```
-  - `items`: same shape and coercion rules as `cart/quote` (quantity optional/default 1, `size_id` truthy-positive to select).
-  - `order_type`: `"DELIVERY"` (default) or `"PICKUP"`.
+  - `client_order_id`: **required UUID generated by the client.** Persist it before the first network call. Reuse it with the exact same canonical checkout payload after timeout, disconnect, app reload, or ambiguous response. Generate a new UUID only for a genuinely new/changed checkout attempt.
+  - `items`: same shape as `cart/quote`; all ids and quantities are strictly validated positive integers. Quantity is optional/default 1 and capped by `SMARTFOOD_MAX_ITEM_QUANTITY`.
+  - `order_type`: `"DELIVERY"` (default) or `"PICKUP"`; other values are rejected.
   - `address_id`: **required when DELIVERY**; ignored for PICKUP.
   - `phone`: optional; falls back to the customer's stored phone. The final stored value is `(phone or customer.phone or '')` — if both are blank, the order's `phone` is the **empty string `""`**, never `null`.
   - `note`: optional order-level note.
   - `tip`, `points_used`: as in quote.
-  - `payment_method`: `"CASH"` (default) or `"CARD"`; anything not `"CARD"` is coerced to `"CASH"` (cash-only launch).
+  - `payment_method`: `"CASH"` (default) or `"CARD"`; other values are rejected.
 - **Success (201):**
 ```json
 {
@@ -616,7 +640,9 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
   "data": {
     "id": 1234,
     "code": "SF-1234",
+    "client_order_id": "6f1b3e66-5503-4bd3-8592-0fea75134359",
     "status": "PENDING",
+    "effective_status": "PENDING",
     "order_type": "DELIVERY",
     "created_at": "2026-06-14T10:05:00+00:00",
     "phone": "+998901234567",
@@ -640,15 +666,16 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
   }
 }
 ```
-- **Notes:** `points_used` is reserved/debited now; `points_earned` is credited only at dispatch. The selected address is snapshotted into `address_text`. The human-facing code is `data.code` = `"SF-<id>"`. `phone` may be `""`.
-- **Errors:** closed (200) `bot_off` or `no_cashier`. All `cart/quote` CartError codes apply (flat `{success, code, message}`). DELIVERY without address → `422 {"errors": {"address_id": "required"}, "message": "A delivery address is required"}`. Address not owned → `404 "Address not found"`. Bad JSON 400. 401/403.
+- **Idempotent replay (200):** the same customer + same `client_order_id` + identical normalized payload returns message `"Order already created"` and the original full order object, even if the bot is now disabled or no till is connected. It never creates a second `BotOrder`, reserves points twice, dispatches twice, or consumes retry attempts. Reusing the UUID with a different cart/address/phone/note/tip/points/payment payload returns `409` code `idempotency_conflict`, also independently of current availability.
+- **Notes:** Create commits the PENDING order and a due-now durable job, then returns without trying to dispatch in the HTTP request path. The `smartfood_dispatch` worker owns every dispatch attempt and normally claims due jobs on its five-second loop. Poll detail/track until the restaurant POS link appears. `points_used` is reserved/debited now. `loyalty_points_earned` is the prospective award, not proof of a balance credit: it is not released at create or dispatch. The selected address is frozen in `address_text`, copied into the POS order's `delivery_address`, and sync preserves that value. The human-facing code is `data.code` = `"SF-<id>"`. `phone` may be `""`.
+- **Errors:** closed (200) `bot_off` or `no_cashier`. All `cart/quote` CartError codes apply (flat `{success, code, message}`). Missing/invalid UUID → 422 `invalid_client_order_id`. DELIVERY without address → 422 `address_required` with `errors.address_id`. Address not owned → `404 "Address not found"`. Changed-payload replay → 409 `idempotency_conflict`. Bad JSON 400. 401/403.
 
 #### `GET /orders`  (list my orders)
 - **Auth:** Bearer required; NOT gated (works when bot is off).
-- **Query:** `status=active` (PENDING+DISPATCHED) | `status=history` (REJECTED+CANCELED) | omit for ALL. Any **unrecognized** value (e.g. `status=foo`) is ignored and returns ALL orders — it is not a 400.
+- **Query:** `status=active` (PENDING plus dispatched orders whose POS status is not terminal) | `status=history` (REJECTED, CANCELED, plus dispatched orders whose POS status is COMPLETED/CANCELED) | omit for ALL. Any **unrecognized** value (e.g. `status=foo`) is ignored and returns ALL orders — it is not a 400.
 - **Success (200):** `data.items` is an array of the full order object (same shape as create). No pagination, ordered newest-first (`-id`).
 ```json
-{ "success": true, "message": "Success", "data": { "items": [ { "id": 1234, "code": "SF-1234", "status": "DISPATCHED", "...": "...", "pos_order": { "id": 555, "uuid": "...", "status": "PREPARING", "display_id": 27 } } ] } }
+{ "success": true, "message": "Success", "data": { "items": [ { "id": 1234, "code": "SF-1234", "status": "DISPATCHED", "effective_status": "PREPARING", "...": "...", "pos_order": { "id": 555, "uuid": "...", "status": "PREPARING", "display_id": 27 } } ] } }
 ```
 - **Errors:** 401/403.
 
@@ -660,7 +687,7 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
 
 #### `GET /orders/:order_id/track`  (poll tracking)
 - **Auth:** Bearer required; own order only; NOT gated.
-- **Purpose:** Tracking. **Functionally identical to order detail** — same full object. There is **no** websocket/SSE/long-poll and no status-only endpoint; the client polls this on an interval. (A complementary Telegram chat push is also sent to the customer on dispatch/reject — best-effort, you can't toggle or read it via the API.)
+- **Purpose:** Authoritative polling fallback. It is functionally identical to order detail and returns the same full object. For lower latency, connect the read-only customer WebSocket at `wss://<host>/ws/smartfood/orders/:order_id/?token=<customerToken>`. The socket is ownership-scoped and sends `{"event":"connected","data":{"order_id":1234}}`, then lifecycle frames shaped as `{"event":"dispatched|rejected|canceled|status","data":<bot_order_dict>}`. Keep HTTP polling because WebSocket and Telegram delivery are best-effort.
 - **Success (200):**
 ```json
 {
@@ -668,7 +695,9 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
   "message": "Success",
   "data": {
     "id": 1234, "code": "SF-1234",
+    "client_order_id": "6f1b3e66-5503-4bd3-8592-0fea75134359",
     "status": "DISPATCHED",
+    "effective_status": "PREPARING",
     "order_type": "DELIVERY",
     "created_at": "2026-06-14T10:05:00+00:00",
     "dispatched_at": "2026-06-14T10:07:00+00:00",
@@ -680,7 +709,7 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
   }
 }
 ```
-- **Notes:** Read `data.status` for the BotOrder lifecycle and `data.pos_order.status` for kitchen progress (PREPARING/READY/…). `pos_order == null` → still PENDING / awaiting cashier. `pos_order.display_id` is the till/queue number the customer can quote at pickup.
+- **Notes:** `data.status` is the durable Smart Food lifecycle and remains `DISPATCHED` after a POS order exists. `data.effective_status` is authoritative for UI state: it follows the linked POS through `PREPARING`, `READY`, `COMPLETED`, or `CANCELED`. `data.pos_order.status` exposes the same kitchen state plus `display_id`. `pos_order == null` means the durable dispatch job is still pending/retrying (or auto-dispatch is explicitly disabled).
 - **Errors:** `404 "Order not found"`; 401/403.
 
 #### `POST /orders/:order_id/cancel`
@@ -906,18 +935,25 @@ All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unles
 
 ## 7. Order lifecycle
 
-`BotOrder.status` has exactly four values. The **POS kitchen status** (`pos_order.status`, e.g. `PREPARING`, `READY`) is a separate, finer-grained value that only exists after dispatch.
+`BotOrder.status` has exactly four durable Smart Food values. `effective_status` is the customer-facing state: before dispatch it matches `status`; after dispatch it follows the linked POS order through preparation and terminal completion/cancellation.
 
-| `status` | Meaning | `pos_order` | Recommended UI |
+| Raw `status` / effective state | Meaning | `pos_order` | Recommended UI |
 |---|---|---|---|
-| **PENDING** | Initial state on create. **Awaiting cashier confirmation** — sent to the operator queue but not yet a real POS order; no cashier has accepted. **Only state the customer can cancel.** | `null` | "Order received — awaiting confirmation." Show a **Cancel** button. Keep polling. |
-| **DISPATCHED** | An operator dispatched it to an on-duty cashier. A real POS order was minted (POS status `PREPARING`, or `READY` immediately if all items are instant), earned loyalty points credited, Telegram confirmation pushed. | `{id, uuid, status, display_id}` | "Order confirmed!" Hide Cancel. Show kitchen progress from `pos_order.status` and the pickup/queue number `pos_order.display_id`. |
-| **REJECTED** | Operator rejected the pending order; reserved loyalty points refunded; `reject_reason` set; Telegram rejection pushed. | `null` | "Order rejected." Show `reject_reason`. Offer re-order. |
-| **CANCELED** | Customer canceled their own PENDING order; reserved loyalty points refunded. | `null` | "Order canceled." |
+| **PENDING / PENDING** | Initial state. A durable job is delivering the order to the live till. **Only raw state the customer can cancel.** | `null` | "Order received — connecting to the restaurant." Show Cancel and keep polling. Do not claim preparation has begun yet. |
+| **DISPATCHED / PREPARING** | A real POS order was created with `order_origin=TELEGRAM`; it reached the restaurant and is being prepared. | `{id, uuid, status, display_id}` | Confirm receipt, hide Cancel, and show the queue/display number. |
+| **DISPATCHED / READY** | The restaurant marked the linked POS order ready. | populated | Show ready-for-pickup/delivery copy. |
+| **DISPATCHED / COMPLETED** | The linked POS order completed. Prospective earned points are released only when this is also authoritatively paid (`is_paid`, `paid_at`) with valid concrete tender evidence. Completion without settlement evidence does not award points. | populated | Move the order to history and stop order polling; refresh the authoritative loyalty balance after settlement. |
+| **DISPATCHED / CANCELED** | The restaurant canceled the linked POS order. Raw Smart Food status remains `DISPATCHED`; `effective_status` carries the terminal truth. Reserved points are restored exactly once and any previously released earn is reversed exactly once. | populated | Show canceled, move to history, stop polling, refresh loyalty, and offer support/re-order. |
+| **REJECTED / REJECTED** | A manager rejected it, or durable automatic dispatch exhausted its retry budget. Reserved loyalty points are restored exactly once. For a technical failure, `reject_reason` is localized, customer-safe copy with the configured support contact when available; internal exception text is never exposed. | `null` | Show the safe `reject_reason`, retry action, and support phone/Telegram/email from `/config`. Refresh loyalty and stop polling. |
+| **CANCELED / CANCELED** | Customer canceled their own still-PENDING order; reserved loyalty points are restored exactly once. | `null` | Show canceled, refresh loyalty, and stop polling. |
 
-**The "awaiting cashier confirmation" gate:** order creation does **not** auto-dispatch. `POST /orders` only checks that ≥1 cashier is on an active shift at create time (`no_cashier` otherwise); the order is stored PENDING until an operator manually dispatches it (admin `POST /api/admins/smartfood/orders/:id/dispatch`). The customer learns of the resolution by **polling** `/track` (PENDING → DISPATCHED with `pos_order` populated, or → REJECTED) and via the complementary Telegram push.
+**Automatic connected-till dispatch:** with `SMARTFOOD_AUTO_DISPATCH=true`, `POST /orders` verifies a live POS terminal and active on-shift cashier before accepting a genuinely new checkout. Creation writes the order and a due-now durable dispatch job atomically, then returns; it never performs a dispatch attempt inside or after the HTTP request. The independent `smartfood_dispatch` worker is the sole automatic dispatcher, scans every five seconds, reclaims crashed jobs, and retries transient failures with bounded exponential backoff. Dispatch is transaction-safe, and the one-to-one job, fenced worker claim, and locked `BotOrder` make repeated workers/retries safe. A manager can still use the admin dispatch/reject endpoints as an operational fallback.
 
-List filters: `?status=active` = PENDING+DISPATCHED; `?status=history` = REJECTED+CANCELED; any other/omitted value = ALL.
+If till presence disappears in the small race after checkout, the accepted order stays PENDING while the worker retries. After the configured maximum attempts, it becomes REJECTED, loyalty is refunded, and the customer receives localized safe failure text (plus Telegram notification when available). The app must keep polling and must offer the `/config.support` contact; never display network stack traces, raw worker errors, or `dispatch_job.last_error`.
+
+**Authoritative loyalty settlement:** the `loyalty_points_earned` value in quotes and orders is a preview. It is credited exactly once only after the linked POS order is COMPLETED, marked paid, has `paid_at`, and has complete valid tender attribution. Create, dispatch, READY, or a bare COMPLETED status cannot award it. PENDING cancellation/rejection and linked POS cancellation restore reserved `loyalty_points_used` exactly once; a linked cancellation also reverses any already-released or legacy earn exactly once. Locked settlement timestamps prevent duplicate credits/refunds/reversals. POS status signals reconcile after commit, and the five-second worker runs a bounded repair sweep for missed callbacks and pre-deploy rows even when automatic dispatch is disabled. Read the actual balance from `/loyalty` or the customer profile, not from `loyalty_points_earned` alone.
+
+List filters use the same effective lifecycle: `?status=active` includes PENDING and non-terminal dispatched POS orders; `?status=history` includes rejected/canceled BotOrders and dispatched POS orders that are COMPLETED/CANCELED; any other/omitted value = ALL.
 
 ---
 
@@ -929,8 +965,8 @@ List filters: `?status=active` = PENDING+DISPATCHED; `?status=history` = REJECTE
 4. **Browse catalog.** `GET /catalog/categories`, then `GET /catalog/products?category_id=...` (or `?q=` for search). On any catalog response, **check `closed` first** — `bot_off` means render the closed screen. Open `GET /catalog/products/:id` for the configurator (sizes + topping groups). Enforce `min_select`/`max_select` (`0` = unlimited) per group.
 5. **Build cart (client-side).** Maintain the items array `[{product_id, size_id?, topping_ids?[], quantity}]`. Send clean positive integer quantities and a truthy positive `size_id` (or omit it). Estimate prices client-side as base + size delta + toppings, but treat the server quote as authoritative.
 6. **Quote.** On every cart change call `POST /cart/quote` with the full items array, `order_type`, `tip`, `points_used`. Handle conflict `code`s (`item_unavailable`, `topping_*`, `min_order`, `empty_cart`, `invalid_quantity`) by branching on `code` (not message text), and handle `bot_off`. Render `subtotal`, `delivery_fee`, `discount`, `tip`, `total`, and the loyalty preview from the response.
-7. **Checkout.** For DELIVERY, ensure an `address_id` (create/select via the address endpoints; use `/geo/*` for the map, with a manual-entry fallback since the geocoder may be off). `POST /orders`. Handle the same conflict codes, plus `closed` (`bot_off` / `no_cashier`), `address_id` required (422), and `Address not found` (404). On success you get a PENDING order (HTTP 201) with `code` `SF-<id>`. Treat `order.phone` as possibly `""`.
-8. **Track.** Poll `GET /orders/:id/track` on an interval. Show `status` (PENDING/DISPATCHED/REJECTED/CANCELED) and, once `pos_order != null`, the kitchen `pos_order.status` and `pos_order.display_id`. Allow **Cancel** only while PENDING. Also expect a Telegram push on dispatch/reject.
+7. **Create a durable checkout attempt.** Generate a UUID `client_order_id`, persist it with a fingerprint/canonical copy of the checkout payload, then `POST /orders`. For DELIVERY, include a customer-owned `address_id`; its text is snapshotted into `address_text`, copied into the linked POS order's canonical `delivery_address`, and preserved through sync. On timeout or reload, resend the **identical** payload with the same UUID. If the cart/address/payment changes, generate a new UUID. Handle `bot_off`, `no_cashier`, `invalid_client_order_id`, `idempotency_conflict`, address and cart validation. A first create is 201; a successful replay is 200 and returns the same order.
+8. **Track automatic dispatch and POS status.** Subscribe to `/ws/smartfood/orders/:id/` for low-latency full-order frames and poll `GET /orders/:id/track` as the durable fallback. Render `effective_status`, not raw `status` alone. PENDING means accepted but still being delivered/retried; PREPARING/READY come from the restaurant POS; COMPLETED/CANCELED/REJECTED are terminal and stop order polling. Allow customer Cancel only while raw `status === "PENDING"`. On technical rejection, show only `reject_reason` and configured support actions. Refresh `/loyalty` after paid completion or cancellation; `loyalty_points_earned` is prospective until authoritative settlement. Telegram dispatch/reject push is complementary, not the source of truth.
 
 ---
 
@@ -966,7 +1002,7 @@ List filters: `?status=active` = PENDING+DISPATCHED; `?status=history` = REJECTE
 
 **`address_dict`** — `id`, `label`, `line`, `lat` (float|null), `lng` (float|null), `city`, `street`, `house`, `apartment`, `entrance`, `floor`, `intercom`, `comment`, `precision`, `is_default`.
 
-**`bot_order_dict`** — `id`, `code` (`SF-<id>`), `status`, `order_type` (`DELIVERY|PICKUP`), `created_at` (ISO|null), `phone` (string, may be `""`, never null), `note`, `address_text`, `payment_method` (`CASH|CARD`), `totals{subtotal, delivery_fee, discount, tip, total}` (all int UZS), `loyalty_points_used`, `loyalty_points_earned`, `items[]`, `pos_order` (null OR `{id, uuid, status, display_id}`), `dispatched_at` (ISO|null), `reject_reason`.
+**`bot_order_dict`** — `id`, `code` (`SF-<id>`), `client_order_id` (UUID string; nullable only for pre-migration legacy rows), raw `status`, derived `effective_status`, `order_type` (`DELIVERY|PICKUP`), `created_at` (ISO|null), `phone` (string, may be `""`, never null), `note`, `address_text`, `payment_method` (`CASH|CARD`), `totals{subtotal, delivery_fee, discount, tip, total}` (all int UZS), `loyalty_points_used`, prospective `loyalty_points_earned` (not a settlement flag), `items[]`, `pos_order` (null OR `{id, uuid, status, display_id}`), `dispatched_at` (ISO|null), `reject_reason`.
 
 **`bot_order_item_dict`** — `product_id`, `size_id` (int|null), `quantity`, `unit_price` (int UZS), `line_total` (int UZS), `toppings[]` (`[{topping_id, name, price}]`), `detail`.
 
@@ -978,14 +1014,14 @@ List filters: `?status=active` = PENDING+DISPATCHED; `?status=history` = REJECTE
 
 These live under `/api/admins/smartfood` and require staff `manager_required` auth. They are listed only for lifecycle context. **The customer Mini App must not call any of them.**
 
-- `GET /api/admins/smartfood/orders/pending` — pending-dispatch queue.
-- `GET /api/admins/smartfood/cashiers/active` — cashiers on active shift (drives the `no_cashier` state customers see).
-- `POST /api/admins/smartfood/orders/:bot_order_id/dispatch` — operator accepts a PENDING order, assigns a cashier, mints the POS order, sets `DISPATCHED`. Body `{ "cashier_id": 5 }`.
+- `GET /api/admins/smartfood/orders/pending` — pending/retry queue and manual operational fallback.
+- `GET /api/admins/smartfood/cashiers/active` — on-shift cashier view. Customer checkout additionally requires live connected-till presence; a stale ACTIVE shift is insufficient.
+- `POST /api/admins/smartfood/orders/:bot_order_id/dispatch` — manual fallback: assigns a specific cashier, mints the POS order, and sets `DISPATCHED`. Normal public-launch orders are dispatched automatically by the durable worker. Body `{ "cashier_id": 5 }`.
 - `POST /api/admins/smartfood/orders/:bot_order_id/reject` — operator rejects (status `REJECTED`, refunds points). Body `{ "reason": "..." }` (optional).
 - `GET | POST /api/admins/smartfood/config` — GET reads, POST edits store config.
 - `POST /api/admins/smartfood/config/enable` — the master bot ON/OFF toggle. Body `{ "enabled": bool }`. **This is what flips the customer-facing `bot_off` "closed" state.**
 
-Customers observe the *results* of dispatch/reject/enable only via `/config`, `/orders/:id/track`, and the Telegram push.
+Customers observe the *results* of dispatch/reject/enable through `/config`, order detail/track, the ownership-scoped Smart Food order WebSocket, and complementary Telegram push.
 
 ### C. Environment / config notes
 
@@ -993,7 +1029,14 @@ Customers observe the *results* of dispatch/reject/enable only via `/config`, `/
   - `CUSTOMER_BOT_TOKEN` — the Telegram bot token used to validate `initData` HMAC and to send customer push messages (defined in `settings_base.py`).
   - `SMARTFOOD_INITDATA_MAX_AGE` — initData freshness window for login (default 3600s).
   - `SMARTFOOD_AUTH_TTL` — issued session lifetime (default 86400s, returned as `expires_in`).
+  - `SMARTFOOD_AUTO_DISPATCH` — must be `true` for the public-launch contract. `false` deliberately restores the legacy manual operator queue.
+  - `SMARTFOOD_DISPATCH_MAX_ATTEMPTS` — terminal retry budget (default 12). Exhaustion safely rejects the still-PENDING order and refunds reserved loyalty.
+  - `SMARTFOOD_DISPATCH_RETRY_BASE_SECONDS` / `SMARTFOOD_DISPATCH_RETRY_MAX_SECONDS` — bounded exponential retry timing (defaults 5 / 60 seconds).
+  - `SMARTFOOD_DISPATCH_LEASE_SECONDS` — PROCESSING-job lease before a crashed/stuck claim can be recovered (default 60 seconds).
+  - `SMARTFOOD_MAX_ITEM_QUANTITY` — strict per-line quantity ceiling (default 100).
   - `YANDEX_GEOCODER_KEY` — backs `/geo/reverse` and `/geo/forward`. **It is NOT declared in `settings_base.py`** (read via `getattr(settings, 'YANDEX_GEOCODER_KEY', '')`), so it is empty out of the box and both geo endpoints return `400 "Geocoding not configured"` until it is added. Provide a manual-address-entry fallback.
+- **Required worker:** run `python manage.py process_smartfood_dispatch_jobs --interval 5 --batch-size 50`. Docker Compose provides this as the restartable `smartfood_dispatch` service and waits for the migrated web service, database, and Redis. The HTTP order path never dispatches. If this worker is absent while automatic dispatch is enabled, accepted orders remain PENDING until a worker or manager handles them. Its bounded loyalty settlement/repair sweep continues even when `SMARTFOOD_AUTO_DISPATCH=false`.
+- **Support/failure contract:** configure `BotConfig.support_phone`, `support_telegram`, or `support_email`. They are exposed by `/config.support` and appended to localized technical rejection copy when available. Telegram notification delivery is best-effort; the persisted order status returned by detail/track is authoritative.
 - **`CUSTOMER_WEBAPP_URL`** — the URL the customer bot opens for this Mini App, used by the bot's "Open app" button. Confirmed: env var name is `CUSTOMER_WEBAPP_URL`, declared in `settings_base.py` with default `'https://example.com'`; the deploy script sets it to `https://<host>/webapp/`. Only the **per-deployment value** needs confirming, not the var name.
 - **Session transport:** the server accepts the token via either the `Authorization: Bearer <token>` header **or** the `session_key` cookie (cookie checked first). For a Mini App, the Bearer header is recommended.
 
@@ -1012,6 +1055,7 @@ The Bearer-header approach in this guide does **not** require credentialed CORS 
 |---|---|
 | 2026-06-14 | Initial integration guide (customer Mini App API under `/api/smartfood`). |
 | 2026-06-14 | Corrections: `POST /auth` is 200/"Success" (not 201/"Created"); documented framework-level 405 envelope shape; clarified login 401-vs-403 logic; quantity is optional/defaults-to-1 with truncating coercion; `size_id` must be truthy-positive; `enabled` defaults to false on fresh install; added admin `/config/enable` toggle; resolved `CUSTOMER_WEBAPP_URL` and CORS from `// verify` to confirmed config; noted `YANDEX_GEOCODER_KEY` is undeclared so geo is off by default; exact `item_unavailable` strings; unrecognized `?status=` returns all; order `phone` may be `""`; logout is idempotent. |
+| 2026-08-08 | Public-launch contract: required UUID `client_order_id` and availability-independent idempotent replay, strict order input, connected-till new-checkout gate, worker-only crash-recoverable automatic dispatch/backoff, fenced claims, `effective_status`, POS delivery-address/status round-trip, paid+completed+tender-evidenced idempotent loyalty settlement/reversal, and terminal customer-safe technical rejection/support behavior. This supersedes the earlier manual-only dispatch, request-path dispatch, dispatch-time loyalty earn, and permissive quantity notes. |
 
 ---
 

@@ -11,6 +11,15 @@ from decimal import Decimal
 from base.helpers.response import ServiceResponse
 from smartfood.models import BotConfig, BotProduct, Size, Topping, ToppingGroup
 from smartfood.serializers import tri, uzs
+from smartfood.services.order_input import (
+    MAX_POS_TOTAL,
+    OrderInputError,
+    error_response,
+    normalize_cart_items,
+    normalize_order_type,
+    normalize_points,
+    normalize_tip,
+)
 
 CENT = Decimal('0.01')
 
@@ -27,13 +36,8 @@ class CartError(Exception):
 def _priced_line(item, lang):
     """item = {product_id, size_id?, topping_ids?[], quantity}. Returns a frozen
     priced line or raises CartError."""
-    product_id = item.get('product_id')
-    try:
-        quantity = int(item.get('quantity', 1))
-    except (TypeError, ValueError):
-        quantity = 0
-    if quantity <= 0:
-        raise CartError('invalid_quantity', 'Quantity must be greater than 0', 422)
+    product_id = item['product_id']
+    quantity = item['quantity']
 
     # Mirror the browse filter EXACTLY: a published+selling product whose CATEGORY
     # is unpublished/stopped must be rejected at submit too (else a sold-out
@@ -50,7 +54,7 @@ def _priced_line(item, lang):
     unit = Decimal(product.price)
 
     size = None
-    size_id = item.get('size_id')
+    size_id = item['size_id']
     if size_id:
         size = Size.objects.filter(id=size_id, product_id=product.id).first()
         if not size:
@@ -59,7 +63,7 @@ def _priced_line(item, lang):
             raise CartError('item_unavailable', 'Selected size is unavailable', 409)
         unit += Decimal(size.price_delta)
 
-    topping_ids = item.get('topping_ids') or []
+    topping_ids = item['topping_ids']
     toppings_snapshot = []
     chosen_by_group = {}
     if topping_ids:
@@ -108,11 +112,18 @@ def _priced_line(item, lang):
 
 def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None, lang='uz'):
     """Price a whole cart. Returns a dict of priced lines + totals; raises CartError."""
-    if not items:
-        raise CartError('empty_cart', 'Cart is empty', 422)
+    items = normalize_cart_items(items)
+    order_type = normalize_order_type(order_type)
+    points_used = normalize_points(points_used)
+    tip_d = normalize_tip(tip)
     cfg = BotConfig.load()
     lines = [_priced_line(it, lang) for it in items]
     subtotal = sum((ln['line_total'] for ln in lines), Decimal('0.00')).quantize(CENT)
+    if subtotal > MAX_POS_TOTAL:
+        raise OrderInputError(
+            'cart_total_too_large',
+            f'Order subtotal may not exceed {MAX_POS_TOTAL}',
+        )
 
     if cfg.min_order_amount and subtotal < Decimal(cfg.min_order_amount):
         raise CartError('min_order', f'Minimum order is {uzs(cfg.min_order_amount)}', 422)
@@ -124,7 +135,6 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
     else:
         delivery_fee, free = Decimal(cfg.delivery_fee), False
 
-    points_used = max(0, int(points_used or 0))
     discount = Decimal('0.00')
     if points_used and cfg.loyalty_point_value and customer is not None:
         points_used = min(points_used, max(0, customer.loyalty_points))
@@ -132,16 +142,14 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
     else:
         points_used = 0
 
-    try:
-        tip_d = Decimal(str(tip or 0))
-    except Exception:
-        tip_d = Decimal('0.00')
-    if tip_d < 0:
-        tip_d = Decimal('0.00')
-
     total = (subtotal + delivery_fee + tip_d - discount).quantize(CENT)
     if total < 0:
         total = Decimal('0.00')
+    if total > MAX_POS_TOTAL:
+        raise OrderInputError(
+            'cart_total_too_large',
+            f'Order total may not exceed {MAX_POS_TOTAL}',
+        )
 
     earned = 0
     if cfg.loyalty_earn_per and Decimal(cfg.loyalty_earn_per) > 0:
@@ -157,6 +165,8 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
         'total': total,
         'points_used': points_used,
         'points_earned': earned,
+        'normalized_items': items,
+        'order_type': order_type,
     }
 
 
@@ -188,4 +198,6 @@ class CartService:
             priced = price_cart(items, order_type, tip, points_used, customer, lang)
         except CartError as e:
             return {'success': False, 'code': e.code, 'message': e.message}, e.http
+        except OrderInputError as e:
+            return error_response(e)
         return ServiceResponse.success(data=quote_dict(priced, lang))

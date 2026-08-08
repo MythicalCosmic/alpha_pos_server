@@ -19,6 +19,8 @@ A bot order is created PENDING; an operator dispatches it to a specific on-duty
 cashier, which creates a real base.Order under that cashier (DispatchService).
 """
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
 
 LANG_CHOICES = (('uz', 'Uzbek'), ('ru', 'Russian'), ('en', 'English'))
 
@@ -277,6 +279,8 @@ class BotOrder(TimeStamped):
         CARD = 'CARD', 'Card'
 
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='orders')
+    client_order_id = models.UUIDField(null=True, blank=True)
+    request_fingerprint = models.CharField(max_length=64, blank=True, default='')
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
     order_type = models.CharField(max_length=10, choices=OrderType.choices, default=OrderType.DELIVERY)
     address = models.ForeignKey(Address, on_delete=models.SET_NULL, null=True, blank=True)
@@ -291,6 +295,9 @@ class BotOrder(TimeStamped):
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     loyalty_points_used = models.IntegerField(default=0)
     loyalty_points_earned = models.IntegerField(default=0)
+    loyalty_earned_settled_at = models.DateTimeField(null=True, blank=True)
+    loyalty_spend_restored_at = models.DateTimeField(null=True, blank=True)
+    loyalty_earn_reversed_at = models.DateTimeField(null=True, blank=True)
     payment_method = models.CharField(max_length=8, choices=Payment.choices, default=Payment.CASH)
 
     # Dispatch linkage
@@ -306,6 +313,13 @@ class BotOrder(TimeStamped):
     class Meta:
         ordering = ['-id']
         indexes = [models.Index(fields=['status', 'created_at'])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['customer', 'client_order_id'],
+                condition=Q(client_order_id__isnull=False),
+                name='sf_order_customer_client_id_uniq',
+            ),
+        ]
 
     @property
     def code(self):
@@ -328,6 +342,43 @@ class BotOrderItem(TimeStamped):
 
     def __str__(self):
         return f"BotOrderItem({self.product_id} x{self.quantity})"
+
+
+class BotOrderDispatchJob(TimeStamped):
+    """Durable, retryable request to turn a BotOrder into a branch POS Order."""
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        PROCESSING = 'PROCESSING', 'Processing'
+        DONE = 'DONE', 'Done'
+
+    bot_order = models.OneToOneField(
+        BotOrder,
+        on_delete=models.CASCADE,
+        related_name='dispatch_job',
+    )
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    claim_token = models.UUIDField(null=True, blank=True, editable=False)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        ordering = ['next_attempt_at', 'id']
+        indexes = [models.Index(
+            fields=['status', 'next_attempt_at'],
+            name='sf_dispatch_status_next_idx',
+        )]
+
+    def __str__(self):
+        return f"BotOrderDispatchJob({self.bot_order_id}, {self.status}, {self.attempts})"
 
 
 # --------------------------------------------------------------------------- #

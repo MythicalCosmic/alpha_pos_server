@@ -77,20 +77,25 @@ def _bot_customer_user():
 
 
 def _notify(bot_order, event):
-    try:
-        from smartfood.services.notification_service import notify_customer
-        notify_customer(bot_order, event)
-    except Exception:
-        logger.debug('customer notify failed (%s)', event, exc_info=True)
-    # Push the same transition to the customer's Mini App over WebSocket, AFTER
-    # the surrounding transaction commits (so the client never sees a status that
-    # was rolled back). Best-effort — realtime never breaks the order flow.
-    try:
-        from smartfood.realtime import publish_bot_order_event
-        _oid = bot_order.id
-        transaction.on_commit(lambda: publish_bot_order_event(_oid, event))
-    except Exception:
-        logger.debug('customer ws publish schedule failed (%s)', event, exc_info=True)
+    bot_order_id = bot_order.id
+
+    def notify_committed():
+        committed = (BotOrder.objects.select_related('customer')
+                     .filter(id=bot_order_id).first())
+        if committed is None:
+            return
+        try:
+            from smartfood.realtime import publish_bot_order_event
+            publish_bot_order_event(bot_order_id, event)
+        except Exception:
+            logger.debug('customer ws publish failed (%s)', event, exc_info=True)
+        try:
+            from smartfood.services.notification_service import notify_customer
+            notify_customer(committed, event)
+        except Exception:
+            logger.warning('customer notify failed (%s)', event, exc_info=True)
+
+    transaction.on_commit(notify_committed, robust=True)
 
 
 class DispatchService:
@@ -172,6 +177,7 @@ class DispatchService:
             order_type=bot_order.order_type,          # DELIVERY / PICKUP (both valid)
             order_origin=Order.Origin.TELEGRAM,
             phone_number=bot_order.phone_number,
+            delivery_address=bot_order.address_text,
             description=description,
             status='PREPARING',
             is_paid=False,
@@ -245,15 +251,6 @@ class DispatchService:
                 'Stock processing failed; the order was not dispatched. Please retry.'
             )
 
-        # Credit earned loyalty points now that it's a real order (via the ledger).
-        if bot_order.loyalty_points_earned:
-            from smartfood.models import LoyaltyTransaction
-            from smartfood.services.loyalty_service import LoyaltyService
-            LoyaltyService.record(
-                bot_order.customer_id, LoyaltyTransaction.Kind.EARN_ORDER,
-                bot_order.loyalty_points_earned,
-                reason=f'Earned on order {bot_order.code}', bot_order=bot_order)
-
         bot_order.pos_order = order
         bot_order.dispatched_cashier_id = cashier_id
         bot_order.dispatched_by = operator
@@ -284,17 +281,14 @@ class DispatchService:
         if bot_order.status != BotOrder.Status.PENDING:
             return {'success': False, 'code': 'already_handled',
                     'message': f'Order already {bot_order.status.lower()}'}, 409
-        if bot_order.loyalty_points_used:   # refund reserved points (via the ledger)
-            from smartfood.models import LoyaltyTransaction
-            from smartfood.services.loyalty_service import LoyaltyService
-            LoyaltyService.record(
-                bot_order.customer_id, LoyaltyTransaction.Kind.REFUND,
-                bot_order.loyalty_points_used,
-                reason=f'Refund rejected order {bot_order.code}', bot_order=bot_order)
         bot_order.status = BotOrder.Status.REJECTED
         bot_order.reject_reason = (reason or '')[:200]
         bot_order.dispatched_by = operator
         bot_order.save(update_fields=['status', 'reject_reason', 'dispatched_by', 'updated_at'])
+        from smartfood.services.loyalty_settlement_service import (
+            reconcile_bot_order_loyalty,
+        )
+        reconcile_bot_order_loyalty(bot_order.id)
         _notify(bot_order, 'rejected')
         return ServiceResponse.success(data={'bot_order_id': bot_order.id, 'status': bot_order.status})
 

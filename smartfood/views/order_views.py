@@ -1,8 +1,8 @@
 """Customer orders: create + list (active|history), detail, cancel.
 
-GET /orders lists; POST /orders creates. Create additionally requires an
-on-duty cashier (require_open_with_cashier), so the two methods can't share a
-single decorator stack — they are dispatched as separate inner handlers.
+GET /orders lists; POST /orders creates. Availability is checked inside the
+create service after idempotency lookup so a retry can always recover the
+original response even if the till goes offline after accepting it.
 """
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -12,12 +12,10 @@ from django.urls import path
 from base.helpers.request import parse_json_body
 from base.helpers.response import json_response
 from smartfood.security import customer_required
-from smartfood.gating import require_open_with_cashier
 from smartfood.services.order_service import BotOrderService
 
 
 @require_POST
-@require_open_with_cashier
 def _create_order(request):
     data, error = parse_json_body(request)
     if error:
@@ -32,6 +30,7 @@ def _create_order(request):
         tip=data.get('tip', 0),
         points_used=data.get('points_used', 0),
         payment_method=data.get('payment_method', 'CASH'),
+        client_order_id=data.get('client_order_id'),
         lang=request.customer.language,
     )
     return JsonResponse(result, status=status)
