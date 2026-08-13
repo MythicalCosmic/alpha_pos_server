@@ -43,5 +43,7 @@ def test_self_redeploy_reconciles_the_customer_delivery_route():
 
     assert 'reconcile_delivery.sh' in source
     assert 'CUSTOMER_WEBAPP_URL=' in reconcile
+    assert 'getChatMenuButton' in reconcile
     assert 'setChatMenuButton' in reconcile
     assert 'smartfood-webapp' in reconcile
+    assert 'CONFIGURED_DELIVERY_URL' in source

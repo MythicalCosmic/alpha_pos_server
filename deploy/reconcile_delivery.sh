@@ -110,15 +110,22 @@ fi
 
 BOT_TOKEN="$(sed -n 's/^CUSTOMER_BOT_TOKEN=//p' "$ENV_FILE" | head -n1)"
 if [ -n "$BOT_TOKEN" ]; then
-    MENU_BUTTON="$(printf \
-        '{"type":"web_app","text":"Order food","web_app":{"url":"%s"}}' \
-        "$DELIVERY_URL")"
-    if curl -fsS --max-time 15 -X POST \
-        "https://api.telegram.org/bot${BOT_TOKEN}/setChatMenuButton" \
-        --data-urlencode "menu_button=${MENU_BUTTON}" >/dev/null; then
-        echo "delivery reconcile: Telegram menu -> $DELIVERY_URL"
+    MENU_STATE="$(curl -fsS --max-time 15 \
+        "https://api.telegram.org/bot${BOT_TOKEN}/getChatMenuButton" 2>/dev/null \
+        || true)"
+    if printf '%s' "$MENU_STATE" | grep -Fq "\"url\":\"${DELIVERY_URL}\""; then
+        echo "delivery reconcile: Telegram menu already canonical"
     else
-        echo "delivery reconcile: Telegram menu update failed; next deploy will retry" >&2
+        MENU_BUTTON="$(printf \
+            '{"type":"web_app","text":"Order food","web_app":{"url":"%s"}}' \
+            "$DELIVERY_URL")"
+        if curl -fsS --max-time 15 -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/setChatMenuButton" \
+            --data-urlencode "menu_button=${MENU_BUTTON}" >/dev/null; then
+            echo "delivery reconcile: Telegram menu -> $DELIVERY_URL"
+        else
+            echo "delivery reconcile: Telegram menu update failed; next deploy will retry" >&2
+        fi
     fi
 fi
 

@@ -39,12 +39,20 @@ if [ -z "$PUBLIC_HOST" ]; then
 fi
 
 # Keep the Telegram menu, bot environment, webapp edge attachment, and Caddy's
-# canonical delivery hostname aligned even when Git is already up to date. This
-# also repairs the live route on the timer invocation after this script itself
-# was first pulled by an older revision of the deploy loop.
+# canonical delivery hostname aligned when the route or persisted URL needs
+# repair. This also repairs the live route on the timer invocation after this
+# script itself was first pulled by an older revision of the deploy loop.
 if [ -x "$ALPHA_DIR/deploy/reconcile_delivery.sh" ]; then
-    bash "$ALPHA_DIR/deploy/reconcile_delivery.sh" "$ALPHA_DIR" \
-        || echo "$(date -Is) WARNING: delivery route reconciliation will retry" >&2
+    PUBLIC_IP="${PUBLIC_HOST#pos.}"
+    PUBLIC_IP="${PUBLIC_IP%.nip.io}"
+    DELIVERY_URL="https://delivery.${PUBLIC_IP}.nip.io/webapp/"
+    CONFIGURED_DELIVERY_URL="$(sed -n 's/^CUSTOMER_WEBAPP_URL=//p' .env | head -n1)"
+    if [ "$CONFIGURED_DELIVERY_URL" != "$DELIVERY_URL" ] \
+        || ! curl -fsS --max-time 10 \
+            "https://delivery.${PUBLIC_IP}.nip.io/healthz" >/dev/null 2>&1; then
+        bash "$ALPHA_DIR/deploy/reconcile_delivery.sh" "$ALPHA_DIR" "$PUBLIC_IP" \
+            || echo "$(date -Is) WARNING: delivery route reconciliation will retry" >&2
+    fi
 fi
 
 if [ "$LOCAL" = "$REMOTE" ]; then
