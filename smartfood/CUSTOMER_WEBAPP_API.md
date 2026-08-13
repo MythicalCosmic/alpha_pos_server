@@ -9,9 +9,9 @@
 
 The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a webapp launched from the customer bot). The customer browses a menu, builds a cart, redeems loyalty points, places an order, and tracks it — all against a single store.
 
-- **Example host:** `https://pos.78.111.90.65.nip.io`
+- **Example host:** `https://delivery.78.111.90.65.nip.io`
 - **Path prefix (all customer routes):** `/api/smartfood`
-- **Full example URL:** `https://pos.78.111.90.65.nip.io/api/smartfood/config`
+- **Full example URL:** `https://delivery.78.111.90.65.nip.io/api/smartfood/config`
 - **No trailing slash** on any route (e.g. `/api/smartfood/me`, `/api/smartfood/auth`).
 
 **High-level request flow:**
@@ -40,7 +40,7 @@ The minimum to make an authenticated call:
 const initData = window.Telegram.WebApp.initData; // raw querystring, do NOT modify
 
 // 2) Exchange it for a session token (one time per launch).
-const loginRes = await fetch('https://pos.78.111.90.65.nip.io/api/smartfood/auth', {
+const loginRes = await fetch('https://delivery.78.111.90.65.nip.io/api/smartfood/auth', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ init_data: initData }),
@@ -51,10 +51,10 @@ const token = loginRes.data.token; // 64-hex bearer
 // 3) Use the token on every subsequent call.
 const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-const config = await fetch('https://pos.78.111.90.65.nip.io/api/smartfood/config', { headers })
+const config = await fetch('https://delivery.78.111.90.65.nip.io/api/smartfood/config', { headers })
   .then(r => r.json());
 
-const categories = await fetch('https://pos.78.111.90.65.nip.io/api/smartfood/catalog/categories', { headers })
+const categories = await fetch('https://delivery.78.111.90.65.nip.io/api/smartfood/catalog/categories', { headers })
   .then(r => r.json());
 ```
 
@@ -64,7 +64,7 @@ const categories = await fetch('https://pos.78.111.90.65.nip.io/api/smartfood/ca
 
 ```js
 // smartfood-api.js
-const BASE = 'https://pos.78.111.90.65.nip.io/api/smartfood';
+const BASE = 'https://delivery.78.111.90.65.nip.io/api/smartfood';
 
 let _token = null;
 export function setToken(t) { _token = t; }
@@ -404,7 +404,7 @@ These are the states that block ordering. **Closed states are HTTP 200, not erro
 
 ## 6. Endpoint Reference
 
-All paths are relative to `https://pos.78.111.90.65.nip.io/api/smartfood`. Unless stated, every endpoint requires `Authorization: Bearer <token>` and can return the shared auth errors from §4 (401/403). Calling any route with the wrong HTTP method returns a framework-level `405` in the `{status, status_code, success, data, meta}` shape (see §3), not a `{success, message}` envelope.
+All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. Unless stated, every endpoint requires `Authorization: Bearer <token>` and can return the shared auth errors from §4 (401/403). Calling any route with the wrong HTTP method returns a framework-level `405` in the `{status, status_code, success, data, meta}` shape (see §3), not a `{success, message}` envelope.
 
 ### 6.1 Config
 

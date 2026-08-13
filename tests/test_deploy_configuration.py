@@ -22,3 +22,26 @@ def test_compose_passes_web_concurrency_to_django_and_uvicorn():
     compose = (ROOT / 'docker-compose.yaml').read_text(encoding='utf-8')
 
     assert 'WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}' in compose
+
+
+@pytest.mark.parametrize('script', ('deploy.sh', 'deploy/deploy.sh'))
+def test_deploy_scripts_use_one_customer_delivery_host(script):
+    source = (ROOT / script).read_text(encoding='utf-8')
+
+    assert 'DELIVERY_HOST="delivery.${IP}.nip.io"' in source
+    assert 'DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"' in source
+    assert 'reverse_proxy smartfood-webapp:80' in source
+    for legacy_host in ('pos', 'smartfood', 'webapp'):
+        assert f'"https://{legacy_host}.${{IP}}.nip.io/webapp/"' in source
+
+
+def test_self_redeploy_reconciles_the_customer_delivery_route():
+    source = (ROOT / 'deploy' / 'auto_redeploy.sh').read_text(encoding='utf-8')
+    reconcile = (ROOT / 'deploy' / 'reconcile_delivery.sh').read_text(
+        encoding='utf-8',
+    )
+
+    assert 'reconcile_delivery.sh' in source
+    assert 'CUSTOMER_WEBAPP_URL=' in reconcile
+    assert 'setChatMenuButton' in reconcile
+    assert 'smartfood-webapp' in reconcile

@@ -39,9 +39,21 @@ compose overrides, then builds and starts **alpha_pos**, **pos_control**, and
 **caddy**. It prints the one-time finishing commands (license the cloud, create
 admins) — run those, then verify:
 
+The customer Telegram Mini App has one canonical public URL:
+`https://delivery.<IP>.nip.io/webapp/`. The generated Caddy route forwards that
+hostname to the webapp container on the shared `edge` network.
+Existing `pos.`, `smartfood.`, or `webapp.` Mini App URLs in the server `.env`
+are migrated to this canonical URL on the next full deploy.
+
+`deploy/reconcile_delivery.sh` also runs from the self-redeploy timer. It keeps
+the existing `smartfood-webapp` container attached to the edge network, reloads
+Caddy, recreates the bot when its URL changes, and synchronizes the Telegram
+menu button to the canonical URL.
+
 ```bash
 curl -fsS https://pos.<IP>.nip.io/healthz          # -> ok <12-character-git-sha>
 curl -fsS https://control.<IP>.nip.io/healthz      # -> ok
+curl -fsS https://delivery.<IP>.nip.io/healthz     # -> ok
 ```
 
 > First HTTPS hit can take ~30s while Caddy obtains certificates. If it fails,

@@ -15,6 +15,8 @@ umask 077
 IP="${1:?Usage: ./deploy.sh <SERVER_PUBLIC_IP>}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST="pos.${IP}.nip.io"
+DELIVERY_HOST="delivery.${IP}.nip.io"
+DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"
 CONTROL_URL="${LICENSE_CONTROL_CENTER_URL:-https://control.${IP}.nip.io}"
 
 echo ">> Alpha POS server  ->  https://${HOST}"
@@ -47,7 +49,12 @@ BTOK="$(keep DESKTOP_BRANCH_TOKEN)";    BTOK="${BTOK:-$(rand 32)}"
 # server-side .env; deploys preserve it. Never bake a live bot credential into
 # source. Set YANDEX_GEOCODER_KEY there for server-side address geocoding.
 CBOT="$(keep CUSTOMER_BOT_TOKEN)"
-CWEBAPP="$(keep CUSTOMER_WEBAPP_URL)"; CWEBAPP="${CWEBAPP:-https://smartfood.${IP}.nip.io/webapp/}"
+CWEBAPP="$(keep CUSTOMER_WEBAPP_URL)"
+case "$CWEBAPP" in
+    ""|"https://pos.${IP}.nip.io/webapp/"|"https://smartfood.${IP}.nip.io/webapp/"|"https://webapp.${IP}.nip.io/webapp/")
+        CWEBAPP="$DELIVERY_URL"
+        ;;
+esac
 CWHSEC="$(keep CUSTOMER_WEBHOOK_SECRET)"; CWHSEC="${CWHSEC:-$(rand 32)}"
 YGEO="$(keep YANDEX_GEOCODER_KEY)"
 # Bootstrap credentials are generated once and kept only in the server-side
@@ -169,6 +176,10 @@ cat > "$DIR/caddy/Caddyfile" <<EOF
 ${HOST} {
 	reverse_proxy alpha-web:8000
 }
+
+${DELIVERY_HOST} {
+	reverse_proxy smartfood-webapp:80
+}
 EOF
 cat > "$DIR/caddy/docker-compose.yml" <<'EOF'
 services:
@@ -195,6 +206,7 @@ SHA="$(git -C "$DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 ( cd "$DIR/caddy" && docker compose up -d \
     && ( docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
          || docker compose restart caddy ) )
+bash "$DIR/deploy/reconcile_delivery.sh" "$DIR" "$IP"
 
 # --- 7. license + admin (idempotent) --------------------------------------
 DC="cd \"$DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml exec -T web python manage.py"
@@ -217,6 +229,7 @@ eval "$DC bootstrap_admin" || true
 echo ""
 echo "============================================================"
 echo "  Alpha POS server is up:  https://${HOST}"
+echo "  Customer delivery app:   ${DELIVERY_URL}"
 echo "  POS API admin credentials are stored in the root-only .env file."
 echo "  No predictable Django /admin/ accounts are created automatically."
 echo "  Desktop branch token is stored in the root-only .env file."

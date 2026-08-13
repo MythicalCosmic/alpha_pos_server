@@ -38,6 +38,15 @@ if [ -z "$PUBLIC_HOST" ]; then
     exit 1
 fi
 
+# Keep the Telegram menu, bot environment, webapp edge attachment, and Caddy's
+# canonical delivery hostname aligned even when Git is already up to date. This
+# also repairs the live route on the timer invocation after this script itself
+# was first pulled by an older revision of the deploy loop.
+if [ -x "$ALPHA_DIR/deploy/reconcile_delivery.sh" ]; then
+    bash "$ALPHA_DIR/deploy/reconcile_delivery.sh" "$ALPHA_DIR" \
+        || echo "$(date -Is) WARNING: delivery route reconciliation will retry" >&2
+fi
+
 if [ "$LOCAL" = "$REMOTE" ]; then
     CURRENT_SHA="$(git rev-parse --short=12 HEAD)"
     if bash "$ALPHA_DIR/deploy/verify_public_route.sh" \

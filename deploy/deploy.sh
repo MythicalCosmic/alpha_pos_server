@@ -20,6 +20,8 @@ CONTROL_DIR="${CONTROL_DIR:-$(dirname "$ALPHA_DIR")/pos_control}"
 DEPLOY_DIR="$ALPHA_DIR/deploy"
 
 POS_HOST="pos.${IP}.nip.io"
+DELIVERY_HOST="delivery.${IP}.nip.io"
+DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"
 CONTROL_HOST="control.${IP}.nip.io"
 
 HAVE_CONTROL=false
@@ -88,7 +90,12 @@ A_AIFALLBACKS="$(keep "$A_ENV" AI_FALLBACK_PROVIDERS)"; A_AIFALLBACKS="${A_AIFAL
 # Smart Food customer Telegram bot (Mini App). A real token is never committed;
 # set it once in .env and subsequent deploys preserve it.
 A_CBOT="$(keep "$A_ENV" CUSTOMER_BOT_TOKEN)"
-A_CWEBAPP="$(keep "$A_ENV" CUSTOMER_WEBAPP_URL)"; A_CWEBAPP="${A_CWEBAPP:-https://smartfood.${IP}.nip.io/webapp/}"
+A_CWEBAPP="$(keep "$A_ENV" CUSTOMER_WEBAPP_URL)"
+case "$A_CWEBAPP" in
+    ""|"https://pos.${IP}.nip.io/webapp/"|"https://smartfood.${IP}.nip.io/webapp/"|"https://webapp.${IP}.nip.io/webapp/")
+        A_CWEBAPP="$DELIVERY_URL"
+        ;;
+esac
 A_CWHSEC="$(keep "$A_ENV" CUSTOMER_WEBHOOK_SECRET)"; A_CWHSEC="${A_CWHSEC:-$(rand 32)}"
 A_YGEO="$(keep "$A_ENV" YANDEX_GEOCODER_KEY)"
 A_SAD="$(keep "$A_ENV" SMARTFOOD_AUTO_DISPATCH)"; A_SAD="${A_SAD:-false}"
@@ -243,6 +250,10 @@ mkdir -p "$DEPLOY_DIR/caddy"
     echo "${POS_HOST} {"
     echo "	reverse_proxy alpha-web:8000"
     echo "}"
+    echo ""
+    echo "${DELIVERY_HOST} {"
+    echo "	reverse_proxy smartfood-webapp:80"
+    echo "}"
     if $HAVE_CONTROL; then
         echo ""
         echo "${CONTROL_HOST} {"
@@ -266,6 +277,7 @@ echo ">> starting/reloading caddy ..."
 ( cd "$DEPLOY_DIR/caddy" && docker compose up -d \
     && ( docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null \
          || docker compose restart caddy ) )
+bash "$ALPHA_DIR/deploy/reconcile_delivery.sh" "$ALPHA_DIR" "$IP"
 
 # --- 6. provision (idempotent, auto) --------------------------------------
 A="cd \"$ALPHA_DIR\" && docker compose -f docker-compose.yaml -f docker-compose.edge.yml"
@@ -297,8 +309,10 @@ cat <<EOF
 
 # 2) Verify (give Caddy ~30s on first run to issue the certificate):
 curl -fsS https://${POS_HOST}/healthz && echo "  POS OK"
+curl -fsS https://${DELIVERY_HOST}/healthz && echo "  DELIVERY OK"
 
 Cloud POS admin : https://${POS_HOST}/admin/  (login admin@alpha.local)
+Customer app    : ${DELIVERY_URL}
 
 # Desktop sync config — retrieve DESKTOP_BRANCH_TOKEN securely from $A_ENV:
 #   CLOUD_SYNC_URL   = https://${POS_HOST}/api/sync
