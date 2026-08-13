@@ -67,41 +67,39 @@ else
     exit 1
 fi
 
-CADDY_FOUND=false
-for CADDY_DIR in "$ALPHA_DIR/deploy/caddy" "$ALPHA_DIR/caddy"; do
-    CADDYFILE="$CADDY_DIR/Caddyfile"
-    CADDY_COMPOSE="$CADDY_DIR/docker-compose.yml"
-    [ -f "$CADDYFILE" ] && [ -f "$CADDY_COMPOSE" ] || continue
-    CADDY_FOUND=true
+CADDY_ID="$(docker ps \
+    --filter label=com.docker.compose.service=caddy \
+    --format '{{.ID}}' | head -n1)"
+[ -n "$CADDY_ID" ] \
+    || { echo "delivery reconcile: active Caddy container not found" >&2; exit 1; }
+CADDYFILE="$(docker inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Source}}{{end}}{{end}}' \
+    "$CADDY_ID")"
+[ -f "$CADDYFILE" ] \
+    || { echo "delivery reconcile: active Caddyfile mount not found" >&2; exit 1; }
 
-    if ! grep -Fqx "$DELIVERY_HOST {" "$CADDYFILE"; then
-        CADDY_BACKUP="$(mktemp "${CADDYFILE}.delivery.XXXXXX")"
-        cp "$CADDYFILE" "$CADDY_BACKUP"
-        {
-            echo ""
-            echo "$DELIVERY_HOST {"
-            printf '\treverse_proxy %s:80\n' "$WEBAPP_CONTAINER"
-            echo "}"
-        } >> "$CADDYFILE"
+if ! grep -Fqx "$DELIVERY_HOST {" "$CADDYFILE"; then
+    CADDY_BACKUP="$(mktemp "${CADDYFILE}.delivery.XXXXXX")"
+    cp "$CADDYFILE" "$CADDY_BACKUP"
+    {
+        echo ""
+        echo "$DELIVERY_HOST {"
+        printf '\treverse_proxy %s:80\n' "$WEBAPP_CONTAINER"
+        echo "}"
+    } >> "$CADDYFILE"
 
-        if ! docker compose -f "$CADDY_COMPOSE" exec -T caddy \
-            caddy validate --config /etc/caddy/Caddyfile >/dev/null; then
-            mv "$CADDY_BACKUP" "$CADDYFILE"
-            echo "delivery reconcile: invalid Caddy configuration; restored backup" >&2
-            exit 1
-        fi
-        rm "$CADDY_BACKUP"
-        echo "delivery reconcile: added Caddy route for $DELIVERY_HOST"
+    if ! docker exec "$CADDY_ID" \
+        caddy validate --config /etc/caddy/Caddyfile >/dev/null; then
+        mv "$CADDY_BACKUP" "$CADDYFILE"
+        echo "delivery reconcile: invalid Caddy configuration; restored backup" >&2
+        exit 1
     fi
+    rm "$CADDY_BACKUP"
+    echo "delivery reconcile: added Caddy route for $DELIVERY_HOST"
+fi
 
-    CADDY_ID="$(docker compose -f "$CADDY_COMPOSE" ps -q caddy 2>/dev/null || true)"
-    if [ -n "$CADDY_ID" ]; then
-        docker compose -f "$CADDY_COMPOSE" exec -T caddy \
-            caddy reload --config /etc/caddy/Caddyfile >/dev/null
-    fi
-done
-
-$CADDY_FOUND || { echo "delivery reconcile: active Caddy configuration not found" >&2; exit 1; }
+docker exec "$CADDY_ID" \
+    caddy reload --config /etc/caddy/Caddyfile >/dev/null
 
 if $ENV_CHANGED; then
     COMPOSE_ARGS=(-f "$ALPHA_DIR/docker-compose.yaml")
