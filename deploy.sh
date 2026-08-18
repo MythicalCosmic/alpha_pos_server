@@ -17,6 +17,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST="pos.${IP}.nip.io"
 DELIVERY_HOST="delivery.${IP}.nip.io"
 DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"
+ADMIN_HOST="alpha-pos-admin.${IP}.nip.io"
 CONTROL_URL="${LICENSE_CONTROL_CENTER_URL:-https://control.${IP}.nip.io}"
 
 echo ">> Alpha POS server  ->  https://${HOST}"
@@ -180,6 +181,10 @@ ${HOST} {
 ${DELIVERY_HOST} {
 	reverse_proxy smartfood-webapp:80
 }
+
+${ADMIN_HOST} {
+	reverse_proxy alpha-pos-admin:80
+}
 EOF
 cat > "$DIR/caddy/docker-compose.yml" <<'EOF'
 services:
@@ -230,6 +235,7 @@ echo ""
 echo "============================================================"
 echo "  Alpha POS server is up:  https://${HOST}"
 echo "  Customer delivery app:   ${DELIVERY_URL}"
+echo "  Telegram bot admin:      https://${ADMIN_HOST}"
 echo "  POS API admin credentials are stored in the root-only .env file."
 echo "  No predictable Django /admin/ accounts are created automatically."
 echo "  Desktop branch token is stored in the root-only .env file."
