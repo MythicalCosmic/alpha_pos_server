@@ -18,6 +18,8 @@ Design rules (see the build plan):
 A bot order is created PENDING; an operator dispatches it to a specific on-duty
 cashier, which creates a real base.Order under that cashier (DispatchService).
 """
+import uuid
+
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -44,6 +46,10 @@ class BotConfig(models.Model):
     with no restart.
     """
     enabled = models.BooleanField(default=False)
+    # Optional runtime override for settings.CUSTOMER_BOT_TOKEN. The operator
+    # API never serializes this value; it only returns configured + masked
+    # metadata. Keeping the env value as a fallback preserves existing deploys.
+    bot_token = models.CharField(max_length=200, blank=True, default='')
     currency = models.CharField(max_length=8, default='UZS')
     delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     free_delivery_threshold = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -227,6 +233,45 @@ class CustomerSession(models.Model):
 
     def __str__(self):
         return f"CustomerSession(customer={self.customer_id})"
+
+
+class BotVisit(models.Model):
+    """One Telegram Mini App page boot.
+
+    Sessions are intentionally not analytics: the client reuses them across
+    boots and logout removes them. A client-generated UUID makes the explicit
+    visit endpoint safe to retry without inflating the dashboard.
+    """
+
+    class Source(models.TextChoices):
+        MINI_APP = 'MINI_APP', 'Telegram Mini App'
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='visits',
+    )
+    client_visit_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    source = models.CharField(
+        max_length=16,
+        choices=Source.choices,
+        default=Source.MINI_APP,
+    )
+    user_agent = models.CharField(max_length=256, blank=True, default='')
+    ip_address = models.CharField(max_length=45, blank=True, default='')
+    visited_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-visited_at', '-id']
+        indexes = [
+            models.Index(
+                fields=['customer', '-visited_at'],
+                name='sf_visit_customer_at_idx',
+            ),
+        ]
+
+    def __str__(self):
+        return f"BotVisit(customer={self.customer_id}, at={self.visited_at})"
 
 
 # --------------------------------------------------------------------------- #

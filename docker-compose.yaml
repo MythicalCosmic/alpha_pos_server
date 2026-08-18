@@ -170,14 +170,9 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     image: alpha_pos_server:local
     command:
-      - /bin/sh
-      - -c
-      - |
-        if [ -n "$${CUSTOMER_BOT_TOKEN:-}" ]; then
-          exec python manage.py run_customer_bot
-        fi
-        echo "CUSTOMER_BOT_TOKEN is unset; bot poller is parked."
-        exec tail -f /dev/null
+      - python
+      - manage.py
+      - run_customer_bot
     # unless-stopped: restart the poller on ANY exit AND on host reboot. Docker does
     # NOT auto-start `on-failure` containers after a reboot, which left the customer
     # bot down after a server restart. When no token is configured the command parks

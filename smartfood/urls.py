@@ -11,7 +11,9 @@ from smartfood.views import (
     tracking_views,
     address_views,
     loyalty_views,
+    media_views,
     support_views,
+    visit_views,
 )
 
 urlpatterns = (
@@ -23,5 +25,7 @@ urlpatterns = (
     + tracking_views.urlpatterns
     + address_views.urlpatterns
     + loyalty_views.urlpatterns
+    + media_views.urlpatterns
     + support_views.urlpatterns
+    + visit_views.urlpatterns
 )

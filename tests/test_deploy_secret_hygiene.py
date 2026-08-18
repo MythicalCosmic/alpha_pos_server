@@ -62,11 +62,11 @@ def test_deploy_keeps_generated_env_files_private(relative):
     assert 'bootstrap_admin --' not in text
 
 
-def test_unconfigured_bot_is_parked_without_a_restart_loop():
+def test_bot_poller_stays_alive_for_runtime_token_configuration():
     compose = (ROOT / 'docker-compose.yaml').read_text(encoding='utf-8')
 
-    assert '$${CUSTOMER_BOT_TOKEN:-}' in compose
-    assert 'exec tail -f /dev/null' in compose
+    assert 'run_customer_bot' in compose
+    assert 'exec tail -f /dev/null' not in compose
 
 
 def test_env_heredoc_cannot_execute_comment_substitutions():

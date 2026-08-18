@@ -23,7 +23,7 @@ from smartfood.services.dispatch_service import DispatchService
 @manager_required
 def config(request):
     if request.method == "GET":
-        result, status = BotConfigService.get()
+        result, status = BotConfigService.get_admin()
         return JsonResponse(result, status=status)
 
     data, error = parse_json_body(request)

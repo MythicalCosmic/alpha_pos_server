@@ -51,7 +51,10 @@ def verify_init_data(init_data, bot_token=None, max_age=None):
     `hash`, sorted by key, joined by '\\n'; secret = HMAC_SHA256('WebAppData',
     bot_token); valid iff HMAC_SHA256(secret, data_check_string) == hash.
     """
-    bot_token = bot_token if bot_token is not None else (getattr(settings, 'CUSTOMER_BOT_TOKEN', '') or '')
+    if bot_token is None:
+        from smartfood.credentials import customer_bot_token
+
+        bot_token = customer_bot_token()
     if not init_data or not bot_token:
         return None
     try:

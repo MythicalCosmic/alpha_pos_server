@@ -2,8 +2,7 @@
 import logging
 
 import requests
-from django.conf import settings
-
+from smartfood.credentials import customer_bot_token
 from smartfood.models import BotConfig
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ def technical_rejection_reason(customer=None):
 
 def notify_customer(bot_order, event):
     """Send a localized status message to the customer's Telegram chat."""
-    token = getattr(settings, 'CUSTOMER_BOT_TOKEN', '') or ''
+    token = customer_bot_token()
     customer = getattr(bot_order, 'customer', None)
     chat_id = getattr(customer, 'telegram_id', None)
     if not token or not chat_id:

@@ -14,13 +14,35 @@ from base.helpers.request import parse_json_body
 from base.helpers.response import json_response
 from base.security.permissions import manager_required
 from smartfood.services.admin_catalog_service import AdminCatalogService
+from smartfood.services.media_service import ProductMediaService
 
 
 # ---- products ------------------------------------------------------------- #
 @require_GET
 @manager_required
+def catalog_products(request):
+    result, status = AdminCatalogService.list_products(
+        q=request.GET.get('q', ''),
+        availability=request.GET.get('availability', 'all'),
+    )
+    return JsonResponse(result, status=status)
+
+
+@require_GET
+@manager_required
 def unpublished_products(request):
     result, status = AdminCatalogService.list_unpublished_products()
+    return JsonResponse(result, status=status)
+
+
+@csrf_exempt
+@require_POST
+@manager_required
+def import_products(request):
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    result, status = AdminCatalogService.import_products(data.get('product_ids'))
     return JsonResponse(result, status=status)
 
 
@@ -59,6 +81,20 @@ def stop_product(request, product_id):
 @manager_required
 def resume_product(request, product_id):
     result, status = AdminCatalogService.set_product_selling(product_id, True)
+    return JsonResponse(result, status=status)
+
+
+@csrf_exempt
+@require_http_methods(['POST', 'DELETE'])
+@manager_required
+def product_image(request, product_id):
+    if request.method == 'DELETE':
+        result, status = ProductMediaService.remove(product_id)
+    else:
+        result, status = ProductMediaService.upload(
+            product_id,
+            request.FILES.get('image'),
+        )
     return JsonResponse(result, status=status)
 
 
@@ -181,12 +217,15 @@ def topping_detail(request, topping_id):
 
 # Mounted under api/admins/smartfood/ (paths are relative to that mount).
 urlpatterns = [
+    path('catalog/products', catalog_products),
     path('catalog/unpublished', unpublished_products),
+    path('catalog/import', import_products),
 
     path('products/<int:product_id>/accept', accept_product),
     path('products/<int:product_id>', update_product),
     path('products/<int:product_id>/stop', stop_product),
     path('products/<int:product_id>/resume', resume_product),
+    path('products/<int:product_id>/image', product_image),
 
     path('categories/<int:category_id>/accept', accept_category),
     path('categories/<int:category_id>', update_category),

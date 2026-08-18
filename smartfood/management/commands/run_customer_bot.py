@@ -16,8 +16,9 @@ import signal
 import time
 
 import requests
-from django.conf import settings
 from django.core.management.base import BaseCommand
+
+from smartfood.credentials import customer_bot_token
 
 logger = logging.getLogger('smartfood.bot')
 _API = 'https://api.telegram.org/bot{token}/{method}'
@@ -37,11 +38,6 @@ class Command(BaseCommand):
                             help='Telegram long-poll timeout (seconds).')
 
     def handle(self, *args, **options):
-        token = getattr(settings, 'CUSTOMER_BOT_TOKEN', '') or ''
-        if not token:
-            self.stderr.write('CUSTOMER_BOT_TOKEN is not set — nothing to poll.')
-            return
-
         self._running = True
 
         def _stop(*_):
@@ -54,17 +50,38 @@ class Command(BaseCommand):
                 except (ValueError, OSError):
                     pass  # not on the main thread
 
-        # Drop any webhook so getUpdates is permitted.
-        try:
-            requests.post(_API.format(token=token, method='deleteWebhook'),
-                          json={'drop_pending_updates': False}, timeout=10)
-        except Exception:
-            logger.debug('deleteWebhook failed', exc_info=True)
-
         poll_timeout = max(0, int(options.get('poll_timeout') or 25))
         self.stdout.write(self.style.SUCCESS('customer bot polling started'))
         offset = None
+        active_token = None
+        parked_notice = False
         while self._running:
+            token = customer_bot_token()
+            if not token:
+                if not parked_notice:
+                    self.stderr.write(
+                        'Customer bot token is not configured — polling is parked.'
+                    )
+                    parked_notice = True
+                active_token = None
+                offset = None
+                time.sleep(5)
+                continue
+            parked_notice = False
+            if token != active_token:
+                # A token changed in the admin console. Switch credentials
+                # without restarting the container and reset the update cursor,
+                # because update ids belong to the bot represented by the token.
+                active_token = token
+                offset = None
+                try:
+                    requests.post(
+                        _API.format(token=token, method='deleteWebhook'),
+                        json={'drop_pending_updates': False},
+                        timeout=10,
+                    )
+                except Exception:
+                    logger.debug('deleteWebhook failed', exc_info=True)
             try:
                 params = {'timeout': poll_timeout}
                 if offset is not None:
@@ -94,7 +111,7 @@ class Command(BaseCommand):
         if BotConfig.load().enabled:
             # Reuse the canonical greeting + WebApp "open menu" button.
             from notifications.services import customer_bot
-            customer_bot.handle_update(update)
+            customer_bot.handle_update(update, token=token)
         else:
             lang = ((msg.get('from') or {}).get('language_code') or 'uz')[:2]
             text = _CLOSED.get(lang, _CLOSED['en'])

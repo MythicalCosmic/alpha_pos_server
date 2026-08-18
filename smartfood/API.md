@@ -25,6 +25,7 @@ till under its active on-shift cashier. Manager dispatch remains a fallback.
 |---|---|---|---|
 | POST | `/auth` | none | `{init_data}` → `{token, customer, is_new}` |
 | POST | `/auth/logout` | bearer | invalidate session |
+| POST | `/analytics/visit` | bearer | `{client_visit_id: UUID}`; idempotently records one successful Mini App boot |
 | GET/PATCH | `/me` | bearer | profile; PATCH `{name, phone, language}` |
 | GET | `/config` | bearer | delivery fee, thresholds, support, flags |
 | GET | `/catalog/categories` | bearer | gated; published+selling |
@@ -78,18 +79,28 @@ missed callbacks and pre-upgrade rows even when auto-dispatch is disabled.
 
 ## Operator console (`/api/admins/smartfood`, manager auth)
 
+The standalone Telegram Bot Studio signs in through the existing admin endpoints
+under `/api/admins`: `POST /auth-login`, `GET /auth-me`, and `POST /auth-logout`.
+It intentionally does not expose dispatch, cashier, or order-queue controls;
+those remain available to legacy/operator clients only.
+
 | Method | Path | Notes |
 |---|---|---|
-| GET/POST | `/config` | read / update (incl. `enabled`, fees, service area, loyalty) |
+| GET | `/analytics/overview?days=7\|30\|90` | opens, distinct visitors, converted visitors, orders, conversion rate, daily series, and catalog photo readiness |
+| GET | `/visitors` | searchable visitor list; `?q&converted=true\|false&page&per_page` |
+| GET/POST | `/config` | read / update bot behavior; admin reads expose only masked token metadata and accept a write-only `bot_token` |
 | POST | `/config/enable` | `{enabled: bool}` — the dynamic bot ON/OFF |
 | GET | `/orders/pending` | pending/retry queue and manual fallback |
 | GET | `/cashiers/active` | on-shift cashiers (public checkout also requires live till presence) |
 | POST | `/orders/<id>/dispatch` | manual fallback `{cashier_id}` → mints a POS order |
 | POST | `/orders/<id>/reject` | `{reason}` → refunds reserved loyalty, no POS order |
+| GET | `/catalog/products` | published Telegram products; `?q&availability=all\|available\|stopped` |
 | GET | `/catalog/unpublished` | POS products not yet accepted to the bot |
+| POST | `/catalog/import` | bulk publish `{product_ids: [int]}` (maximum 200) |
 | POST | `/products/<id>/accept` | publish to the bot (`{name_*, image_url, tag, kcal, ...}`) |
 | PATCH | `/products/<id>` | edit bot fields |
 | POST | `/products/<id>/stop` · `/resume` | runtime stop-selling toggle |
+| POST/DELETE | `/products/<id>/image` | upload or remove a managed JPEG/PNG/WebP product photo (8 MB maximum) |
 | POST/PATCH/POST | `/categories/<id>/accept · <id> · stop/resume` | same for categories |
 | POST/PATCH/DELETE | `/products/<id>/sizes` · `/sizes/<id>` | size tiers |
 | POST/PATCH/DELETE | `/products/<id>/topping-groups` · `/topping-groups/<id>` | option sets |
@@ -97,8 +108,10 @@ missed callbacks and pre-upgrade rows even when auto-dispatch is disabled.
 
 ## Bot + deploy
 - Customer bot runs by **long-polling**: `python manage.py run_customer_bot` (the
-  `bot` service in `docker-compose.yaml`). It honors `BotConfig.enabled` at runtime
-  (no restart to turn off) and shows the WebApp "open menu" button when enabled.
+  `bot` service in `docker-compose.yaml`). It stays alive without a configured
+  token, picks up a database override or environment fallback without a container
+  restart, honors `BotConfig.enabled` at runtime, and shows the WebApp "open menu"
+  button when enabled.
 - Customer order realtime is read-only and ownership-scoped at
   `/ws/smartfood/orders/<id>/?token=<customerToken>`. Frames contain the full order
   including `effective_status`; clients must keep `/track` polling as fallback.
