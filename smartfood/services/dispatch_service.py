@@ -238,7 +238,14 @@ class DispatchService:
             if stock_active:
                 result, status = OrderStatusHandler.on_status_change(
                     order.id, None, 'PREPARING',
-                    [{'product_id': it.product_id, 'quantity': it.quantity} for it in items],
+                    [
+                        {
+                            'product_id': source.product_id,
+                            'quantity': source.quantity,
+                            'order_item_id': line.id,
+                        }
+                        for source, line in zip(items, new_items)
+                    ],
                     location_id, placeholder.id,
                 )
                 if status >= 400:

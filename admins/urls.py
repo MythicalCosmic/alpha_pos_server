@@ -10,9 +10,37 @@ from admins.views import place_views, app_settings_views, shift_views, user_view
 from admins.views import (
     audit_views, export_views, dashboard_views, forecast_views,
     analytics_views, role_views, treasury_views, ai_ops_views,
+    profitability_views,
 )
 
 urlpatterns = [
+    # Accounting profit and known cash movement. Open periods are provisional;
+    # period-close creates immutable, revisioned final snapshots.
+    path('finance/profitability', profitability_views.profitability,
+         name='profitability'),
+    path('finance/profitability/setup', profitability_views.setup,
+         name='profitability_setup'),
+    path('finance/profitability/product-costs', profitability_views.product_costs,
+         name='profitability_product_costs'),
+    path('finance/profitability/product-costs/<int:profile_id>',
+         profitability_views.product_cost_detail),
+    path('finance/profitability/recurring-costs', profitability_views.recurring_costs,
+         name='profitability_recurring_costs'),
+    path('finance/profitability/recurring-costs/<int:cost_id>',
+         profitability_views.recurring_cost_detail),
+    path('finance/profitability/adjustments', profitability_views.adjustments,
+         name='profitability_adjustments'),
+    path('finance/profitability/adjustments/<int:adjustment_id>/approve',
+         profitability_views.adjustment_approve),
+    path('finance/profitability/adjustments/<int:adjustment_id>',
+         profitability_views.adjustment_detail),
+    path('finance/profitability/cashbox-expenses/<int:expense_id>/classification',
+         profitability_views.cashbox_classification),
+    path('finance/profitability/categories/<str:source>/<int:category_id>',
+         profitability_views.expense_category_group),
+    path('finance/profitability/periods/close', profitability_views.period_close,
+         name='profitability_period_close'),
+
     # Roles & permissions editor (Settings -> Roles).
     path('permissions', role_views.list_permissions),
     path('roles', role_views.list_roles),

@@ -730,7 +730,7 @@ def _recalculate_total(order):
     order.save(update_fields=['subtotal', 'discount_amount', 'total_amount'])
 
 
-def _adjust_order_stock(order, product_id, quantity_delta):
+def _adjust_order_stock(order, product_id, quantity_delta, order_item_id=None):
     # Keep ingredient stock in sync when an already-deducted order's lines
     # change. adjust_for_item_change self-gates to a no-op unless the order had
     # prior deductions, so this is safe regardless of stock config.
@@ -742,6 +742,7 @@ def _adjust_order_stock(order, product_id, quantity_delta):
         result, status = OrderStockService.adjust_for_item_change(
             order.id, product_id, quantity_delta, location_id,
             order.cashier_id or order.user_id,
+            order_item_id=order_item_id,
         )
         if status >= 400:
             logger.error(
@@ -1036,8 +1037,12 @@ class AdminOrderService:
             order.save(update_fields=['status', 'ready_at'])
 
         stock_items = [
-            {'product_id': d['product'].id, 'quantity': d['quantity']}
-            for d in order_items_data
+            {
+                'product_id': row['product'].id,
+                'quantity': row['quantity'],
+                'order_item_id': item.id,
+            }
+            for row, item in zip(order_items_data, new_items)
         ]
         stock_error = _apply_order_stock_transition(
             order.id, None, 'PREPARING', stock_items, user_id,
@@ -1126,9 +1131,10 @@ class AdminOrderService:
             # QuerySet.update() bypassed the sync bookkeeping entirely.
             existing.quantity += quantity
             existing.save(update_fields=['quantity'])
+            target_item = existing
         else:
             # Instant items are born ready and never need the kitchen.
-            OrderItemRepository.create(
+            target_item = OrderItemRepository.create(
                 order=order, product=product, quantity=quantity, price=product.price,
                 ready_at=timezone.now() if is_instant else None,
                 branch_id=order.branch_id,
@@ -1142,7 +1148,9 @@ class AdminOrderService:
             order.save(update_fields=['ready_at', 'status'])
 
         _recalculate_total(order)
-        stock_error = _adjust_order_stock(order, product_id, quantity)
+        stock_error = _adjust_order_stock(
+            order, product_id, quantity, order_item_id=target_item.id,
+        )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
@@ -1179,7 +1187,10 @@ class AdminOrderService:
         item.quantity = quantity
         item.save(update_fields=['quantity'])
         _recalculate_total(order)
-        stock_error = _adjust_order_stock(order, product_id, quantity - old_quantity)
+        stock_error = _adjust_order_stock(
+            order, product_id, quantity - old_quantity,
+            order_item_id=item.id,
+        )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
@@ -1215,7 +1226,9 @@ class AdminOrderService:
 
         # Return ingredient stock for the removed line *before* any order
         # deletion so the deduction can still be located and reversed.
-        stock_error = _adjust_order_stock(order, product_id, -removed_quantity)
+        stock_error = _adjust_order_stock(
+            order, product_id, -removed_quantity, order_item_id=item.id,
+        )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
@@ -1270,7 +1283,11 @@ class AdminOrderService:
         order.save(update_fields=update_fields)
 
         stock_items = [
-            {'product_id': i.product_id, 'quantity': i.quantity}
+            {
+                'product_id': i.product_id,
+                'quantity': i.quantity,
+                'order_item_id': i.id,
+            }
             for i in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(
@@ -1494,7 +1511,11 @@ class AdminOrderService:
             InkassaService.add_to_register(cash_to_drawer, order.branch_id)
 
         stock_items = [
-            {'product_id': i.product_id, 'quantity': i.quantity}
+            {
+                'product_id': i.product_id,
+                'quantity': i.quantity,
+                'order_item_id': i.id,
+            }
             for i in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(
@@ -1549,7 +1570,11 @@ class AdminOrderService:
         order.status = 'CANCELED'
         order.save(update_fields=['status'])
         stock_items = [
-            {'product_id': item.product_id, 'quantity': item.quantity}
+            {
+                'product_id': item.product_id,
+                'quantity': item.quantity,
+                'order_item_id': item.id,
+            }
             for item in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(
