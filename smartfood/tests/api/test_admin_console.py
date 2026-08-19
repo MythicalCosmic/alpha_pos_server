@@ -184,6 +184,41 @@ class TestCatalogAdministration:
         product.bot.refresh_from_db()
         assert product.bot.kcal is None
 
+    def test_customer_availability_includes_the_category_gate(
+        self,
+        operator_client,
+        product,
+        category,
+    ):
+        initial = operator_client.get(f'{A}/catalog/products')
+        item = next(
+            row for row in initial.json()['data']['items']
+            if row['id'] == product.id
+        )
+        assert item['available'] is True
+        assert item['customer_available'] is True
+
+        category.bot.is_selling = False
+        category.bot.save(update_fields=['is_selling', 'updated_at'])
+
+        stopped = operator_client.get(f'{A}/catalog/products')
+        item = next(
+            row for row in stopped.json()['data']['items']
+            if row['id'] == product.id
+        )
+        assert item['available'] is True
+        assert item['customer_available'] is False
+        assert stopped.json()['data']['summary']['available_products'] == 0
+        assert operator_client.get(
+            f'{A}/catalog/products?availability=available'
+        ).json()['data']['items'] == []
+        unavailable = operator_client.get(
+            f'{A}/catalog/products?availability=stopped'
+        ).json()['data']['items']
+        assert [row['id'] for row in unavailable] == [product.id]
+        overview = operator_client.get(f'{A}/analytics/overview?days=7')
+        assert overview.json()['data']['catalog']['available_products'] == 0
+
 
 class TestRuntimeBotSettings:
     def test_token_is_masked_and_used_for_customer_auth(
@@ -215,3 +250,337 @@ class TestRuntimeBotSettings:
         )
         auth = _post_json(client, f'{C}/auth', {'init_data': init_data})
         assert auth.status_code == 200, auth.content
+
+    def test_loyalty_economics_are_validated_and_returned(self, operator_client):
+        updated = _post_json(
+            operator_client,
+            f'{A}/config',
+            {'loyalty_earn_per': 1500, 'loyalty_point_value': 125},
+        )
+
+        assert updated.status_code == 200, updated.content
+        assert updated.json()['data']['loyalty_earn_per'] == 1500
+        assert updated.json()['data']['loyalty_point_value'] == 125
+
+        invalid = _post_json(
+            operator_client,
+            f'{A}/config',
+            {'loyalty_earn_per': -1},
+        )
+        assert invalid.status_code == 422
+
+    def test_loyalty_earning_and_checkout_spending_are_independent(
+        self,
+        operator_client,
+    ):
+        spending_only = _post_json(
+            operator_client,
+            f'{A}/config',
+            {'loyalty_earn_per': 0, 'loyalty_point_value': 125},
+        )
+        assert spending_only.status_code == 200, spending_only.content
+        flags = spending_only.json()['data']['feature_flags']
+        assert flags['loyalty'] is True
+        assert flags['loyalty_earning'] is False
+        assert flags['loyalty_spending'] is True
+
+        earning_only = _post_json(
+            operator_client,
+            f'{A}/config',
+            {'loyalty_earn_per': 1500, 'loyalty_point_value': 0},
+        )
+        assert earning_only.status_code == 200, earning_only.content
+        flags = earning_only.json()['data']['feature_flags']
+        assert flags['loyalty'] is True
+        assert flags['loyalty_earning'] is True
+        assert flags['loyalty_spending'] is False
+
+
+class TestMarketingAdministration:
+    def test_banner_draft_upload_publish_and_public_schedule(
+        self,
+        operator_client,
+        auth_client,
+        settings,
+        tmp_path,
+    ):
+        settings.MEDIA_ROOT = tmp_path
+        draft = _post_json(
+            operator_client,
+            f'{A}/marketing/banners',
+            {
+                'title_uz': 'Bugungi tanlov',
+                'title_en': "Today's pick",
+                'subtitle_uz': 'Bir bosishda menyuni oching',
+                'action_type': 'CATALOG',
+                'sort_order': 2,
+                'is_active': False,
+            },
+        )
+        assert draft.status_code == 201, draft.content
+        banner_id = draft.json()['data']['id']
+
+        cannot_publish = operator_client.patch(
+            f'{A}/marketing/banners/{banner_id}',
+            data=json.dumps({'is_active': True}),
+            content_type='application/json',
+        )
+        assert cannot_publish.status_code == 422
+
+        uploaded = operator_client.post(
+            f'{A}/marketing/banners/{banner_id}/image',
+            data={
+                'image': SimpleUploadedFile(
+                    'banner.webp',
+                    b'RIFF' + (12).to_bytes(4, 'little') + b'WEBPbanner-image',
+                    content_type='image/webp',
+                ),
+            },
+        )
+        assert uploaded.status_code == 200, uploaded.content
+        image_url = uploaded.json()['data']['image_url']
+        assert image_url.startswith(f'{C}/media/banners/')
+
+        published = operator_client.patch(
+            f'{A}/marketing/banners/{banner_id}',
+            data=json.dumps({'is_active': True}),
+            content_type='application/json',
+        )
+        assert published.status_code == 200, published.content
+
+        public = auth_client.get(f'{C}/banners?lang=en')
+        assert public.status_code == 200, public.content
+        assert public.json()['data']['items'] == [{
+            'id': banner_id,
+            'title': "Today's pick",
+            'subtitle': 'Bir bosishda menyuni oching',
+            'image_url': image_url,
+            'action_type': 'CATALOG',
+            'product_id': None,
+        }]
+
+        media = auth_client.get(image_url)
+        assert media.status_code == 200
+        assert media['Content-Type'] == 'image/webp'
+
+        expired = operator_client.patch(
+            f'{A}/marketing/banners/{banner_id}',
+            data=json.dumps({'ends_at': '2020-01-01T00:00:00Z'}),
+            content_type='application/json',
+        )
+        assert expired.status_code == 200, expired.content
+        assert auth_client.get(f'{C}/banners').json()['data']['items'] == []
+
+    def test_product_banner_disappears_when_destination_stops_selling(
+        self,
+        operator_client,
+        auth_client,
+        product,
+    ):
+        from smartfood.models import BotBanner
+
+        banner = BotBanner.objects.create(
+            title_uz='Mahsulot',
+            image_url='/api/smartfood/media/banners/' + ('a' * 32) + '.webp',
+            action_type=BotBanner.Action.PRODUCT,
+            product=product,
+            is_active=True,
+        )
+        public = auth_client.get(f'{C}/banners')
+        assert public.json()['data']['items'][0]['id'] == banner.id
+
+        product.bot.is_selling = False
+        product.bot.save(update_fields=['is_selling', 'updated_at'])
+
+        assert auth_client.get(f'{C}/banners').json()['data']['items'] == []
+        rejected = operator_client.patch(
+            f'{A}/marketing/banners/{banner.id}',
+            data=json.dumps({'is_active': True}),
+            content_type='application/json',
+        )
+        assert rejected.status_code == 422
+        assert 'product_id' in rejected.json()['errors']
+
+        paused = operator_client.patch(
+            f'{A}/marketing/banners/{banner.id}',
+            data=json.dumps({'is_active': False}),
+            content_type='application/json',
+        )
+        assert paused.status_code == 200, paused.content
+        assert paused.json()['data']['is_active'] is False
+
+    def test_reward_catalog_management_and_customer_visibility(
+        self,
+        operator_client,
+        auth_client,
+        settings,
+        tmp_path,
+    ):
+        settings.MEDIA_ROOT = tmp_path
+        invalid = _post_json(
+            operator_client,
+            f'{A}/loyalty/rewards',
+            {'name_uz': 'Noto‘g‘ri', 'kind': 'CUSTOM', 'points_cost': 0},
+        )
+        assert invalid.status_code == 422
+
+        created = _post_json(
+            operator_client,
+            f'{A}/loyalty/rewards',
+            {
+                'name_uz': 'Sirli sovg‘a',
+                'name_en': 'Mystery gift',
+                'desc_uz': 'Kassada kodni ko‘rsating',
+                'kind': 'CUSTOM',
+                'points_cost': 75,
+                'stock': 5,
+                'per_customer_limit': 1,
+                'sort_order': 1,
+                'is_active': True,
+            },
+        )
+        assert created.status_code == 201, created.content
+        reward_id = created.json()['data']['id']
+
+        uploaded = operator_client.post(
+            f'{A}/loyalty/rewards/{reward_id}/image',
+            data={
+                'image': SimpleUploadedFile(
+                    'reward.png',
+                    b'\x89PNG\r\n\x1a\n' + (b'reward-image' * 10),
+                    content_type='image/png',
+                ),
+            },
+        )
+        assert uploaded.status_code == 200, uploaded.content
+        image_url = uploaded.json()['data']['image_url']
+
+        listed = operator_client.get(f'{A}/loyalty/rewards')
+        assert listed.status_code == 200
+        assert listed.json()['data']['summary']['active'] == 1
+        assert listed.json()['data']['items'][0]['stock'] == 5
+        assert uploaded.json()['data']['customer_available'] is True
+
+        customer_catalog = auth_client.get(f'{C}/rewards?lang=en')
+        item = customer_catalog.json()['data']['items'][0]
+        assert item['id'] == reward_id
+        assert item['name'] == 'Mystery gift'
+        assert item['image_url'] == image_url
+
+        media = auth_client.get(image_url)
+        assert media.status_code == 200
+        assert media['Content-Type'] == 'image/png'
+
+    def test_reward_catalog_exposes_reached_customer_limit(
+        self,
+        operator_client,
+        auth_client,
+        customer,
+    ):
+        from smartfood.models import Redemption, Reward
+
+        customer.loyalty_points = 500
+        customer.save(update_fields=['loyalty_points', 'updated_at'])
+        created = _post_json(
+            operator_client,
+            f'{A}/loyalty/rewards',
+            {
+                'name_uz': 'Bir marta',
+                'kind': 'CUSTOM',
+                'points_cost': 100,
+                'per_customer_limit': 1,
+                'is_active': True,
+            },
+        )
+        assert created.status_code == 201, created.content
+        reward = Reward.objects.get(id=created.json()['data']['id'])
+        Redemption.objects.create(
+            customer=customer,
+            reward=reward,
+            code='GIFT-LIMIT1',
+            points_spent=reward.points_cost,
+            reward_name=reward.name_uz,
+            kind=reward.kind,
+        )
+
+        catalog = auth_client.get(f'{C}/rewards?lang=uz')
+        assert catalog.status_code == 200, catalog.content
+        item = catalog.json()['data']['items'][0]
+        assert item['affordable'] is True
+        assert item['limit_reached'] is True
+        assert item['can_redeem'] is False
+
+        rejected = auth_client.post(f'{C}/rewards/{reward.id}/redeem')
+        assert rejected.status_code == 400
+        assert 'limit' in rejected.json()['message'].lower()
+
+    def test_free_product_reward_becomes_unavailable_when_category_stops(
+        self,
+        operator_client,
+        auth_client,
+        product,
+        category,
+    ):
+        created = _post_json(
+            operator_client,
+            f'{A}/loyalty/rewards',
+            {
+                'name_uz': 'Bepul mahsulot',
+                'kind': 'FREE_PRODUCT',
+                'product_id': product.id,
+                'points_cost': 100,
+                'is_active': True,
+            },
+        )
+        assert created.status_code == 201, created.content
+        reward_id = created.json()['data']['id']
+        assert created.json()['data']['customer_available'] is True
+
+        category.bot.is_selling = False
+        category.bot.save(update_fields=['is_selling', 'updated_at'])
+
+        listed = operator_client.get(f'{A}/loyalty/rewards')
+        assert listed.status_code == 200, listed.content
+        item = next(
+            row for row in listed.json()['data']['items']
+            if row['id'] == reward_id
+        )
+        assert item['is_active'] is True
+        assert item['customer_available'] is False
+        assert listed.json()['data']['summary']['active'] == 0
+        assert auth_client.get(f'{C}/rewards').json()['data']['items'] == []
+
+        paused = operator_client.patch(
+            f'{A}/loyalty/rewards/{reward_id}',
+            data=json.dumps({'is_active': False}),
+            content_type='application/json',
+        )
+        assert paused.status_code == 200, paused.content
+        assert paused.json()['data']['is_active'] is False
+
+    def test_media_storage_failure_is_a_stable_service_error(
+        self,
+        operator_client,
+        product,
+        monkeypatch,
+    ):
+        from smartfood.services import media_service
+
+        def fail_save(*_args, **_kwargs):
+            raise OSError('disk unavailable')
+
+        monkeypatch.setattr(media_service.default_storage, 'save', fail_save)
+        response = operator_client.post(
+            f'{A}/products/{product.id}/image',
+            data={
+                'image': SimpleUploadedFile(
+                    'dish.png',
+                    b'\x89PNG\r\n\x1a\n' + b'payload',
+                    content_type='image/png',
+                ),
+            },
+        )
+
+        assert response.status_code == 503
+        assert response.json()['success'] is False
+        assert 'storage' in response.json()['message'].lower()

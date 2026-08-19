@@ -9,9 +9,11 @@ from smartfood.views import (
     admin_bot_views,
     admin_catalog_views,
     admin_loyalty_views,
+    admin_marketing_views,
 )
 
 urlpatterns = (admin_analytics_views.urlpatterns
                + admin_bot_views.urlpatterns
                + admin_catalog_views.urlpatterns
-               + admin_loyalty_views.urlpatterns)
+               + admin_loyalty_views.urlpatterns
+               + admin_marketing_views.urlpatterns)

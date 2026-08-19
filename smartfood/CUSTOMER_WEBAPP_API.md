@@ -7,7 +7,7 @@
 
 ## 1. Overview
 
-The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a webapp launched from the customer bot). The customer browses a menu, builds a cart, redeems loyalty points, places an order, and tracks it — all against a single store.
+The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a webapp launched from the customer bot). The customer browses the POS-backed menu, sees scheduled Home banners, builds a cart, earns or spends checkout points according to independent controls, redeems Smart Club rewards, places an order, and tracks it — all against a single store.
 
 - **Example host:** `https://delivery.78.111.90.65.nip.io`
 - **Path prefix (all customer routes):** `/api/smartfood`
@@ -20,7 +20,7 @@ The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a web
 2. It POSTs that `initData` once to `POST /api/smartfood/auth` and receives a **Bearer session token** (valid ~24h by default).
 3. Every other call sends `Authorization: Bearer <token>` (initData is **not** resent).
 4. After authentication, it records this successful page boot once with `POST /analytics/visit` and a client-generated UUID. Telemetry is best-effort and must never block shopping.
-5. The app loads `/config` (store on/off, delivery params, feature flags), then catalog, builds a cart, quotes it server-side, checks out, and polls for tracking.
+5. The app loads `/config` (store on/off, delivery params, feature flags), catalog, `/banners`, `/loyalty`, and `/rewards`, then builds a cart, quotes it server-side, checks out, and polls for tracking.
 
 Two things make this API unusual and you must handle both:
 
@@ -139,6 +139,7 @@ export const api = {
   categories:    (lang)              => request('GET', '/catalog/categories', { query: { lang } }),
   products:      (q)                 => request('GET', '/catalog/products', { query: q }),
   product:       (id, lang)          => request('GET', `/catalog/products/${id}`, { query: { lang } }),
+  banners:       (lang)              => request('GET', '/banners', { query: { lang } }),
 
   // cart + orders
   quote:         (body)             => request('POST', '/cart/quote', { body }),
@@ -157,8 +158,11 @@ export const api = {
   geoReverse:       (lat, lng, lang)=> request('GET', '/geo/reverse', { query: { lat, lng, lang } }),
   geoForward:       (q, lang, limit)=> request('GET', '/geo/forward', { query: { q, lang, limit } }),
 
-  // loyalty + support
+  // loyalty + rewards + support
   loyalty:          ()              => request('GET', '/loyalty'),
+  rewards:          (lang)          => request('GET', '/rewards', { query: { lang } }),
+  redeemReward:     (id)            => request('POST', `/rewards/${id}/redeem`),
+  redemptions:      ()              => request('GET', '/redemptions'),
   support:          ()              => request('GET', '/support'),
   tickets:          ()              => request('GET', '/support/tickets'),
   createTicket:     (body)          => request('POST', '/support/tickets', { body }),
@@ -433,19 +437,25 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
       "center": { "lat": 41.2995, "lng": 69.2401 },
       "polygon": [[41.35, 69.18], [41.35, 69.32], [41.24, 69.32], [41.24, 69.18]]
     },
-    "feature_flags": { "loyalty": true, "card_payments": false, "scheduled_delivery": false },
+    "feature_flags": {
+      "loyalty": true,
+      "loyalty_earning": false,
+      "loyalty_spending": true,
+      "card_payments": false,
+      "scheduled_delivery": false
+    },
     "support": { "phone": "+998901234567", "telegram": "@smartfood_support", "email": "help@smartfood.uz" }
   }
 }
 ```
-- **Notes:** `enabled` is the master store ON/OFF (no working-hours/schedule field exists) and **defaults to `false` on a new install** — expect `enabled: false` on first boot until an operator turns the bot on. `card_payments` and `scheduled_delivery` are hardcoded `false` (cash-only launch). The loyalty **rate** is not here — use `GET /loyalty`. No store name/branding/logo, timezone, tax/VAT, or per-zone fees are returned.
+- **Notes:** `enabled` is the master store ON/OFF (no working-hours/schedule field exists) and **defaults to `false` on a new install** — expect `enabled: false` on first boot until an operator turns the bot on. `card_payments` and `scheduled_delivery` are hardcoded `false` (cash-only launch). `loyalty_earning` is true when `loyalty_earn_per > 0`; `loyalty_spending` is true when `loyalty_point_value > 0`; the legacy `loyalty` flag is their OR. The numeric rates are in `GET /loyalty`. One capability may be on while the other is off. No store name/branding/logo, timezone, tax/VAT, or per-zone fees are returned.
 - **Errors:** 401/403 only (plus 405 on wrong method).
 
 ---
 
 ### 6.2 Catalog
 
-> All three catalog endpoints are gated by store-open: when the bot is OFF they return **HTTP 200** `{"success": false, "closed": true, "reason": "bot_off"}` (checked before auth). A valid customer session is still required to actually browse — there is no anonymous catalog. Sold-out / unpublished / disabled-category rows are **filtered out server-side**, never flagged.
+> All three catalog endpoints are gated by store-open: when the bot is OFF they return **HTTP 200** `{"success": false, "closed": true, "reason": "bot_off"}` (checked before auth). A valid customer session is still required to actually browse — there is no anonymous catalog. Sold-out / unpublished / disabled-category rows are **filtered out server-side**, never flagged. The exact product cohort is: published and selling `BotProduct`, undeleted POS product, and a published and selling `BotCategory` for its POS category.
 
 #### `GET /catalog/categories`
 - **Auth:** Bearer required; store-open gated.
@@ -469,7 +479,7 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   }
 }
 ```
-- **Notes:** `id` is the POS category id. `image_url` may be `""`. Disabled/unpublished categories are simply absent.
+- **Notes:** `id` is the POS category id. `image_url` may be `""`. A category is present only when its bot shadow is published/selling and the POS category is not deleted. Disabled/unpublished/deleted categories are simply absent.
 - **Errors:** closed `bot_off` (200); 401/403; 405 if not GET (framework-shape).
 
 #### `GET /catalog/products`
@@ -498,7 +508,7 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   }
 }
 ```
-- **Notes:** List items omit `sizes`/`topping_groups`/`description`. `price` is integer so'm, live from POS. `kcal` may be `null`. `available` is effectively always `true` here (the query already requires in-stock). Unknown/empty `category_id` or no matches → `200` with `items: []` (not 404).
+- **Notes:** List items omit `sizes`/`topping_groups`/`description`. `price` is integer so'm, live from POS. `kcal` may be `null`. `available` is effectively always `true` here (the exact product/category cohort was already applied). Resuming only a product does not override a stopped category. Unknown/empty `category_id` or no matches → `200` with `items: []` (not 404).
 - **Errors:** closed `bot_off` (200); 401/403; 405.
 
 #### `GET /catalog/products/:product_id`
@@ -543,6 +553,33 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 ```
 - **Notes:** Only sizes/toppings with `is_selling = true` are returned. `max_select: 0` means **unlimited**. Toppings/groups have a resolved `name` only (no `names` map). `price_delta` and topping `price` are integer so'm **deltas**. The **final price is computed client-side**: base `price` + chosen size `price_delta` + sum of chosen topping `price` — the server does NOT pre-sum per-variant; it recomputes authoritatively at quote/order time.
 - **Errors:** `404 {"success": false, "message": "Product not found"}` if not published/selling or category disabled/deleted; closed `bot_off` (200); 401/403; 405.
+
+#### `GET /banners`
+- **Auth:** Bearer required. This route is **not** store-open gated; the client decides whether to render Home marketing while `config.enabled` is false.
+- **Query:** `lang` (optional, `uz|ru|en`).
+- **Purpose:** Scheduled 2:1 Home banners in `sort_order`, then id order.
+- **Success (200):**
+```json
+{
+  "success": true,
+  "message": "Success",
+  "data": {
+    "items": [{
+      "id": 4,
+      "title": "Today's pick",
+      "subtitle": "Open the menu",
+      "image_url": "/api/smartfood/media/banners/0123456789abcdef0123456789abcdef.webp",
+      "action_type": "CATALOG",
+      "product_id": null
+    }]
+  }
+}
+```
+- **Visibility:** the row must be active, have an image, satisfy `starts_at IS NULL OR starts_at <= now` and `ends_at IS NULL OR ends_at > now`, and—when `action_type = PRODUCT`—reference a product in the exact customer-visible cohort above.
+- **Actions:** `NONE` (no navigation), `CATALOG`, `PRODUCT` (use `product_id`), or `LOYALTY` (open Smart Club).
+- **Media behavior:** managed URLs are relative and public under `/api/smartfood/media/banners/`. A missing/unsafe file is 404. The shipped frontend drops only the broken banner card; if no usable banner remains it can show the config-derived free-delivery fallback. A banner-fetch failure must not block catalog/order flows.
+
+**Managed media contract (products, banners, rewards):** operator upload endpoints inspect the actual bytes and accept JPEG, PNG, or WebP up to and including 8 MB. Pixel dimensions are not rejected server-side; the admin UI recommends 1200×900 (4:3) for products, 1440×720 (2:1, important content centered) for banners, and 800×800 (1:1) for rewards. New files are stored under `/api/smartfood/media/<kind>/<uuid>.<ext>`. Public GET is unauthenticated, immutable for one year, and sends `X-Content-Type-Options: nosniff`; unknown, unsafe, or absent files return 404. A storage write failure returns 503 with stable safe copy and leaves the previous database URL intact. Product catalog/detail images fall back to generated art in the shipped frontend; rewards retain their kind symbol; broken banners are omitted from that Home view.
 
 ---
 
@@ -827,8 +864,8 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 ### 6.6 Loyalty
 
 #### `GET /loyalty`
-- **Auth:** Bearer required. Read-only — there is **no** redemption endpoint here; points are reserved/applied via order creation (`points_used`).
-- **Purpose:** Points balance, earn/redeem rates, and per-order history.
+- **Auth:** Bearer required.
+- **Purpose:** Points balance, member id, independent earn/checkout rates, the latest 50 ledger rows, and currently issued reward redemptions.
 - **Success (200):**
 ```json
 {
@@ -836,21 +873,42 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   "message": "Success",
   "data": {
     "points": 1250,
+    "member_id": "SF-99887766",
     "earn_rate": { "points_per_uzs": 1000, "point_value_uzs": 1 },
     "history": [
-      { "code": "SF-87", "points_earned": 42, "points_used": 0, "created_at": "2026-06-13T18:24:10.512000+00:00" },
-      { "code": "SF-71", "points_earned": 0, "points_used": 500, "created_at": "2026-06-10T12:02:55.000000+00:00" }
+      { "kind": "EARN_ORDER", "points": 42, "balance_after": 1250, "reason": "Order SF-87", "code": "SF-87", "points_earned": 42, "points_used": 0, "created_at": "2026-06-13T18:24:10.512000+00:00" }
+    ],
+    "redemptions": [
+      { "id": 31, "code": "GIFT-ABC234", "reward_name": "Free dessert", "kind": "CUSTOM", "points_spent": 100, "status": "ISSUED", "created_at": "2026-06-13T19:00:00+00:00", "fulfilled_at": null }
     ]
   }
 }
 ```
 - **Notes:**
   - `points` = integer balance.
-  - `earn_rate.points_per_uzs` — **the field name is misleading**: it is actually the UZS spent per 1 point **earned** (i.e. "1 point per N UZS"; `0` = loyalty off).
-  - `earn_rate.point_value_uzs` — UZS each point is worth at redeem.
-  - No tiers, no explicit redemption-rules object. `history` is one row per order (newest first); `code` = `SF-<id>`.
-  - Loyalty on/off is also surfaced as `config.feature_flags.loyalty`.
+  - `earn_rate.points_per_uzs` is the UZS spent per 1 point **earned**; `0` stops earning only.
+  - `earn_rate.point_value_uzs` is the UZS removed per point at checkout; `0` stops checkout spending only.
+  - The matching config flags are `loyalty_earning` and `loyalty_spending`; legacy `loyalty` is their OR. Smart Club catalog redemption remains available when checkout spending is off because it uses each reward's own `points_cost`.
+  - No tiers exist. Ledger rows cover order earn/spend, reward redemption, grants, refunds, and adjustments; `code` may be an order code, gift code, or kind label.
 - **Errors:** 401/403 (GET-only).
+
+#### `GET /rewards`
+- **Auth:** Bearer required. **Query:** `lang` (optional).
+- **Purpose:** Personalized Smart Club catalog.
+- **Success (200):** `data.points` is the viewer balance; `data.items[]` contains `id`, resolved `name`, `names`, resolved `description`, `kind`, `points_cost`, `image_url`, `discount_amount`, `product_id`, `in_stock`, `affordable`, `limit_reached`, and `can_redeem`.
+- **Global visibility:** active, `points_cost > 0`, remaining or unlimited stock, and valid kind-specific setup. `FREE_PRODUCT` also requires an exact customer-visible product/category; `DISCOUNT` requires `discount_amount > 0`; `FREE_DELIVERY` and `CUSTOM` need no link. Out-of-stock rows are omitted.
+- **Per-customer state:** `affordable` compares balance to cost. A positive `per_customer_limit` counts all non-canceled redemptions; a reached limit keeps the item visible with `limit_reached:true` and `can_redeem:false`. Limit 0 is unlimited; null stock is unlimited.
+- **Reward art:** optional. The shipped frontend hides a broken `<img>` and keeps the reward-kind fallback symbol visible.
+
+#### `POST /rewards/:reward_id/redeem`
+- **Auth:** Bearer required; no body.
+- **Purpose:** Atomically lock/revalidate reward and customer, decrement finite stock, deduct `points_cost` through the loyalty ledger, and issue a unique `GIFT-......` code.
+- **Success (201):** `data.redemption` uses the redemption shape shown above with status `ISSUED`.
+- **Errors:** 404 `Gift not found` for missing/inactive; 400 for invalid configuration, unavailable linked product/category, insufficient points, exhausted stock, or reached customer limit. The UI must treat the server result as authoritative even if its preceding catalog snapshot allowed the action.
+
+#### `GET /redemptions`
+- **Auth:** Bearer required.
+- **Success (200):** `data.items` is this customer's latest 50 redemptions, including issued, fulfilled, and canceled rows.
 
 ---
 
@@ -964,8 +1022,8 @@ List filters use the same effective lifecycle: `?status=active` includes PENDING
 1. **Boot.** Telegram launches the Mini App; read `window.Telegram.WebApp.initData`.
 2. **Auth.** `POST /auth` with `{ init_data }`. The success is **HTTP 200 / "Success"** — do not assert 201. Store `data.token`, set the `Authorization` header. (If `data.is_new`, run onboarding.)
 3. **Record the visit.** Generate one UUID for this page boot and best-effort `POST /analytics/visit` with `{client_visit_id}` after auth. Retrying the same UUID is safe; do not delay or fail the customer experience if telemetry fails.
-4. **Load config.** `GET /config`. If `data.enabled === false`, render the closed screen and stop (remember `enabled` is `false` by default until an operator turns the bot on). Cache `delivery_fee`, `free_delivery_threshold`, `min_order_amount`, `default_tip_options`, `service_area`, `feature_flags`, `support`. Pick language from `default_language` / customer language.
-5. **Browse catalog.** `GET /catalog/categories`, then `GET /catalog/products?category_id=...` (or `?q=` for search). On any catalog response, **check `closed` first** — `bot_off` means render the closed screen. Open `GET /catalog/products/:id` for the configurator (sizes + topping groups). Enforce `min_select`/`max_select` (`0` = unlimited) per group.
+4. **Load config and loyalty modes.** `GET /config`. If `data.enabled === false`, render the closed screen (remember `enabled` is `false` by default until an operator turns the bot on). Cache delivery/support values and the independent `loyalty_earning` / `loyalty_spending` flags; use legacy `loyalty` only as a compatibility fallback. Load `/loyalty` for the numeric rates and balance.
+5. **Browse current customer content.** Load `/catalog/categories`, `/catalog/products`, and optional `/banners?lang=...`; load `/rewards?lang=...` for Smart Club. On catalog responses, **check `closed` first**. Open `/catalog/products/:id` for sizes/toppings and enforce group min/max. Treat banner failures as optional-content failures, and use reward `can_redeem` rather than recomputing only from the balance.
 6. **Build cart (client-side).** Maintain the items array `[{product_id, size_id?, topping_ids?[], quantity}]`. Send clean positive integer quantities and a truthy positive `size_id` (or omit it). Estimate prices client-side as base + size delta + toppings, but treat the server quote as authoritative.
 7. **Quote.** On every cart change call `POST /cart/quote` with the full items array, `order_type`, `tip`, `points_used`. Handle conflict `code`s (`item_unavailable`, `topping_*`, `min_order`, `empty_cart`, `invalid_quantity`) by branching on `code` (not message text), and handle `bot_off`. Render `subtotal`, `delivery_fee`, `discount`, `tip`, `total`, and the loyalty preview from the response.
 8. **Create a durable checkout attempt.** Generate a UUID `client_order_id`, persist it with a fingerprint/canonical copy of the checkout payload, then `POST /orders`. For DELIVERY, include a customer-owned `address_id`; its text is snapshotted into `address_text`, copied into the linked POS order's canonical `delivery_address`, and preserved through sync. On timeout or reload, resend the **identical** payload with the same UUID. If the cart/address/payment changes, generate a new UUID. Handle `bot_off`, `no_cashier`, `invalid_client_order_id`, `idempotency_conflict`, address and cart validation. A first create is 201; a successful replay is 200 and returns the same order.
@@ -989,13 +1047,19 @@ List filters use the same effective lifecycle: `?status=active` includes PENDING
 | `supported_languages` | string[] | always `["uz","ru","en"]` |
 | `default_language` | string | `uz|ru|en` |
 | `service_area` | object | `{city, center{lat,lng}, polygon[]}` or `{}` (single zone) |
-| `feature_flags` | object | `{loyalty: bool, card_payments: false, scheduled_delivery: false}` (latter two hardcoded false) |
+| `feature_flags` | object | `{loyalty, loyalty_earning, loyalty_spending, card_payments: false, scheduled_delivery: false}`; broad loyalty is the OR of the two specific capabilities |
 | `support` | object | `{phone, telegram, email}` |
 
 **`category_dict`** — `id` (POS id), `name`, `names{uz,ru,en}`, `sort`, `image_url`.
 
 **`product_dict`** (list) — `id` (POS id), `category_id` (POS id), `name`, `names`, `price` (int UZS, live), `image_url`, `tag` (`bestseller|new|spicy|""`), `kcal` (int|null), `available` (bool).
 **`product_dict`** (detail) — all of the above **plus** `description`, `descriptions{uz,ru,en}`, `sizes[]`, `topping_groups[]`.
+
+**`banner_dict`** — `id`, resolved `title`, resolved `subtitle`, `image_url`, `action_type` (`NONE|CATALOG|PRODUCT|LOYALTY`), `product_id` (POS id|null). Schedule/status fields are deliberately not exposed to customers; public filtering already applied them.
+
+**`reward_dict`** — `id`, resolved `name`, `names`, resolved `description`, `kind` (`FREE_PRODUCT|DISCOUNT|FREE_DELIVERY|CUSTOM`), `points_cost`, `image_url`, `discount_amount` (int UZS|null), `product_id` (POS id|null), `in_stock`, `affordable`, `limit_reached`, `can_redeem`.
+
+**`redemption_dict`** — `id`, `code`, snapshotted `reward_name`, snapshotted `kind`, `points_spent`, `status` (`ISSUED|FULFILLED|CANCELED`), `created_at`, `fulfilled_at`.
 
 **`size_dict`** — `id`, `name`, `names`, `price_delta` (int UZS), `is_default`. (Only `is_selling` sizes returned.)
 **`topping_group_dict`** — `id`, `name` (resolved only, no `names`), `required`, `min_select`, `max_select` (0 = unlimited), `toppings[]`.
@@ -1040,8 +1104,9 @@ Customers observe the *results* of dispatch/reject/enable through `/config`, ord
   - `YANDEX_GEOCODER_KEY` — backs `/geo/reverse` and `/geo/forward`. **It is NOT declared in `settings_base.py`** (read via `getattr(settings, 'YANDEX_GEOCODER_KEY', '')`), so it is empty out of the box and both geo endpoints return `400 "Geocoding not configured"` until it is added. Provide a manual-address-entry fallback.
 - **Required worker:** run `python manage.py process_smartfood_dispatch_jobs --interval 5 --batch-size 50`. Docker Compose provides this as the restartable `smartfood_dispatch` service and waits for the migrated web service, database, and Redis. The HTTP order path never dispatches. If this worker is absent while automatic dispatch is enabled, accepted orders remain PENDING until a worker or manager handles them. Its bounded loyalty settlement/repair sweep continues even when `SMARTFOOD_AUTO_DISPATCH=false`.
 - **Support/failure contract:** configure `BotConfig.support_phone`, `support_telegram`, or `support_email`. They are exposed by `/config.support` and appended to localized technical rejection copy when available. Telegram notification delivery is best-effort; the persisted order status returned by detail/track is authoritative.
-- **`CUSTOMER_WEBAPP_URL`** — the URL the customer bot opens for this Mini App, used by the bot's "Open app" button. Confirmed: env var name is `CUSTOMER_WEBAPP_URL`, declared in `settings_base.py` with default `'https://example.com'`; the deploy script sets it to `https://<host>/webapp/`. Only the **per-deployment value** needs confirming, not the var name.
+- **`CUSTOMER_WEBAPP_URL`** — the URL the customer bot opens for this Mini App, used by the bot's "Open app" button. Confirmed: env var name is `CUSTOMER_WEBAPP_URL`, declared in `settings_base.py` with default `'https://example.com'`. For the checked-in production host it must be `https://delivery.78.111.90.65.nip.io/webapp/`, exactly matching the Telegram menu URL.
 - **Session transport:** the server accepts the token via either the `Authorization: Bearer <token>` header **or** the `session_key` cookie (cookie checked first). For a Mini App, the Bearer header is recommended.
+- **Production surface:** Caddy exposes Django at `https://pos.78.111.90.65.nip.io`, the customer nginx container at `https://delivery.78.111.90.65.nip.io`, and the standalone console at `https://alpha-pos-admin.78.111.90.65.nip.io`. On the shared `edge` network their stable aliases are `alpha-web`, `delivery-webapp`, and `alpha-pos-admin`. Customer nginx serves `/webapp/` and reverse-proxies `/api/smartfood/` to the `pos.` backend; the admin SPA calls `https://pos.78.111.90.65.nip.io/api/admins` directly.
 
 ### D. CORS
 
@@ -1059,6 +1124,7 @@ The Bearer-header approach in this guide does **not** require credentialed CORS 
 | 2026-06-14 | Initial integration guide (customer Mini App API under `/api/smartfood`). |
 | 2026-06-14 | Corrections: `POST /auth` is 200/"Success" (not 201/"Created"); documented framework-level 405 envelope shape; clarified login 401-vs-403 logic; quantity is optional/defaults-to-1 with truncating coercion; `size_id` must be truthy-positive; `enabled` defaults to false on fresh install; added admin `/config/enable` toggle; resolved `CUSTOMER_WEBAPP_URL` and CORS from `// verify` to confirmed config; noted `YANDEX_GEOCODER_KEY` is undeclared so geo is off by default; exact `item_unavailable` strings; unrecognized `?status=` returns all; order `phone` may be `""`; logout is idempotent. |
 | 2026-08-08 | Public-launch contract: required UUID `client_order_id` and availability-independent idempotent replay, strict order input, connected-till new-checkout gate, worker-only crash-recoverable automatic dispatch/backoff, fenced claims, `effective_status`, POS delivery-address/status round-trip, paid+completed+tender-evidenced idempotent loyalty settlement/reversal, and terminal customer-safe technical rejection/support behavior. This supersedes the earlier manual-only dispatch, request-path dispatch, dispatch-time loyalty earn, and permissive quantity notes. |
+| 2026-08-20 | Added scheduled Home banners, managed product/banner/reward media, independent earning vs checkout-spending flags, customer reward catalog/redemption limits, exact category-dependent product visibility, and the three-host production deployment surface. |
 
 ---
 

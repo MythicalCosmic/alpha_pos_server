@@ -12,6 +12,23 @@ from smartfood.models import BotCategory, BotProduct
 from smartfood.serializers import category_dict, product_dict
 
 
+def customer_visible_product_rows():
+    """Return the exact product cohort that the customer catalog can open."""
+    return BotProduct.objects.filter(
+        is_published=True,
+        is_selling=True,
+        product__is_deleted=False,
+        product__category__bot__is_published=True,
+        product__category__bot__is_selling=True,
+    )
+
+
+def is_product_customer_visible(product_id):
+    if not product_id:
+        return False
+    return customer_visible_product_rows().filter(product_id=product_id).exists()
+
+
 class CatalogService:
     @staticmethod
     def categories(lang='uz'):
@@ -22,10 +39,7 @@ class CatalogService:
 
     @staticmethod
     def products(lang='uz', category_id=None, tag=None, q=None):
-        qs = (BotProduct.objects.select_related('product')
-              .filter(is_published=True, is_selling=True, product__is_deleted=False,
-                      product__category__bot__is_published=True,
-                      product__category__bot__is_selling=True))
+        qs = customer_visible_product_rows().select_related('product')
         if category_id:
             qs = qs.filter(product__category_id=category_id)
         if tag:
@@ -40,12 +54,9 @@ class CatalogService:
     def product_detail(product_id, lang='uz'):
         # Same gate as the list query: a stop-selling product, or one whose
         # category is unpublished/stopped, must NOT leak its detail either.
-        bp = (BotProduct.objects.select_related('product')
+        bp = (customer_visible_product_rows().select_related('product')
               .prefetch_related('product__bot_sizes', 'product__topping_groups__toppings')
-              .filter(product_id=product_id, is_published=True, is_selling=True,
-                      product__is_deleted=False,
-                      product__category__bot__is_published=True,
-                      product__category__bot__is_selling=True).first())
+              .filter(product_id=product_id).first())
         if not bp:
             return ServiceResponse.not_found('Product not found')
         return ServiceResponse.success(data=product_dict(bp, lang, detail=True))

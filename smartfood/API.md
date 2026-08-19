@@ -27,10 +27,11 @@ till under its active on-shift cashier. Manager dispatch remains a fallback.
 | POST | `/auth/logout` | bearer | invalidate session |
 | POST | `/analytics/visit` | bearer | `{client_visit_id: UUID}`; idempotently records one successful Mini App boot |
 | GET/PATCH | `/me` | bearer | profile; PATCH `{name, phone, language}` |
-| GET | `/config` | bearer | delivery fee, thresholds, support, flags |
+| GET | `/config` | bearer | delivery fee, thresholds, support, and independent `loyalty_earning` / `loyalty_spending` flags |
 | GET | `/catalog/categories` | bearer | gated; published+selling |
 | GET | `/catalog/products` | bearer | gated; `?category_id&tag&q&lang` |
 | GET | `/catalog/products/<id>` | bearer | gated; incl. sizes + topping groups |
+| GET | `/banners` | bearer | active, imaged, in-schedule Home banners; `?lang` |
 | POST | `/cart/quote` | bearer | `{items, order_type, tip, points_used}` → authoritative totals |
 | POST | `/orders` | bearer | gated; required UUID `client_order_id`; idempotently creates PENDING order + durable automatic dispatch job |
 | GET | `/orders` | bearer | `?status=active|history`; filters terminal linked POS states correctly |
@@ -42,7 +43,10 @@ till under its active on-shift cashier. Manager dispatch remains a fallback.
 | PUT | `/addresses/<id>/default` | bearer | set default |
 | GET | `/geo/reverse` | bearer | `?lat&lng&lang` (Yandex proxy) |
 | GET | `/geo/forward` | bearer | `?q&lang&limit` (Yandex proxy) |
-| GET | `/loyalty` | bearer | points + earn rate + history |
+| GET | `/loyalty` | bearer | points, earn/checkout rates, ledger history, issued redemptions |
+| GET | `/rewards` | bearer | personalized active reward catalog; `?lang` |
+| POST | `/rewards/<id>/redeem` | bearer | atomically spend the reward point price and mint a code |
+| GET | `/redemptions` | bearer | this customer's recent redemption records |
 | GET | `/support` | bearer | contacts + FAQ |
 | GET/POST | `/support/tickets` | bearer | list / open `{subject, text}` |
 | POST | `/support/tickets/<id>/messages` | bearer | `{text}` |
@@ -52,6 +56,19 @@ The server **recomputes** every price from the live POS price + size delta + top
 prices and re-validates publish/stop-selling at submit — client prices are ignored.
 Cart/order inputs are strict: integer ids/quantities, distinct toppings, bounded
 line counts/quantity/tip/points, and explicit DELIVERY/PICKUP + CASH/CARD enums.
+
+**Exact catalog visibility:** a customer product must have a published/selling
+`BotProduct`, an undeleted POS product, and a published/selling `BotCategory` for
+its POS category. Category and product lists silently omit anything else; detail
+returns 404. Admin `customer_available`, product banner destinations, and
+`FREE_PRODUCT` rewards use this same cohort. Resuming a product never overrides a
+stopped category.
+
+**Home banners:** `/banners` is authenticated but not store-open gated. It returns
+only active rows with an image, `starts_at IS NULL OR starts_at <= now`,
+`ends_at IS NULL OR ends_at > now`, and a still-visible product for `PRODUCT`
+actions. Actions are `NONE`, `CATALOG`, `PRODUCT`, and `LOYALTY`; rows are ordered
+by `sort_order`, then id.
 
 **Idempotency:** generate and persist a UUID `client_order_id` before checkout.
 Retry an ambiguous response with the same UUID and identical normalized payload;
@@ -77,6 +94,20 @@ Locked timestamp flags make reconciliation idempotent. POS-order signals trigger
 it after commit, while the five-second worker performs a bounded repair sweep for
 missed callbacks and pre-upgrade rows even when auto-dispatch is disabled.
 
+Earning and checkout spending are independent runtime controls.
+`loyalty_earn_per = 0` stops new earning, while `loyalty_point_value = 0` stops
+using points as an order discount. The legacy `feature_flags.loyalty` is their OR;
+the specific flags are `loyalty_earning` and `loyalty_spending`. Smart Club reward
+redemption is independent of checkout point value and spends each reward's own
+positive `points_cost`.
+
+The public reward catalog includes only active, positive-cost, in-stock rewards
+with valid kind-specific configuration. `FREE_PRODUCT` also needs a currently
+visible linked product/category, and `DISCOUNT` needs a positive amount. Null stock
+and a per-customer limit of 0 mean unlimited. Customer payloads expose
+`affordable`, `limit_reached`, and authoritative `can_redeem`; canceled
+redemptions do not count toward the limit.
+
 ## Operator console (`/api/admins/smartfood`, manager auth)
 
 The standalone Telegram Bot Studio signs in through the existing admin endpoints
@@ -101,12 +132,36 @@ those remain available to legacy/operator clients only.
 | PATCH | `/products/<id>` | edit bot fields |
 | POST | `/products/<id>/stop` · `/resume` | runtime stop-selling toggle |
 | POST/DELETE | `/products/<id>/image` | upload or remove a managed JPEG/PNG/WebP product photo (8 MB maximum) |
+| GET/POST | `/marketing/banners` | list (with live/draft summary) or create Home banners |
+| PATCH/DELETE | `/marketing/banners/<id>` | edit/pause/schedule or permanently delete a banner |
+| POST/DELETE | `/marketing/banners/<id>/image` | upload/remove banner art; removal also pauses it |
+| GET/POST | `/loyalty/rewards` | list (with global availability summary) or create rewards |
+| PATCH/DELETE | `/loyalty/rewards/<id>` | edit/hide or delete; redemption history blocks deletion |
+| POST/DELETE | `/loyalty/rewards/<id>/image` | upload/remove optional reward art |
 | POST/PATCH/POST | `/categories/<id>/accept · <id> · stop/resume` | same for categories |
 | POST/PATCH/DELETE | `/products/<id>/sizes` · `/sizes/<id>` | size tiers |
 | POST/PATCH/DELETE | `/products/<id>/topping-groups` · `/topping-groups/<id>` | option sets |
 | POST/PATCH/DELETE | `/topping-groups/<id>/toppings` · `/toppings/<id>` | options |
 
+All managed image endpoints inspect file bytes and accept JPEG, PNG, or WebP up
+to and including 8 MB. Recommended client framing is 1200×900 (4:3) for products,
+1440×720 (2:1) for banners, and 800×800 (1:1) for rewards; pixel dimensions are
+guidance, not a server rejection rule. Storage failures return stable 503 copy and
+leave the previous URL intact. Public immutable media lives under
+`/api/smartfood/media/products|banners|rewards/<uuid>.<ext>`; unknown, unsafe, or
+missing files return 404.
+
 ## Bot + deploy
+- The checked-in production surface for the current host is:
+  `https://pos.78.111.90.65.nip.io` for Django/POS APIs,
+  `https://delivery.78.111.90.65.nip.io/webapp/` for the customer Mini App (with
+  same-origin `/api/smartfood` proxying to `pos.`), and
+  `https://alpha-pos-admin.78.111.90.65.nip.io` for the standalone admin SPA
+  (which calls `https://pos.78.111.90.65.nip.io/api/admins` directly).
+- Caddy terminates HTTPS on the external `edge` network. Stable aliases are
+  `alpha-web` (Django), `delivery-webapp` (customer nginx), and `alpha-pos-admin`
+  (admin nginx). `CUSTOMER_WEBAPP_URL` and the Telegram menu button must exactly
+  match the canonical `delivery.` `/webapp/` URL.
 - Customer bot runs by **long-polling**: `python manage.py run_customer_bot` (the
   `bot` service in `docker-compose.yaml`). It stays alive without a configured
   token, picks up a database override or environment fallback without a container

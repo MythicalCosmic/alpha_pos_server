@@ -11,6 +11,7 @@ import secrets
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
@@ -19,6 +20,10 @@ from smartfood.models import (
 )
 from smartfood.serializers import (
     uzs, reward_dict, redemption_dict, loyalty_txn_dict, member_dict,
+)
+from smartfood.services.catalog_service import (
+    customer_visible_product_rows,
+    is_product_customer_visible,
 )
 
 # Unambiguous alphabet (no O/0/I/1) so a code read off a screen is easy to type.
@@ -73,9 +78,43 @@ class LoyaltyService:
     @staticmethod
     def rewards(customer=None, lang='uz'):
         pts = customer.loyalty_points if customer else 0
-        qs = Reward.objects.filter(is_active=True).order_by('sort_order', 'id')
-        items = [reward_dict(r, lang, pts) for r in qs
-                 if (r.stock is None or r.stock > 0)]
+        # A zero-cost reward can mint unlimited redemption codes without a
+        # ledger debit.  Keep malformed legacy rows off the public catalog even
+        # if they were activated outside the operator service.
+        visible_product_ids = customer_visible_product_rows().order_by().values('product_id')
+        qs = Reward.objects.filter(
+            is_active=True,
+            points_cost__gt=0,
+        ).filter(
+            Q(kind=Reward.Kind.FREE_PRODUCT, product_id__in=visible_product_ids)
+            | Q(kind=Reward.Kind.DISCOUNT, discount_amount__gt=0)
+            | Q(kind__in=(Reward.Kind.FREE_DELIVERY, Reward.Kind.CUSTOM))
+        ).order_by('sort_order', 'id')
+        redemption_counts = {}
+        if customer:
+            redemption_counts = {
+                row['reward_id']: row['total']
+                for row in (
+                    Redemption.objects.filter(customer=customer)
+                    .exclude(status=Redemption.Status.CANCELED)
+                    .values('reward_id')
+                    .annotate(total=Count('id'))
+                )
+            }
+        items = []
+        for reward in qs:
+            if reward.stock is not None and reward.stock <= 0:
+                continue
+            limit_reached = bool(
+                reward.per_customer_limit
+                and redemption_counts.get(reward.id, 0) >= reward.per_customer_limit
+            )
+            items.append(reward_dict(
+                reward,
+                lang,
+                pts,
+                limit_reached=limit_reached,
+            ))
         return ServiceResponse.success(data={'points': pts, 'items': items})
 
     @staticmethod
@@ -85,6 +124,15 @@ class LoyaltyService:
                   .filter(id=reward_id, is_active=True).first())
         if not reward:
             return ServiceResponse.not_found('Gift not found')
+        if reward.points_cost <= 0:
+            return ServiceResponse.error('This gift is not configured correctly')
+        if (
+            reward.kind == Reward.Kind.FREE_PRODUCT
+            and not is_product_customer_visible(reward.product_id)
+        ):
+            return ServiceResponse.error('This gift is not currently available')
+        if reward.kind == Reward.Kind.DISCOUNT and reward.discount_amount <= 0:
+            return ServiceResponse.error('This gift is not configured correctly')
         cust = Customer.objects.select_for_update().get(id=customer.id)
         if cust.loyalty_points < reward.points_cost:
             return ServiceResponse.error('Not enough points for this gift')

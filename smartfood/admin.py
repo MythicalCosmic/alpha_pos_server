@@ -10,7 +10,7 @@ actions below (or the inline checkboxes) to flip them.
 from django.contrib import admin
 
 from .models import (
-    BotConfig, BotCategory, BotProduct, Size, ToppingGroup, Topping,
+    BotConfig, BotCategory, BotProduct, BotBanner, Size, ToppingGroup, Topping,
     Customer, CustomerSession, Address, BotOrder, BotOrderItem,
     BotOrderDispatchJob,
     SupportTicket, SupportMessage, Reward, Redemption, LoyaltyTransaction,
@@ -106,6 +106,16 @@ class BotProductAdmin(admin.ModelAdmin):
     @admin.display(description='Category', ordering='product__category')
     def category(self, obj):
         return obj.product.category if obj.product_id else None
+
+
+@admin.register(BotBanner)
+class BotBannerAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'is_active', 'action_type', 'starts_at',
+                    'ends_at', 'sort_order')
+    list_editable = ('is_active', 'sort_order')
+    list_filter = ('is_active', 'action_type')
+    search_fields = ('title_uz', 'title_ru', 'title_en')
+    autocomplete_fields = ('product',)
 
 
 @admin.register(Size)

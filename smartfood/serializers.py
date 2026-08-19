@@ -89,6 +89,36 @@ def product_dict(bot_prod, lang='uz', detail=False):
     return data
 
 
+def banner_dict(banner, lang='uz'):
+    """Customer-safe banner payload for the Mini App home surface."""
+    return {
+        'id': banner.id,
+        'title': tri(banner, 'title', lang),
+        'subtitle': tri(banner, 'subtitle', lang),
+        'image_url': banner.image_url,
+        'action_type': banner.action_type,
+        'product_id': banner.product_id,
+    }
+
+
+def admin_banner_dict(banner, *, destination_available=None):
+    """Full operator payload; schedule and inactive drafts stay visible."""
+    data = {
+        **banner_dict(banner, 'uz'),
+        'titles': names(banner, 'title'),
+        'subtitles': names(banner, 'subtitle'),
+        'is_active': banner.is_active,
+        'starts_at': banner.starts_at.isoformat() if banner.starts_at else None,
+        'ends_at': banner.ends_at.isoformat() if banner.ends_at else None,
+        'sort_order': banner.sort_order,
+        'created_at': banner.created_at.isoformat() if banner.created_at else None,
+        'updated_at': banner.updated_at.isoformat() if banner.updated_at else None,
+    }
+    if destination_available is not None:
+        data['destination_available'] = destination_available
+    return data
+
+
 # ---- customer / addresses ------------------------------------------------- #
 def customer_dict(c):
     return {
@@ -200,7 +230,13 @@ def config_dict(cfg):
         'default_language': cfg.default_lang,
         'service_area': cfg.service_area or {},
         'feature_flags': {
-            'loyalty': bool(cfg.loyalty_earn_per),
+            # Earning points and spending them at checkout are independent
+            # operator controls. Keep the broad flag for older Mini App builds,
+            # but expose the two actual capabilities so neither can imply the
+            # other when its configured value is zero.
+            'loyalty': bool(cfg.loyalty_earn_per or cfg.loyalty_point_value),
+            'loyalty_earning': bool(cfg.loyalty_earn_per),
+            'loyalty_spending': bool(cfg.loyalty_point_value),
             'card_payments': False,
             'scheduled_delivery': False,
         },
@@ -213,8 +249,10 @@ def config_dict(cfg):
 
 
 # ---- loyalty: rewards, redemptions, ledger -------------------------------- #
-def reward_dict(r, lang='uz', points=0):
+def reward_dict(r, lang='uz', points=0, *, limit_reached=False):
     """A gift in the catalog. `points` is the viewer's balance (for `affordable`)."""
+    in_stock = r.stock is None or r.stock > 0
+    affordable = points >= r.points_cost
     return {
         'id': r.id,
         'name': tri(r, 'name', lang, 'Gift'),
@@ -225,9 +263,28 @@ def reward_dict(r, lang='uz', points=0):
         'image_url': r.image_url,
         'discount_amount': uzs(r.discount_amount) if r.kind == 'DISCOUNT' else None,
         'product_id': r.product_id,
-        'in_stock': (r.stock is None or r.stock > 0),
-        'affordable': points >= r.points_cost,
+        'in_stock': in_stock,
+        'affordable': affordable,
+        'limit_reached': limit_reached,
+        'can_redeem': in_stock and affordable and not limit_reached,
     }
+
+
+def admin_reward_dict(r, *, customer_available=None):
+    """Reward catalog row for the bot operator studio."""
+    data = {
+        **reward_dict(r, lang='uz'),
+        'descriptions': names(r, 'desc'),
+        'is_active': r.is_active,
+        'stock': r.stock,
+        'per_customer_limit': r.per_customer_limit,
+        'sort_order': r.sort_order,
+        'created_at': r.created_at.isoformat() if r.created_at else None,
+        'updated_at': r.updated_at.isoformat() if r.updated_at else None,
+    }
+    if customer_available is not None:
+        data['customer_available'] = customer_available
+    return data
 
 
 def redemption_dict(r):

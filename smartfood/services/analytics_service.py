@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
 from smartfood.models import BotOrder, BotProduct, BotVisit, Customer
+from smartfood.services.catalog_service import customer_visible_product_rows
 
 
 _ALLOWED_RANGES = (7, 30, 90)
@@ -178,7 +179,7 @@ class BotAnalyticsService:
         )
         catalog = {
             'published_products': catalog_qs.count(),
-            'available_products': catalog_qs.filter(is_selling=True).count(),
+            'available_products': customer_visible_product_rows().count(),
             'with_image': catalog_qs.exclude(image_url='').count(),
             'missing_image': catalog_qs.filter(image_url='').count(),
         }

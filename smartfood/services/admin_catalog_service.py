@@ -37,6 +37,14 @@ _DECIMAL_FIELDS = {'price_delta', 'price'}
 _NULLABLE_FIELDS = {'kcal'}
 
 
+def _customer_available_filter():
+    return Q(
+        is_selling=True,
+        product__category__bot__is_published=True,
+        product__category__bot__is_selling=True,
+    )
+
+
 def _apply(obj, fields, values):
     """Copy whitelisted, non-None keys from `values` onto `obj`. Returns the list
     of error keys for un-castable decimals (empty == ok)."""
@@ -61,6 +69,7 @@ def _apply(obj, fields, values):
 
 def _admin_product_dict(shadow):
     product = shadow.product
+    category_shadow = getattr(product.category, 'bot', None) if product.category else None
     data = product_dict(shadow, lang='uz', detail=False)
     data.update({
         'source_name': product.name,
@@ -71,6 +80,14 @@ def _admin_product_dict(shadow):
             'name': product.category.name if product.category else '',
         },
         'published': shadow.is_published,
+        'customer_available': bool(
+            shadow.is_published
+            and shadow.is_selling
+            and not product.is_deleted
+            and category_shadow
+            and category_shadow.is_published
+            and category_shadow.is_selling
+        ),
         'sort_order': shadow.sort_order,
         'updated_at': shadow.updated_at.isoformat() if shadow.updated_at else None,
     })
@@ -90,12 +107,18 @@ class AdminCatalogService:
     @staticmethod
     def list_products(q='', availability='all'):
         base_qs = (
-            BotProduct.objects.select_related('product', 'product__category')
+            BotProduct.objects.select_related(
+                'product',
+                'product__category',
+                'product__category__bot',
+            )
             .filter(is_published=True, product__is_deleted=False)
         )
         summary = {
             'published_products': base_qs.count(),
-            'available_products': base_qs.filter(is_selling=True).count(),
+            'available_products': base_qs.filter(
+                _customer_available_filter()
+            ).count(),
             'with_image': base_qs.exclude(image_url='').count(),
             'missing_image': base_qs.filter(image_url='').count(),
         }
@@ -109,9 +132,9 @@ class AdminCatalogService:
                 | Q(name_en__icontains=query)
             )
         if availability == 'available':
-            qs = qs.filter(is_selling=True)
+            qs = qs.filter(_customer_available_filter())
         elif availability == 'stopped':
-            qs = qs.filter(is_selling=False)
+            qs = qs.exclude(_customer_available_filter())
         qs = qs.order_by('sort_order', 'id')
         return ServiceResponse.success(data={
             'items': [_admin_product_dict(item) for item in qs],
@@ -203,7 +226,11 @@ class AdminCatalogService:
             return ServiceResponse.validation_error({k: 'invalid number' for k in bad})
         shadow.is_published = True
         shadow.save()
-        shadow = BotProduct.objects.select_related('product', 'product__category').get(pk=shadow.pk)
+        shadow = BotProduct.objects.select_related(
+            'product',
+            'product__category',
+            'product__category__bot',
+        ).get(pk=shadow.pk)
         return ServiceResponse.success(data=_admin_product_dict(shadow), message='Product accepted')
 
     @staticmethod
@@ -215,7 +242,11 @@ class AdminCatalogService:
         if bad:
             return ServiceResponse.validation_error({k: 'invalid number' for k in bad})
         shadow.save()
-        shadow = BotProduct.objects.select_related('product', 'product__category').get(pk=shadow.pk)
+        shadow = BotProduct.objects.select_related(
+            'product',
+            'product__category',
+            'product__category__bot',
+        ).get(pk=shadow.pk)
         return ServiceResponse.success(data=_admin_product_dict(shadow), message='Product updated')
 
     @staticmethod
@@ -225,7 +256,11 @@ class AdminCatalogService:
             return ServiceResponse.not_found('Product not accepted to the bot')
         shadow.is_selling = bool(selling)
         shadow.save(update_fields=['is_selling', 'updated_at'])
-        shadow = BotProduct.objects.select_related('product', 'product__category').get(pk=shadow.pk)
+        shadow = BotProduct.objects.select_related(
+            'product',
+            'product__category',
+            'product__category__bot',
+        ).get(pk=shadow.pk)
         return ServiceResponse.success(data=_admin_product_dict(shadow))
 
     # ---- categories ------------------------------------------------------- #

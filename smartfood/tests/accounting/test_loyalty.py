@@ -17,7 +17,7 @@ def customer(db):
 def reward(db):
     return Reward.objects.create(
         name_uz='Bepul kofe', name_en='Free coffee',
-        kind=Reward.Kind.FREE_PRODUCT, points_cost=100, is_active=True)
+        kind=Reward.Kind.CUSTOM, points_cost=100, is_active=True)
 
 
 @pytest.mark.django_db

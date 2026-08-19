@@ -138,6 +138,52 @@ class BotProduct(TimeStamped):
         return f"BotProduct({self.product_id}, pub={self.is_published})"
 
 
+class BotBanner(TimeStamped):
+    """Scheduled home banner shown inside the Telegram Mini App.
+
+    Banners are deliberately bot-local marketing content.  They never modify
+    the POS catalog, and a product action only points at the canonical POS
+    product row used by the existing customer catalog.
+    """
+
+    class Action(models.TextChoices):
+        NONE = 'NONE', 'No action'
+        CATALOG = 'CATALOG', 'Open catalog'
+        PRODUCT = 'PRODUCT', 'Open product'
+        LOYALTY = 'LOYALTY', 'Open rewards'
+
+    title_uz = models.CharField(max_length=140, blank=True, default='')
+    title_ru = models.CharField(max_length=140, blank=True, default='')
+    title_en = models.CharField(max_length=140, blank=True, default='')
+    subtitle_uz = models.CharField(max_length=240, blank=True, default='')
+    subtitle_ru = models.CharField(max_length=240, blank=True, default='')
+    subtitle_en = models.CharField(max_length=240, blank=True, default='')
+    image_url = models.URLField(blank=True, default='')
+    action_type = models.CharField(
+        max_length=12,
+        choices=Action.choices,
+        default=Action.NONE,
+    )
+    product = models.ForeignKey(
+        'base.Product',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    is_active = models.BooleanField(default=False, db_index=True)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['is_active', 'sort_order'])]
+
+    def __str__(self):
+        return self.title_uz or self.title_en or f'Banner {self.id}'
+
+
 class Size(TimeStamped):
     """Selectable size tier for a product (NEW — POS has no sizes)."""
     product = models.ForeignKey('base.Product', on_delete=models.CASCADE, related_name='bot_sizes')
