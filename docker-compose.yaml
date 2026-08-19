@@ -25,6 +25,26 @@ services:
       timeout: 5s
       retries: 5
 
+  media_init:
+    # Named volumes are created as root. Prepare the private-media mount before
+    # Django starts so the non-root `app` user can persist product images and
+    # other uploads on both first boot and existing installations.
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: alpha_pos_server:local
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /app/private_media
+        chown app:app /app/private_media
+        chmod 0750 /app/private_media
+    restart: "no"
+    volumes:
+      - media_data:/app/private_media
+
   web:
     build:
       context: .
@@ -72,6 +92,8 @@ services:
       # are silently lost on every `docker compose up --build` / redeploy.
       - media_data:/app/private_media
     depends_on:
+      media_init:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       redis:
