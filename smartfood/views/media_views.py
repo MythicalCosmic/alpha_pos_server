@@ -32,8 +32,14 @@ def reward_image(request, filename):
     return _serve('rewards', filename)
 
 
+@require_GET
+def broadcast_image(request, filename):
+    return _serve('broadcasts', filename)
+
+
 urlpatterns = [
     path('media/products/<str:filename>', product_image, name='smartfood-product-image'),
     path('media/banners/<str:filename>', banner_image, name='smartfood-banner-image'),
     path('media/rewards/<str:filename>', reward_image, name='smartfood-reward-image'),
+    path('media/broadcasts/<str:filename>', broadcast_image, name='smartfood-broadcast-image'),
 ]

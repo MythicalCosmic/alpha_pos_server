@@ -72,13 +72,10 @@ def _address(order, assignment):
     lat = assignment.addr_lat if assignment else None
     lng = assignment.addr_lng if assignment else None
     dist = assignment.distance_km if assignment else None
-    if bot and getattr(bot, 'address_id', None):
-        addr = bot.address
-        text = text or (addr.line or bot.address_text)
-        if lat is None and addr.lat is not None:
-            lat, lng = float(addr.lat), float(addr.lng) if addr.lng is not None else None
-    elif bot and bot.address_text:
+    if bot and bot.address_text:
         text = text or bot.address_text
+        if lat is None and bot.address_lat is not None and bot.address_lng is not None:
+            lat, lng = float(bot.address_lat), float(bot.address_lng)
     coords = {'lat': lat, 'lng': lng} if (lat is not None and lng is not None) else None
     return {'text': text, 'landmark': landmark, 'coords': coords, 'distanceKm': dist}
 

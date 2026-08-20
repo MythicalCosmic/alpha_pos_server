@@ -22,7 +22,10 @@ def test_dispatch_lines_publish_only_after_transaction_commit(
         customer=customer,
         status=BotOrder.Status.PENDING,
         order_type='DELIVERY',
-        phone_number='+998900000000',
+        phone_number='998900000000',
+        address_text='Amir Temur 12',
+        address_lat=Decimal('41.311158'),
+        address_lng=Decimal('69.279737'),
         subtotal=Decimal('39000'),
         total=Decimal('39000'),
     )
@@ -87,6 +90,9 @@ def test_dispatch_customer_order_item_chain_applies_on_owning_terminal(
         status=BotOrder.Status.PENDING,
         order_type='DELIVERY',
         phone_number=customer.phone_number,
+        address_text='Amir Temur 12',
+        address_lat=Decimal('41.311158'),
+        address_lng=Decimal('69.279737'),
         subtotal=Decimal('39000'),
         total=Decimal('39000'),
     )
@@ -161,7 +167,10 @@ def test_dispatch_stock_failure_keeps_bot_order_pending_and_rolls_back_pos_order
         customer=customer,
         status=BotOrder.Status.PENDING,
         order_type='DELIVERY',
-        phone_number='+998900000000',
+        phone_number='998900000000',
+        address_text='Amir Temur 12',
+        address_lat=Decimal('41.311158'),
+        address_lng=Decimal('69.279737'),
         subtotal=Decimal('39000'),
         total=Decimal('39000'),
     )

@@ -1,14 +1,13 @@
-"""Customer catalog endpoints (read-only, bot-gated).
+"""Customer catalog endpoints (read-only and available while ordering is closed).
 
-Mounted under api/smartfood/. Browsing is blocked with a 200 'closed' payload
-when the bot is OFF (see require_open).
+Mounted under api/smartfood/. BotConfig.enabled gates quotes and order writes,
+not browsing, so customers can inspect the menu before service resumes.
 """
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 from django.urls import path
 
-from smartfood.gating import require_open
 from smartfood.security import customer_required
 from smartfood.services.catalog_service import CatalogService
 
@@ -19,7 +18,6 @@ def _lang(request):
 
 @csrf_exempt
 @require_GET
-@require_open
 @customer_required
 def categories(request):
     result, status = CatalogService.categories(lang=_lang(request))
@@ -28,7 +26,6 @@ def categories(request):
 
 @csrf_exempt
 @require_GET
-@require_open
 @customer_required
 def products(request):
     result, status = CatalogService.products(
@@ -42,7 +39,6 @@ def products(request):
 
 @csrf_exempt
 @require_GET
-@require_open
 @customer_required
 def product_detail(request, product_id):
     result, status = CatalogService.product_detail(product_id, lang=_lang(request))

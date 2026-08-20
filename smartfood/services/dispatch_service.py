@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
 from base.repositories import OrderRepository
+from base.services.phone import is_canonical_uz_phone
 from smartfood.models import BotOrder
 
 logger = logging.getLogger(__name__)
@@ -50,15 +51,13 @@ def _auto_assign_courier_safe(bot_order_id, pos_order_id):
                     pos_order_id,
                 )
                 return
-            bot_order = (BotOrder.objects.select_related('address')
-                         .filter(id=bot_order_id).first())
+            bot_order = BotOrder.objects.filter(id=bot_order_id).first()
             if not bot_order:
                 return
-            addr = bot_order.address
             assign(order, courier, fee=bot_order.delivery_fee,
                    addr_text=bot_order.address_text,
-                   addr_lat=(addr.lat if addr else None),
-                   addr_lng=(addr.lng if addr else None))
+                   addr_lat=bot_order.address_lat,
+                   addr_lng=bot_order.address_lng)
     except Exception:
         logger.exception('auto courier-assign failed (order=%s)', pos_order_id)
 
@@ -79,6 +78,12 @@ def _bot_customer_user():
 def _notify(bot_order, event):
     bot_order_id = bot_order.id
 
+    # The outbox row is durable business evidence, so write it inside the same
+    # transaction as the order transition. Only the live WebSocket publish is
+    # deferred until commit.
+    from smartfood.services.notification_service import queue_order_status
+    queue_order_status(bot_order_id, event)
+
     def notify_committed():
         committed = (BotOrder.objects.select_related('customer')
                      .filter(id=bot_order_id).first())
@@ -89,11 +94,6 @@ def _notify(bot_order, event):
             publish_bot_order_event(bot_order_id, event)
         except Exception:
             logger.debug('customer ws publish failed (%s)', event, exc_info=True)
-        try:
-            from smartfood.services.notification_service import notify_customer
-            notify_customer(committed, event)
-        except Exception:
-            logger.warning('customer notify failed (%s)', event, exc_info=True)
 
     transaction.on_commit(notify_committed, robust=True)
 
@@ -102,13 +102,35 @@ class DispatchService:
     @staticmethod
     @transaction.atomic
     def dispatch(bot_order_id, cashier_id, operator=None):
-        bot_order = (BotOrder.objects.select_for_update()
+        bot_order = (BotOrder.objects.select_for_update().select_related('customer')
                      .filter(id=bot_order_id).first())
         if not bot_order:
             return ServiceResponse.not_found('Order not found')
         if bot_order.status != BotOrder.Status.PENDING:
             return {'success': False, 'code': 'already_handled',
                     'message': f'Order already {bot_order.status.lower()}'}, 409
+        customer = bot_order.customer
+        identity_errors = {}
+        if customer.profile_confirmed_at is None:
+            identity_errors['confirmation'] = 'required'
+        if not (customer.first_name or '').strip():
+            identity_errors['first_name'] = 'required'
+        if not (customer.last_name or '').strip():
+            identity_errors['last_name'] = 'required'
+        if not is_canonical_uz_phone(bot_order.phone_number):
+            identity_errors['phone'] = 'required'
+        if bot_order.order_type == BotOrder.OrderType.DELIVERY:
+            if not (bot_order.address_text or '').strip():
+                identity_errors['address'] = 'required'
+            if bot_order.address_lat is None or bot_order.address_lng is None:
+                identity_errors['location'] = 'required'
+        if identity_errors:
+            return ({
+                'success': False,
+                'code': 'checkout_identity_invalid',
+                'message': 'The order is missing its confirmed delivery details.',
+                'errors': identity_errors,
+            }, 422)
 
         # Lock both cashier + ACTIVE shift and take branch ownership from that
         # pair.  The cloud process has no single BRANCH_ID; using its environment
@@ -266,6 +288,12 @@ class DispatchService:
         bot_order.save(update_fields=['pos_order', 'dispatched_cashier', 'dispatched_by',
                                       'dispatched_at', 'status', 'updated_at'])
         _notify(bot_order, 'dispatched')
+        # For all-instant orders the POS row reached READY before the reverse
+        # BotOrder link existed, so the Order post_save signal could not emit it.
+        # Queue it explicitly after "dispatched" to preserve customer-visible
+        # ordering while still recording both durable events in this transaction.
+        if order.status == 'READY':
+            _notify(bot_order, 'ready')
         # Auto courier-assign (default OFF): hand a DELIVERY order to an available
         # courier right after dispatch. Runs after commit; manual assignment via
         # POST /api/admins/couriers/assign stays the default and an override.

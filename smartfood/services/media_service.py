@@ -2,13 +2,17 @@
 import logging
 import re
 import uuid
+import warnings
+from io import BytesIO
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db import transaction
+from PIL import Image, UnidentifiedImageError
 
 from base.helpers.response import ServiceResponse
-from smartfood.models import BotBanner, BotProduct, Reward
-from smartfood.serializers import admin_banner_dict, product_dict
+from smartfood.models import BotBanner, BotBroadcast, BotProduct, Reward
+from smartfood.serializers import admin_banner_dict, admin_broadcast_dict, product_dict
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +31,10 @@ _MEDIA = {
     'rewards': {
         'public': '/api/smartfood/media/rewards/',
         'storage': 'smartfood/rewards/',
+    },
+    'broadcasts': {
+        'public': '/api/smartfood/media/broadcasts/',
+        'storage': 'smartfood/broadcasts/',
     },
 }
 PUBLIC_PRODUCT_MEDIA_PREFIX = _MEDIA['products']['public']
@@ -50,6 +58,49 @@ def _image_kind(content):
     if len(content) >= 12 and content[:4] == b'RIFF' and content[8:12] == b'WEBP':
         return 'webp', 'image/webp'
     return None, None
+
+
+def _decode_image(content, extension, kind):
+    """Fully decode media and enforce Telegram's sendPhoto geometry."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                width, height = image.size
+                detected = (image.format or '').upper()
+                image.verify()
+            with Image.open(BytesIO(content)) as image:
+                image.load()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning,
+            UnidentifiedImageError, OSError, ValueError, SyntaxError):
+        return None, None, 'The file is damaged or is not a decodable image.'
+
+    expected = {'jpg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP'}[extension]
+    if detected != expected or width <= 0 or height <= 0:
+        return None, None, 'The image format does not match its file content.'
+
+    if kind == 'broadcasts':
+        if width + height > 10000 or max(width, height) / min(width, height) > 20:
+            return None, None, (
+                'Telegram photos require width + height up to 10,000 pixels '
+                'and an aspect ratio no wider than 20:1.'
+            )
+        # Telegram's photo endpoint is most predictable with JPEG/PNG. Convert
+        # WebP once at upload time instead of letting every recipient fail.
+        if extension == 'webp':
+            with Image.open(BytesIO(content)) as source:
+                if source.mode in ('RGBA', 'LA'):
+                    rgba = source.convert('RGBA')
+                    background = Image.new('RGB', rgba.size, 'white')
+                    background.paste(rgba, mask=rgba.getchannel('A'))
+                    converted = background
+                else:
+                    converted = source.convert('RGB')
+                output = BytesIO()
+                converted.save(output, format='JPEG', quality=92, optimize=True)
+                content = output.getvalue()
+                extension = 'jpg'
+    return content, extension, ''
 
 
 def managed_media_storage_name(url, kind):
@@ -117,6 +168,13 @@ def _upload(obj, uploaded, *, kind, serializer, message, update_fields=None):
         return ServiceResponse.validation_error({
             'image': 'Use a JPEG, PNG, or WebP image.',
         })
+    content, extension, image_error = _decode_image(content, extension, kind)
+    if image_error:
+        return ServiceResponse.validation_error({'image': image_error})
+    if len(content) > MAX_IMAGE_BYTES:
+        return ServiceResponse.validation_error({
+            'image': 'The converted image must be 8 MB or smaller.',
+        })
 
     filename = f'{uuid.uuid4().hex}.{extension}'
     storage_name = _MEDIA[kind]['storage'] + filename
@@ -144,7 +202,10 @@ def _upload(obj, uploaded, *, kind, serializer, message, update_fields=None):
         delete_managed_media(new_url, kind)
         raise
     if previous_url != new_url:
-        delete_managed_media(previous_url, kind)
+        transaction.on_commit(
+            lambda url=previous_url: delete_managed_media(url, kind),
+            robust=True,
+        )
     return ServiceResponse.success(data=serializer(obj), message=message)
 
 
@@ -156,7 +217,10 @@ def _remove(obj, *, kind, serializer, message, deactivate=False):
         obj.is_active = False
         fields.append('is_active')
     obj.save(update_fields=fields)
-    delete_managed_media(previous_url, kind)
+    transaction.on_commit(
+        lambda url=previous_url: delete_managed_media(url, kind),
+        robust=True,
+    )
     return ServiceResponse.success(data=serializer(obj), message=message)
 
 
@@ -255,4 +319,59 @@ class RewardMediaService:
             kind='rewards',
             serializer=_admin_reward_payload,
             message='Reward image removed',
+        )
+
+
+class BroadcastMediaService:
+    @staticmethod
+    def _get(broadcast_id, *, for_update=False):
+        queryset = BotBroadcast.objects.select_related('created_by')
+        if for_update:
+            queryset = queryset.select_for_update()
+        return queryset.filter(
+            id=broadcast_id,
+        ).first()
+
+    @staticmethod
+    def _editable(broadcast):
+        if broadcast is None:
+            return ServiceResponse.not_found('Broadcast not found')
+        if broadcast.status != BotBroadcast.Status.DRAFT:
+            return ({
+                'success': False,
+                'code': 'broadcast_locked',
+                'message': 'A queued or sent broadcast cannot be edited.',
+            }, 409)
+        return None
+
+    @staticmethod
+    @transaction.atomic
+    def upload(broadcast_id, uploaded):
+        # Serialize against BroadcastService.send(), which locks the same row
+        # before freezing its fan-out. Queued media can never be replaced or
+        # removed underneath pending recipients.
+        broadcast = BroadcastMediaService._get(broadcast_id, for_update=True)
+        error = BroadcastMediaService._editable(broadcast)
+        if error:
+            return error
+        return _upload(
+            broadcast,
+            uploaded,
+            kind='broadcasts',
+            serializer=admin_broadcast_dict,
+            message='Broadcast photo uploaded',
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def remove(broadcast_id):
+        broadcast = BroadcastMediaService._get(broadcast_id, for_update=True)
+        error = BroadcastMediaService._editable(broadcast)
+        if error:
+            return error
+        return _remove(
+            broadcast,
+            kind='broadcasts',
+            serializer=admin_broadcast_dict,
+            message='Broadcast photo removed',
         )

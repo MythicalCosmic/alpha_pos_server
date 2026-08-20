@@ -1,8 +1,8 @@
 """Long-poll the customer Telegram bot (getUpdates) and serve the Mini App entry.
 
-Greets + offers the WebApp "open menu" button when the bot is ENABLED
-(BotConfig.enabled — flippable at runtime from the operator console with NO
-restart); when disabled, replies that ordering is closed and hides the button.
+The Mini App remains browsable even while ordering is closed, so every reply
+offers the WebApp button. BotConfig.enabled only changes the accompanying copy
+and the authoritative ordering gates inside the API.
 
     python manage.py run_customer_bot
 
@@ -16,6 +16,7 @@ import signal
 import time
 
 import requests
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from smartfood.credentials import customer_bot_token
@@ -24,9 +25,24 @@ logger = logging.getLogger('smartfood.bot')
 _API = 'https://api.telegram.org/bot{token}/{method}'
 
 _CLOSED = {
-    'uz': 'Kechirasiz, hozircha buyurtma qabul qilinmayapti. 😔',
-    'ru': 'Извините, приём заказов сейчас закрыт. 😔',
-    'en': 'Sorry, we are not accepting orders right now. 😔',
+    'uz': 'Hozircha buyurtma qabul qilinmayapti, lekin menyuni ko‘rishingiz mumkin.',
+    'ru': 'Сейчас заказы не принимаются, но вы можете посмотреть меню.',
+    'en': 'Ordering is closed right now, but you can still browse the menu.',
+}
+
+_OPEN = {
+    'uz': {
+        'text': 'Xush kelibsiz! Menyuni ochib, buyurtma berishingiz mumkin.',
+        'button': 'Menyuni ochish',
+    },
+    'ru': {
+        'text': 'Добро пожаловать! Откройте меню, чтобы сделать заказ.',
+        'button': 'Открыть меню',
+    },
+    'en': {
+        'text': 'Welcome! Open the menu to place your order.',
+        'button': 'Open menu',
+    },
 }
 
 
@@ -54,6 +70,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('customer bot polling started'))
         offset = None
         active_token = None
+        menu_token = None
         parked_notice = False
         while self._running:
             token = customer_bot_token()
@@ -64,6 +81,7 @@ class Command(BaseCommand):
                     )
                     parked_notice = True
                 active_token = None
+                menu_token = None
                 offset = None
                 time.sleep(5)
                 continue
@@ -72,25 +90,52 @@ class Command(BaseCommand):
                 # A token changed in the admin console. Switch credentials
                 # without restarting the container and reset the update cursor,
                 # because update ids belong to the bot represented by the token.
-                active_token = token
                 offset = None
                 try:
-                    requests.post(
-                        _API.format(token=token, method='deleteWebhook'),
-                        json={'drop_pending_updates': False},
-                        timeout=10,
-                    )
+                    configured = self._configure_token(token)
                 except Exception:
-                    logger.debug('deleteWebhook failed', exc_info=True)
+                    configured = False
+                    logger.warning('Telegram bot setup failed; retrying', exc_info=True)
+                if not configured:
+                    time.sleep(3)
+                    continue
+                active_token = token
+                menu_token = None
+            if token != menu_token:
+                try:
+                    if self._configure_menu_button(token):
+                        menu_token = token
+                except Exception:
+                    # The inline /start button remains available even if the
+                    # persistent chat-menu shortcut cannot be installed yet.
+                    logger.warning(
+                        'Telegram chat menu setup failed; retrying after polling',
+                        exc_info=True,
+                    )
             try:
                 params = {'timeout': poll_timeout}
                 if offset is not None:
                     params['offset'] = offset
                 resp = requests.get(_API.format(token=token, method='getUpdates'),
                                     params=params, timeout=poll_timeout + 15)
-                updates = (resp.json() or {}).get('result', []) if resp.ok else []
+                payload = self._response_payload(resp)
+                if not getattr(resp, 'ok', False) or payload.get('ok') is not True:
+                    error_code = payload.get('error_code')
+                    logger.warning(
+                        'Telegram getUpdates failed (HTTP %s, code %s): %s',
+                        getattr(resp, 'status_code', 'unknown'),
+                        error_code,
+                        payload.get('description', 'unknown error'),
+                    )
+                    if error_code == 409:
+                        # A webhook may have been installed after startup. Force
+                        # deleteWebhook setup to run again before the next poll.
+                        active_token = None
+                    time.sleep(3)
+                    continue
+                updates = payload.get('result') or []
             except Exception:
-                logger.debug('getUpdates failed', exc_info=True)
+                logger.warning('Telegram getUpdates failed; retrying', exc_info=True)
                 time.sleep(3)
                 continue
             for upd in updates:
@@ -102,21 +147,89 @@ class Command(BaseCommand):
         self.stdout.write('customer bot polling stopped')
 
     def _handle(self, token, update):
+        from notifications.services.customer_bot import (
+            build_reply,
+            mark_reachable,
+            send_webapp_entry,
+        )
         from smartfood.models import BotConfig
         msg = update.get('message') or update.get('edited_message') or {}
         chat = msg.get('chat') or {}
         chat_id = chat.get('id')
         if not chat_id:
             return
-        if BotConfig.load().enabled:
-            # Reuse the canonical greeting + WebApp "open menu" button.
-            from notifications.services import customer_bot
-            customer_bot.handle_update(update, token=token)
-        else:
-            lang = ((msg.get('from') or {}).get('language_code') or 'uz')[:2]
-            text = _CLOSED.get(lang, _CLOSED['en'])
-            try:
-                requests.post(_API.format(token=token, method='sendMessage'),
-                              json={'chat_id': chat_id, 'text': text}, timeout=10)
-            except Exception:
-                logger.debug('closed reply failed', exc_info=True)
+        language = ((msg.get('from') or {}).get('language_code') or 'uz')[:2]
+        language = language if language in _OPEN else 'uz'
+        payload = build_reply(
+            chat_id,
+            language=language,
+            enabled=BotConfig.load().enabled,
+        )
+        try:
+            if send_webapp_entry(token, payload):
+                mark_reachable(chat_id)
+        except Exception:
+            logger.debug('open menu reply failed', exc_info=True)
+
+    @classmethod
+    def _configure_token(cls, token):
+        """Remove webhook mode before starting the mutually-exclusive poller."""
+        response = requests.post(
+            _API.format(token=token, method='deleteWebhook'),
+            json={'drop_pending_updates': False},
+            timeout=10,
+        )
+        if not cls._telegram_ok(response):
+            payload = cls._response_payload(response)
+            logger.warning(
+                'Telegram deleteWebhook was rejected (HTTP %s, code %s): %s',
+                getattr(response, 'status_code', 'unknown'),
+                payload.get('error_code'),
+                payload.get('description', 'unknown error'),
+            )
+            return False
+
+        return True
+
+    @classmethod
+    def _configure_menu_button(cls, token):
+        """Best-effort persistent Web App shortcut; inline replies remain live."""
+        webapp_url = getattr(settings, 'CUSTOMER_WEBAPP_URL', '')
+        if not webapp_url:
+            return True
+        response = requests.post(
+            _API.format(token=token, method='setChatMenuButton'),
+            json={
+                'menu_button': {
+                    'type': 'web_app',
+                    'text': _OPEN['uz']['button'],
+                    'web_app': {'url': webapp_url},
+                },
+            },
+            timeout=10,
+        )
+        if not cls._telegram_ok(response):
+            payload = cls._response_payload(response)
+            logger.warning(
+                'Telegram setChatMenuButton was rejected (HTTP %s, code %s): %s',
+                getattr(response, 'status_code', 'unknown'),
+                payload.get('error_code'),
+                payload.get('description', 'unknown error'),
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _response_payload(response):
+        try:
+            payload = response.json() or {}
+        except (TypeError, ValueError):
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    @classmethod
+    def _telegram_ok(cls, response):
+        return (
+            bool(getattr(response, 'ok', False))
+            and cls._response_payload(response).get('ok') is True
+        )

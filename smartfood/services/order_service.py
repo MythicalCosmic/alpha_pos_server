@@ -11,6 +11,7 @@ from django.db import transaction
 from django.db.models import Q
 
 from base.helpers.response import ServiceResponse
+from base.services.phone import is_canonical_uz_phone, normalize_uz_phone
 from smartfood.models import Address, BotOrder, BotOrderItem, Customer
 from smartfood.serializers import bot_order_dict, instore_order_dict
 from smartfood.services.cart_service import price_cart, CartError
@@ -23,7 +24,6 @@ from smartfood.services.order_input import (
     normalize_note,
     normalize_order_type,
     normalize_payment_method,
-    normalize_phone,
     normalize_points,
     normalize_tip,
 )
@@ -83,10 +83,20 @@ class BotOrderService:
         # concurrent order creation — the clamp in price_cart must read a fresh,
         # locked balance, and the reserve below happens within the same lock.
         customer = Customer.objects.select_for_update().get(id=customer.id)
-        try:
-            phone = normalize_phone(phone, fallback=customer.phone_number)
-        except OrderInputError as exc:
-            return error_response(exc)
+        if phone not in (None, ''):
+            if isinstance(phone, bool):
+                return ServiceResponse.validation_error({
+                    'phone': 'Enter the confirmed account phone number.',
+                })
+            submitted_phone = normalize_uz_phone(phone)
+            if submitted_phone != normalize_uz_phone(customer.phone_number):
+                return ({
+                    'success': False,
+                    'code': 'profile_phone_mismatch',
+                    'message': 'Use the phone number confirmed on your account.',
+                    'errors': {'phone': 'Phone does not match the confirmed account.'},
+                }, 422)
+        phone = normalize_uz_phone(customer.phone_number)
 
         fingerprint = _request_fingerprint({
             'items': items,
@@ -125,6 +135,17 @@ class BotOrderService:
                 message='Order already created',
             )
 
+        if not customer.profile_complete or not is_canonical_uz_phone(phone):
+            return ({
+                'success': False,
+                'code': 'profile_required',
+                'message': 'Confirm your name and phone number before ordering.',
+                'errors': {
+                    field: 'required'
+                    for field in customer.profile_missing
+                },
+            }, 422)
+
         # Only a genuinely new request needs current store availability.
         # Idempotency replay/conflict above must remain recoverable after a till
         # disconnect or an operator temporarily closes the bot; otherwise a
@@ -154,11 +175,22 @@ class BotOrderService:
 
         address = None
         address_text = ''
+        address_lat = None
+        address_lng = None
         if order_type == 'DELIVERY':
             address = Address.objects.filter(id=address_id, customer=customer).first()
             if not address:
                 return ServiceResponse.not_found('Address not found')
+            if address.lat is None or address.lng is None:
+                return ({
+                    'success': False,
+                    'code': 'location_required',
+                    'message': 'Pin the delivery location on the map before ordering.',
+                    'errors': {'address_id': 'A precise location is required.'},
+                }, 422)
             address_text = address.line
+            address_lat = address.lat
+            address_lng = address.lng
 
         order = BotOrder.objects.create(
             customer=customer,
@@ -167,6 +199,7 @@ class BotOrderService:
             status=BotOrder.Status.PENDING,
             order_type=order_type,
             address=address, address_text=address_text,
+            address_lat=address_lat, address_lng=address_lng,
             phone_number=phone, note=note,
             subtotal=priced['subtotal'], delivery_fee=priced['delivery_fee'],
             discount=priced['discount'], tip=priced['tip'], total=priced['total'],
@@ -197,6 +230,8 @@ class BotOrderService:
         if getattr(settings, 'SMARTFOOD_AUTO_DISPATCH', True):
             from smartfood.models import BotOrderDispatchJob
             BotOrderDispatchJob.objects.create(bot_order=order)
+        from smartfood.services.notification_service import queue_order_status
+        queue_order_status(order.id, 'placed')
         return ServiceResponse.created(data=bot_order_dict(order))
 
     @staticmethod
@@ -249,6 +284,8 @@ class BotOrderService:
         reconcile_bot_order_loyalty(order.id)
         # Push the cancellation to the customer's Mini App over WS after commit.
         from smartfood.realtime import publish_bot_order_event
+        from smartfood.services.notification_service import queue_order_status
         _oid = order.id
         transaction.on_commit(lambda: publish_bot_order_event(_oid, 'canceled'))
+        queue_order_status(_oid, 'canceled')
         return ServiceResponse.success(data={'id': order.id, 'status': order.status})

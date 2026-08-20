@@ -248,13 +248,36 @@ class Customer(TimeStamped):
     last_name = models.CharField(max_length=64, blank=True, default='')
     phone_number = models.CharField(max_length=20, blank=True, default='')
     language = models.CharField(max_length=2, choices=LANG_CHOICES, default='uz')
+    language_overridden = models.BooleanField(default=False)
     photo_url = models.URLField(blank=True, default='')
     loyalty_points = models.IntegerField(default=0)
     is_blocked = models.BooleanField(default=False)
+    broadcast_opted_in = models.BooleanField(default=True)
+    telegram_reachable = models.BooleanField(default=True)
+    profile_confirmed_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def name(self):
         return (f"{self.first_name} {self.last_name}").strip() or self.username or str(self.telegram_id)
+
+    @property
+    def profile_missing(self):
+        from base.services.phone import is_canonical_uz_phone
+
+        missing = []
+        if not (self.first_name or '').strip():
+            missing.append('first_name')
+        if not (self.last_name or '').strip():
+            missing.append('last_name')
+        if not is_canonical_uz_phone(self.phone_number):
+            missing.append('phone')
+        if self.profile_confirmed_at is None:
+            missing.append('confirmation')
+        return missing
+
+    @property
+    def profile_complete(self):
+        return not self.profile_missing
 
     def __str__(self):
         return f"Customer({self.telegram_id}, {self.name})"
@@ -376,6 +399,8 @@ class BotOrder(TimeStamped):
     order_type = models.CharField(max_length=10, choices=OrderType.choices, default=OrderType.DELIVERY)
     address = models.ForeignKey(Address, on_delete=models.SET_NULL, null=True, blank=True)
     address_text = models.TextField(blank=True, default='')   # frozen snapshot of the address at order time
+    address_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    address_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     phone_number = models.CharField(max_length=20, blank=True, default='')
     note = models.TextField(blank=True, default='')
 
@@ -470,6 +495,122 @@ class BotOrderDispatchJob(TimeStamped):
 
     def __str__(self):
         return f"BotOrderDispatchJob({self.bot_order_id}, {self.status}, {self.attempts})"
+
+
+# --------------------------------------------------------------------------- #
+#  Customer messaging                                                         #
+# --------------------------------------------------------------------------- #
+class BotBroadcast(TimeStamped):
+    """Operator-authored Telegram announcement and its frozen send snapshot."""
+
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', 'Draft'
+        QUEUED = 'QUEUED', 'Queued'
+        SENDING = 'SENDING', 'Sending'
+        SENT = 'SENT', 'Sent'
+        PARTIAL = 'PARTIAL', 'Partially sent'
+        FAILED = 'FAILED', 'Failed'
+
+    title = models.CharField(max_length=120)
+    text_uz = models.TextField(blank=True, default='')
+    text_ru = models.TextField(blank=True, default='')
+    text_en = models.TextField(blank=True, default='')
+    image_url = models.URLField(blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        'base.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+    updated_by = models.ForeignKey(
+        'base.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
+    recipient_count = models.PositiveIntegerField(default=0)
+    delivered_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(default=0)
+    queued_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+
+    def __str__(self):
+        return f"BotBroadcast({self.id}, {self.title}, {self.status})"
+
+
+class BotOutboundMessage(TimeStamped):
+    """Durable Telegram outbox for order updates and bulk broadcasts."""
+
+    class Kind(models.TextChoices):
+        ORDER_STATUS = 'ORDER_STATUS', 'Order status'
+        BROADCAST = 'BROADCAST', 'Broadcast'
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        PROCESSING = 'PROCESSING', 'Processing'
+        SENT = 'SENT', 'Sent'
+        FAILED = 'FAILED', 'Failed'
+        SKIPPED = 'SKIPPED', 'Skipped'
+
+    kind = models.CharField(max_length=16, choices=Kind.choices, db_index=True)
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name='outbound_messages',
+    )
+    bot_order = models.ForeignKey(
+        BotOrder, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='outbound_messages',
+    )
+    broadcast = models.ForeignKey(
+        BotBroadcast, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='messages',
+    )
+    event_key = models.CharField(max_length=32, blank=True, default='')
+    chat_id = models.BigIntegerField()
+    language = models.CharField(max_length=2, choices=LANG_CHOICES, default='uz')
+    text = models.TextField()
+    image_url = models.URLField(blank=True, default='')
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    claim_token = models.UUIDField(null=True, blank=True, editable=False)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    telegram_message_id = models.BigIntegerField(null=True, blank=True)
+    last_error = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        ordering = ['next_attempt_at', 'id']
+        indexes = [models.Index(
+            fields=['status', 'next_attempt_at'],
+            name='sf_outbound_status_next_idx',
+        )]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['bot_order', 'event_key'],
+                condition=Q(bot_order__isnull=False),
+                name='sf_outbound_order_event_uniq',
+            ),
+            models.UniqueConstraint(
+                fields=['broadcast', 'customer'],
+                condition=Q(broadcast__isnull=False),
+                name='sf_outbound_broadcast_customer_uniq',
+            ),
+        ]
+
+    def __str__(self):
+        return f"BotOutboundMessage({self.id}, {self.kind}, {self.status})"
 
 
 # --------------------------------------------------------------------------- #

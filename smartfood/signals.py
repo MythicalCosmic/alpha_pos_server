@@ -41,3 +41,14 @@ def _customer_order_status_bridge(sender, instance, created, **kwargs):
         lambda: reconcile_bot_order_loyalty_safe(bo_id),
         robust=True,
     )
+    event = {
+        'PREPARING': 'preparing',
+        'READY': 'ready',
+        'COMPLETED': 'completed',
+        'CANCELED': 'canceled',
+    }.get(instance.status)
+    if event:
+        from smartfood.services.notification_service import queue_order_status
+        # Persist while the status writer's surrounding transaction is active;
+        # unlike the WebSocket push, this local evidence must not be swallowed.
+        queue_order_status(bo_id, event)

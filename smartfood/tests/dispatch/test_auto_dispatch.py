@@ -14,6 +14,8 @@ def _bot_order(customer, product):
     from smartfood.models import BotOrder, BotOrderItem
     o = BotOrder.objects.create(
         customer=customer, status=BotOrder.Status.PENDING, order_type='DELIVERY',
+        phone_number=customer.phone_number, address_text='Amir Temur 12',
+        address_lat=Decimal('41.311158'), address_lng=Decimal('69.279737'),
         subtotal=Decimal('39000'), total=Decimal('39000'))
     BotOrderItem.objects.create(
         bot_order=o, product=product, quantity=1,

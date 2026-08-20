@@ -41,9 +41,13 @@ def me(request):
         return json_response(error)
     result, status = CustomerAuthService.update_profile(
         request.customer,
+        first_name=data.get('first_name'),
+        last_name=data.get('last_name'),
         name=data.get('name'),
         phone=data.get('phone'),
         language=data.get('language'),
+        confirm=data.get('confirm'),
+        broadcast_opted_in=data.get('broadcast_opted_in'),
     )
     return JsonResponse(result, status=status)
 

@@ -12,7 +12,7 @@ from django.contrib import admin
 from .models import (
     BotConfig, BotCategory, BotProduct, BotBanner, Size, ToppingGroup, Topping,
     Customer, CustomerSession, Address, BotOrder, BotOrderItem,
-    BotOrderDispatchJob,
+    BotOrderDispatchJob, BotBroadcast, BotOutboundMessage,
     SupportTicket, SupportMessage, Reward, Redemption, LoyaltyTransaction,
 )
 
@@ -164,6 +164,19 @@ class CustomerAdmin(admin.ModelAdmin):
     list_filter = ('is_blocked', 'language')
     search_fields = ('telegram_id', 'username', 'first_name', 'last_name',
                      'phone_number')
+    readonly_fields = (
+        'first_name', 'last_name', 'phone_number', 'profile_confirmed_at',
+        'broadcast_opted_in', 'telegram_reachable',
+    )
+
+    def has_add_permission(self, request):
+        # Customer rows are proof of a Telegram-authenticated identity. An
+        # arbitrary admin-created ID would inflate analytics and enter the
+        # broadcast audience without ever proving that the chat is reachable.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     def save_model(self, request, obj, form, change):
         # Editing loyalty_points by hand must stay audited: write a matching
@@ -201,14 +214,57 @@ class AddressAdmin(admin.ModelAdmin):
     autocomplete_fields = ('customer',)
 
 
+@admin.register(BotBroadcast)
+class BotBroadcastAdmin(admin.ModelAdmin):
+    list_display = ('title', 'status', 'recipient_count', 'delivered_count',
+                    'failed_count', 'skipped_count', 'updated_at')
+    list_filter = ('status',)
+    search_fields = ('title', 'text_uz', 'text_ru', 'text_en')
+    readonly_fields = ('status', 'image_url', 'recipient_count', 'delivered_count',
+                       'failed_count', 'skipped_count', 'queued_at', 'started_at', 'finished_at',
+                       'created_at', 'updated_at')
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.status != BotBroadcast.Status.DRAFT:
+            return tuple(field.name for field in self.model._meta.concrete_fields)
+        return self.readonly_fields
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(obj and obj.status == BotBroadcast.Status.DRAFT)
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop('delete_selected', None)
+        return actions
+
+
+@admin.register(BotOutboundMessage)
+class BotOutboundMessageAdmin(admin.ModelAdmin):
+    list_display = ('id', 'kind', 'customer', 'status', 'attempts', 'sent_at')
+    list_filter = ('kind', 'status', 'language')
+    search_fields = ('customer__telegram_id', 'broadcast__title', 'event_key')
+    readonly_fields = tuple(
+        field.name for field in BotOutboundMessage._meta.concrete_fields
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 # --------------------------------------------------------------------------- #
 #  Orders                                                                      #
 # --------------------------------------------------------------------------- #
 class BotOrderItemInline(admin.TabularInline):
     model = BotOrderItem
     extra = 0
-    autocomplete_fields = ('product',)
-    readonly_fields = ('unit_price', 'line_total', 'toppings_snapshot')
+    can_delete = False
+    readonly_fields = tuple(field.name for field in BotOrderItem._meta.concrete_fields)
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(BotOrder)
@@ -219,9 +275,14 @@ class BotOrderAdmin(admin.ModelAdmin):
     search_fields = ('id', 'customer__telegram_id', 'customer__phone_number',
                      'phone_number')
     date_hierarchy = 'created_at'
-    autocomplete_fields = ('customer', 'address', 'pos_order',
-                           'dispatched_cashier', 'dispatched_by')
+    readonly_fields = tuple(field.name for field in BotOrder._meta.concrete_fields)
     inlines = (BotOrderItemInline,)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(BotOrderItem)
@@ -229,7 +290,13 @@ class BotOrderItemAdmin(admin.ModelAdmin):
     list_display = ('bot_order', 'product', 'size', 'quantity', 'unit_price',
                     'line_total')
     search_fields = ('bot_order__id', 'product__name')
-    autocomplete_fields = ('bot_order', 'product', 'size')
+    readonly_fields = tuple(field.name for field in BotOrderItem._meta.concrete_fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(BotOrderDispatchJob)

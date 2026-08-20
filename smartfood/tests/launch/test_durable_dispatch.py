@@ -22,6 +22,8 @@ def _pending_order(customer, product, *, address_text='Amir Temur 12'):
         status=BotOrder.Status.PENDING,
         order_type=BotOrder.OrderType.DELIVERY,
         address_text=address_text,
+        address_lat=Decimal('41.311158'),
+        address_lng=Decimal('69.279737'),
         phone_number=customer.phone_number,
         subtotal=Decimal('39000.00'),
         total=Decimal('39000.00'),
@@ -48,6 +50,32 @@ def _mark_till_live(cashier, active_shift):
 
 
 class TestDurableRetry:
+    def test_all_instant_dispatch_queues_dispatched_then_ready(
+        self,
+        settings,
+        cfg,
+        active_shift,
+        cashier,
+        product,
+        customer,
+    ):
+        from smartfood.models import BotOutboundMessage
+        from smartfood.services.dispatch_service import DispatchService
+
+        settings.CUSTOMER_BOT_TOKEN = ''
+        product.is_instant = True
+        product.save(update_fields=['is_instant', 'updated_at'])
+        bot_order = _pending_order(customer, product)
+
+        response, status = DispatchService.dispatch(bot_order.id, cashier.id)
+
+        assert status == 200, response
+        assert list(
+            BotOutboundMessage.objects.filter(bot_order=bot_order)
+            .order_by('id')
+            .values_list('event_key', flat=True)
+        ) == ['dispatched', 'ready']
+
     def test_transient_exception_reschedules_then_dispatches_exactly_once(
         self,
         monkeypatch,
@@ -339,8 +367,9 @@ def test_terminal_failure_rejects_politely_and_notifies_telegram_once(
     product,
     customer,
 ):
-    from smartfood.models import BotOrder, BotOrderDispatchJob
+    from smartfood.models import BotOrder, BotOrderDispatchJob, BotOutboundMessage
     from smartfood.services.dispatch_job_service import DispatchJobService
+    from smartfood.services.outbound_message_service import OutboundMessageService
 
     settings.SMARTFOOD_AUTO_DISPATCH = True
     settings.SMARTFOOD_DISPATCH_MAX_ATTEMPTS = 1
@@ -354,18 +383,17 @@ def test_terminal_failure_rejects_politely_and_notifies_telegram_once(
     sent = []
 
     class TelegramResponse:
-        def raise_for_status(self):
-            return None
+        status_code = 200
 
         def json(self):
-            return {'ok': True}
+            return {'ok': True, 'result': {'message_id': 991}}
 
-    def fake_post(url, json, timeout):
-        sent.append({'url': url, 'json': json, 'timeout': timeout})
+    def fake_post(url, data, files, timeout):
+        sent.append({'url': url, 'data': data, 'files': files, 'timeout': timeout})
         return TelegramResponse()
 
     monkeypatch.setattr(
-        'smartfood.services.notification_service.requests.post',
+        'smartfood.services.outbound_message_service.requests.post',
         fake_post,
     )
     bot_order = _pending_order(customer, product)
@@ -382,10 +410,20 @@ def test_terminal_failure_rejects_politely_and_notifies_telegram_once(
     assert 'technical problem' in bot_order.reject_reason
     assert 'Telegram @smartfood_help' in bot_order.reject_reason
     assert 'connected on-shift POS' not in bot_order.reject_reason
+    queued = BotOutboundMessage.objects.get(
+        bot_order=bot_order,
+        event_key='rejected',
+    )
+    assert queued.status == BotOutboundMessage.Status.PENDING
+    assert OutboundMessageService.process_due(limit=10)['sent'] == 1
+    queued.refresh_from_db()
+    assert queued.status == BotOutboundMessage.Status.SENT
+    assert queued.telegram_message_id == 991
     assert len(sent) == 1
-    assert sent[0]['json']['chat_id'] == customer.telegram_id
-    assert bot_order.reject_reason in sent[0]['json']['text']
-    assert sent[0]['timeout'] == 10
+    assert sent[0]['data']['chat_id'] == str(customer.telegram_id)
+    assert bot_order.reject_reason in sent[0]['data']['text']
+    assert sent[0]['timeout'] == 20
 
     assert DispatchJobService.process(job.id, force=True) is False
+    assert OutboundMessageService.process_due(limit=10)['claimed'] == 0
     assert len(sent) == 1

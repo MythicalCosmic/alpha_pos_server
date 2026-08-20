@@ -119,11 +119,51 @@ def admin_banner_dict(banner, *, destination_available=None):
     return data
 
 
+def admin_broadcast_dict(broadcast):
+    """Full operator payload for a draft or immutable send snapshot."""
+    return {
+        'id': broadcast.id,
+        'title': broadcast.title,
+        'messages': {
+            'uz': broadcast.text_uz,
+            'ru': broadcast.text_ru,
+            'en': broadcast.text_en,
+        },
+        'image_url': broadcast.image_url,
+        'status': broadcast.status,
+        'recipient_count': broadcast.recipient_count,
+        'delivered_count': broadcast.delivered_count,
+        'failed_count': broadcast.failed_count,
+        'skipped_count': broadcast.skipped_count,
+        'queued_at': broadcast.queued_at.isoformat() if broadcast.queued_at else None,
+        'started_at': broadcast.started_at.isoformat() if broadcast.started_at else None,
+        'finished_at': broadcast.finished_at.isoformat() if broadcast.finished_at else None,
+        'created_at': broadcast.created_at.isoformat() if broadcast.created_at else None,
+        'updated_at': broadcast.updated_at.isoformat() if broadcast.updated_at else None,
+        'created_by': (
+            {
+                'id': broadcast.created_by_id,
+                'name': str(broadcast.created_by),
+            }
+            if broadcast.created_by_id and broadcast.created_by else None
+        ),
+    }
+
+
 # ---- customer / addresses ------------------------------------------------- #
 def customer_dict(c):
     return {
         'id': c.id, 'telegram_id': c.telegram_id, 'name': c.name,
+        'first_name': c.first_name, 'last_name': c.last_name,
         'phone': c.phone_number, 'language': c.language, 'photo_url': c.photo_url,
+        'broadcast_opted_in': c.broadcast_opted_in,
+        'telegram_reachable': c.telegram_reachable,
+        'profile_complete': c.profile_complete,
+        'profile_missing': c.profile_missing,
+        'profile_confirmed_at': (
+            c.profile_confirmed_at.isoformat()
+            if c.profile_confirmed_at else None
+        ),
         'loyalty': {'points': c.loyalty_points},
     }
 
@@ -168,6 +208,10 @@ def bot_order_dict(o):
         'order_type': o.order_type,
         'created_at': o.created_at.isoformat() if o.created_at else None,
         'phone': o.phone_number, 'note': o.note, 'address_text': o.address_text,
+        'address_location': (
+            {'lat': float(o.address_lat), 'lng': float(o.address_lng)}
+            if o.address_lat is not None and o.address_lng is not None else None
+        ),
         'payment_method': o.payment_method,
         'totals': {
             'subtotal': uzs(o.subtotal), 'delivery_fee': uzs(o.delivery_fee),

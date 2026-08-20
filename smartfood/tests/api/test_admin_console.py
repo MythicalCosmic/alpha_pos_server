@@ -1,10 +1,12 @@
 """Focused contracts for the Telegram delivery administration console."""
 import json
 import uuid
+from io import BytesIO
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
+from PIL import Image
 
 from smartfood.tests.conftest import make_init_data
 
@@ -21,6 +23,12 @@ def _post_json(client, path, payload):
         data=json.dumps(payload),
         content_type='application/json',
     )
+
+
+def _image_bytes(image_format='PNG', size=(64, 64)):
+    output = BytesIO()
+    Image.new('RGB', size, '#e95c3f').save(output, format=image_format)
+    return output.getvalue()
 
 
 class TestVisitAnalytics:
@@ -137,7 +145,7 @@ class TestCatalogAdministration:
         settings.MEDIA_ROOT = tmp_path
         image = SimpleUploadedFile(
             'dish.png',
-            b'\x89PNG\r\n\x1a\n' + (b'product-image' * 20),
+            _image_bytes('PNG'),
             content_type='image/png',
         )
         uploaded = operator_client.post(
@@ -332,7 +340,7 @@ class TestMarketingAdministration:
             data={
                 'image': SimpleUploadedFile(
                     'banner.webp',
-                    b'RIFF' + (12).to_bytes(4, 'little') + b'WEBPbanner-image',
+                    _image_bytes('WEBP'),
                     content_type='image/webp',
                 ),
             },
@@ -447,7 +455,7 @@ class TestMarketingAdministration:
             data={
                 'image': SimpleUploadedFile(
                     'reward.png',
-                    b'\x89PNG\r\n\x1a\n' + (b'reward-image' * 10),
+                    _image_bytes('PNG'),
                     content_type='image/png',
                 ),
             },
@@ -575,7 +583,7 @@ class TestMarketingAdministration:
             data={
                 'image': SimpleUploadedFile(
                     'dish.png',
-                    b'\x89PNG\r\n\x1a\n' + b'payload',
+                    _image_bytes('PNG'),
                     content_type='image/png',
                 ),
             },

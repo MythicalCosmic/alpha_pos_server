@@ -79,14 +79,27 @@ class TestAuth:
 #  Gating (dynamic on/off + no active cashier)                                 #
 # --------------------------------------------------------------------------- #
 class TestGating:
-    def test_catalog_closed_when_bot_off(self, auth_client, db, product):
+    def test_catalog_stays_browsable_but_quote_is_closed_when_bot_off(
+        self,
+        auth_client,
+        db,
+        product,
+    ):
         from smartfood.models import BotConfig
         cfg = BotConfig.load()
         cfg.enabled = False
         cfg.save()
-        r = auth_client.get(f'{C}/catalog/products')
-        assert r.status_code == 200 and r.json().get('closed') is True
-        assert r.json().get('reason') == 'bot_off'
+        catalog = auth_client.get(f'{C}/catalog/products')
+        assert catalog.status_code == 200
+        assert catalog.json()['success'] is True
+        assert catalog.json()['data']['items'][0]['id'] == product.id
+
+        quote = _post(auth_client, f'{C}/cart/quote', {
+            'items': [{'product_id': product.id, 'quantity': 1}],
+            'order_type': 'PICKUP',
+        })
+        assert quote.status_code == 200 and quote.json().get('closed') is True
+        assert quote.json().get('reason') == 'bot_off'
 
     def test_order_blocked_when_no_cashier(self, auth_client, cfg, product, address):
         # bot ON (cfg) but NO active shift exists

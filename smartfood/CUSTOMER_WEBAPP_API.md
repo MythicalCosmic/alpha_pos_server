@@ -20,15 +20,25 @@ The Smart Food API is a JSON HTTP API that powers a **Telegram Mini App** (a web
 2. It POSTs that `initData` once to `POST /api/smartfood/auth` and receives a **Bearer session token** (valid ~24h by default).
 3. Every other call sends `Authorization: Bearer <token>` (initData is **not** resent).
 4. After authentication, it records this successful page boot once with `POST /analytics/visit` and a client-generated UUID. Telemetry is best-effort and must never block shopping.
-5. The app loads `/config` (store on/off, delivery params, feature flags), catalog, `/banners`, `/loyalty`, and `/rewards`, then builds a cart, quotes it server-side, checks out, and polls for tracking.
+5. The app applies the server profile language, loads `/config`, catalog,
+   `/banners`, `/loyalty`, and `/rewards`, then builds a cart, confirms checkout
+   identity and a pinned delivery address, quotes server-side, checks out, and
+   polls for tracking.
 
-Two things make this API unusual and you must handle both:
+Three things make this API unusual and you must handle all of them:
 
 - **There is no server-side cart.** The cart lives entirely in the client. `POST /cart/quote` is a stateless reprice/validate call; you send the full items array every time.
-- **"Closed" is not an error.** When the store/bot is off or no connected till has an active on-shift cashier, gated endpoints return **HTTP 200** with `{"success": false, "closed": true, "reason": "..."}`. You must check `closed` before `success` and render a closed screen — never treat it as a network/error failure.
+- **"Closed" is not an error.** Quote and genuinely new order calls return
+  **HTTP 200** with `{"success": false, "closed": true, "reason": "..."}`
+  when ordering is unavailable. Catalog reads remain authenticated and browsable,
+  so show the menu with closed-ordering copy rather than replacing it with an
+  error wall.
 - **Checkout is retry-safe and dispatch is automatic.** Every create request carries a client-generated UUID `client_order_id`. Reuse that UUID and the identical payload after a timeout; the API returns the already-created order instead of charging or dispatching twice. With `SMARTFOOD_AUTO_DISPATCH=true`, a durable worker sends the order to a live restaurant till and retries transient failures.
 
-> **First-boot default: the store is closed.** `BotConfig.enabled` defaults to **false** on a fresh install (models.py:44). The very first `/config` the Mini App ever sees returns `enabled: false`, and catalog/quote return `bot_off` (200), until an operator turns the bot ON via the admin `/config/enable` toggle. Render the closed screen by default and only open ordering once `config.enabled === true`.
+> **First-boot default: ordering is closed.** `BotConfig.enabled` defaults to
+> **false** on a fresh install. The first `/config` returns `enabled:false`, and
+> quote/new-order attempts return `bot_off` until an operator turns the bot on.
+> The catalog continues to return the current sellable menu for browsing.
 
 ---
 
@@ -179,7 +189,7 @@ const { token } = await api.login(window.Telegram.WebApp.initData);
 setToken(token);
 
 const cfg = await api.config();
-if (!cfg.enabled) { /* render closed screen */ }
+if (!cfg.enabled) { /* keep browsing visible; disable quote/checkout */ }
 
 const cats = await api.categories(); // -> { items: [...] }
 ```
@@ -250,7 +260,8 @@ There is **no** top-level `message`, no `errors`, no `code` on these. The `statu
 ```
 HTTP status is `409` or `422` depending on the code (see §5).
 
-**Closed/gating envelope** (HTTP **200**, render a closed screen — see §5):
+**Closed/gating envelope** (HTTP **200**, render a closed-ordering state while
+preserving catalog browsing — see §5):
 ```json
 { "success": false, "closed": true, "reason": "bot_off" }
 ```
@@ -283,6 +294,14 @@ Timestamps are ISO 8601 strings via `.isoformat()`, e.g. `"2026-06-14T10:05:00+0
 ### i18n / language
 
 Three languages: `uz`, `ru`, `en`. Language is resolved per request as: `?lang=` query param → else the customer's stored `language` → else `uz`.
+
+On first login, and on later logins until the customer explicitly chooses a
+language, the stored value follows Telegram `user.language_code`. Anything other
+than `uz`, `ru`, or `en` (including a missing value) becomes `uz`. Sending
+`PATCH /me {"language":"ru"}` persists an explicit override; later Telegram
+profile data no longer replaces it. The Mini App should keep its local explicit
+choice in sync with `/me` so Telegram order updates and broadcasts use the same
+language.
 
 - Catalog text fields come in **two forms**: a resolved single string under the bare key (`name`, `description`) for the active language, **and** a full map under the plural key (`names`, `descriptions`) = `{"uz": ..., "ru": ..., "en": ...}`.
 - **Exception:** toppings and topping-groups return only the resolved single `name` (no `names` map).
@@ -351,9 +370,16 @@ Success (**HTTP 200**, message **"Success"**):
       "id": 12,
       "telegram_id": 99887766,
       "name": "Ali Valiyev",
-      "phone": "+998901234567",
+      "first_name": "Ali",
+      "last_name": "Valiyev",
+      "phone": "",
       "language": "uz",
       "photo_url": "https://...",
+      "broadcast_opted_in": true,
+      "telegram_reachable": true,
+      "profile_complete": false,
+      "profile_missing": ["phone", "confirmation"],
+      "profile_confirmed_at": null,
       "loyalty": { "points": 0 }
     }
   }
@@ -388,7 +414,7 @@ These are the states that block ordering. **Closed states are HTTP 200, not erro
 
 | State | Where it's signalled | Exact server signal | UI should show |
 |---|---|---|---|
-| **Store/bot closed** (operator turned bot OFF, or it has never been enabled; `BotConfig.enabled == false`, default on fresh install) | `GET /catalog/categories`, `GET /catalog/products`, `GET /catalog/products/:id`, `POST /cart/quote`, and genuinely new `POST /orders` attempts. Also surfaced as `config.enabled === false`. | HTTP 200 `{"success": false, "closed": true, "reason": "bot_off"}` | "Store is currently closed" screen; hide ordering. Note: the gating decorator runs **before** auth on catalog/quote, so even an unauthenticated/expired caller gets `bot_off` (200) rather than 401. An authenticated replay of an existing `client_order_id` remains discoverable while closed. |
+| **Store/bot closed** (operator turned bot OFF, or it has never been enabled; `BotConfig.enabled == false`, default on fresh install) | `POST /cart/quote` and genuinely new `POST /orders` attempts; also surfaced as `config.enabled === false`. Catalog reads are not gated. | HTTP 200 `{"success": false, "closed": true, "reason": "bot_off"}` | Keep catalog browsing available, show clear closed-ordering copy, and disable quote/checkout. An authenticated replay of an existing `client_order_id` remains discoverable while closed. |
 | **No connected till/cashier** (bot ON, but there is no live connected POS terminal with an active on-shift cashier) | **Only genuinely new** `POST /orders` attempts. Browsing, quote, and an existing-key replay are NOT cashier-gated. | HTTP 200 `{"success": false, "closed": true, "reason": "no_cashier"}` | "We can't take new orders right now" at checkout. Let the user keep browsing/quoting and offer configured support contact details. An old/stale ACTIVE shift alone does not open checkout. Retry the same persisted key after an ambiguous response; it still returns the accepted order if the first request committed before disconnect. |
 | **Category disabled / sold-out item (browse)** | Catalog list/detail filtering | Disabled categories & sold-out products are **silently absent** from `items` (still `success: true`, 200). A hidden/sold-out/disabled-category product detail → **404** `{"success": false, "message": "Product not found"}`. | Render only what's returned. On a 404 for a product the user had cached, show "no longer available" and refresh the menu. |
 | **Item unavailable (quote/submit re-validation)** | `POST /cart/quote`, `POST /orders` | `409` `{"success": false, "code": "item_unavailable", "message": "<...>"}`. The message is one of these **exact** strings: `"Product is not available"`, `"<name> is sold out"`, `"Selected size is invalid"`, `"Selected size is unavailable"`, `"A selected topping is invalid"`, `"A selected topping is sold out"`. | Mark the offending line, prompt to remove/re-pick, re-quote. **Branch on `code === "item_unavailable"`, not on the message text** (the strings are display copy and may change). |
@@ -398,6 +424,9 @@ These are the states that block ordering. **Closed states are HTTP 200, not erro
 | **Below minimum order** | `cart/quote`, `orders` | `422` code `min_order` ("Minimum order is `<amount>`") | Show "add `X` more to reach the minimum". |
 | **Delivery without address** | `POST /orders` (order_type DELIVERY) | `422` `{"success": false, "code": "address_required", "message": "A delivery address is required", "errors": {"address_id": "required"}}` | Force address selection before checkout. |
 | **Address not owned/missing** | `POST /orders` | `404` `{"success": false, "message": "Address not found"}` | Refresh address list. |
+| **Unconfirmed checkout identity** | `POST /orders` | `422` code `profile_required`, with `errors` naming any of `first_name`, `last_name`, `phone`, or `confirmation`. | Route to account setup, collect separate names plus a valid Uzbekistan phone, and `PATCH /me` with `confirm:true`. |
+| **Order phone differs from profile** | `POST /orders` | `422` code `profile_phone_mismatch`. | Do not maintain a separate checkout phone; use the confirmed `/me.phone` or reconfirm the profile first. |
+| **Delivery address lacks a pin** | address create/update, or `POST /orders` for a legacy address | address validation errors for `lat`/`lng`, or order code `location_required` with `errors.address_id`. | Open the map picker for that address. Text alone is never a deliverable address. |
 | **Missing/invalid retry key** | `POST /orders` | `422` code `invalid_client_order_id`; `client_order_id` is required and must be a UUID. | Generate one UUID when checkout begins, persist it locally, and reuse it for retries of the same payload. |
 | **Retry key reused for different payload** | `POST /orders` | `409` code `idempotency_conflict`. | Do not mutate a checkout attempt in place. Generate a new UUID for the changed cart/address/payment payload. |
 | **Cancel non-PENDING order** | `POST /orders/:id/cancel` | `409` `{"success": false, "code": "cannot_cancel", "message": "Only pending orders can be canceled"}` | Hide/disable the cancel button once status ≠ PENDING. A successful PENDING cancellation restores reserved points exactly once. |
@@ -411,6 +440,49 @@ These are the states that block ordering. **Closed states are HTTP 200, not erro
 ## 6. Endpoint Reference
 
 All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. Unless stated, every endpoint requires `Authorization: Bearer <token>` and can return the shared auth errors from §4 (401/403). Calling any route with the wrong HTTP method returns a framework-level `405` in the `{status, status_code, success, data, meta}` shape (see §3), not a `{success, message}` envelope.
+
+### 6.0 Customer profile and preferences
+
+#### `GET /me` / `PATCH /me`
+
+`GET` returns the authenticated customer. The checkout-readiness and messaging
+fields are:
+
+```json
+{
+  "id": 18,
+  "telegram_id": 99887766,
+  "name": "Ali Valiyev",
+  "first_name": "Ali",
+  "last_name": "Valiyev",
+  "phone": "998901234567",
+  "language": "uz",
+  "broadcast_opted_in": true,
+  "telegram_reachable": true,
+  "profile_complete": true,
+  "profile_missing": [],
+  "profile_confirmed_at": "2026-08-21T09:30:00+00:00",
+  "photo_url": "",
+  "loyalty": {"points": 240}
+}
+```
+
+`PATCH` accepts `first_name`, `last_name`, `phone`, `language`, `confirm`, and
+`broadcast_opted_in` (`name` remains a legacy compatibility input). First and last
+name are separately required and limited to 64 characters. Phone input is
+normalized, but the stored/returned canonical contract is exactly 12 ASCII digits:
+`998` plus nine digits. `confirm` and `broadcast_opted_in` must be booleans;
+language must be `uz`, `ru`, or `en`.
+
+Changing either name or the phone invalidates the previous confirmation. Send the
+resulting identity together with `confirm:true` to make it checkout-ready in one
+atomic request. `profile_missing` may contain `first_name`, `last_name`, `phone`,
+and/or `confirmation`; `profile_complete` is the authoritative route gate.
+`broadcast_opted_in` controls optional promotional broadcasts only. Local order
+status messages are operational and have no customer-off switch.
+
+Validation failures are HTTP 422 with field errors and leave the profile
+unchanged. A successful PATCH returns the same full customer object.
 
 ### 6.1 Config
 
@@ -455,10 +527,14 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 
 ### 6.2 Catalog
 
-> All three catalog endpoints are gated by store-open: when the bot is OFF they return **HTTP 200** `{"success": false, "closed": true, "reason": "bot_off"}` (checked before auth). A valid customer session is still required to actually browse — there is no anonymous catalog. Sold-out / unpublished / disabled-category rows are **filtered out server-side**, never flagged. The exact product cohort is: published and selling `BotProduct`, undeleted POS product, and a published and selling `BotCategory` for its POS category.
+> All three catalog endpoints remain available while ordering is closed. A valid
+> customer session is still required—there is no anonymous catalog. Sold-out,
+> unpublished, and disabled-category rows are filtered out server-side. The exact
+> product cohort is: published and selling `BotProduct`, undeleted POS product,
+> and a published and selling `BotCategory` for its POS category.
 
 #### `GET /catalog/categories`
-- **Auth:** Bearer required; store-open gated.
+- **Auth:** Bearer required; not store-open gated.
 - **Purpose:** Published + in-stock menu categories, in display order.
 - **Query:** `lang` (optional, `uz|ru|en`). No filters, no search, no pagination.
 - **Success (200):**
@@ -480,10 +556,10 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 }
 ```
 - **Notes:** `id` is the POS category id. `image_url` may be `""`. A category is present only when its bot shadow is published/selling and the POS category is not deleted. Disabled/unpublished/deleted categories are simply absent.
-- **Errors:** closed `bot_off` (200); 401/403; 405 if not GET (framework-shape).
+- **Errors:** 401/403; 405 if not GET (framework-shape).
 
 #### `GET /catalog/products`
-- **Auth:** Bearer required; store-open gated.
+- **Auth:** Bearer required; not store-open gated.
 - **Purpose:** Published + in-stock products (list shape), filterable.
 - **Query (all optional):** `category_id` (POS category id), `tag` (exact match, e.g. `bestseller|new|spicy`), `q` (case-insensitive search across product name + name_uz/ru/en), `lang`. No pagination.
 - **Success (200):**
@@ -509,10 +585,10 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 }
 ```
 - **Notes:** List items omit `sizes`/`topping_groups`/`description`. `price` is integer so'm, live from POS. `kcal` may be `null`. `available` is effectively always `true` here (the exact product/category cohort was already applied). Resuming only a product does not override a stopped category. Unknown/empty `category_id` or no matches → `200` with `items: []` (not 404).
-- **Errors:** closed `bot_off` (200); 401/403; 405.
+- **Errors:** 401/403; 405.
 
 #### `GET /catalog/products/:product_id`
-- **Auth:** Bearer required; store-open gated.
+- **Auth:** Bearer required; not store-open gated.
 - **Purpose:** Full product detail incl. description, sizes, and topping groups (for the configurator).
 - **Path:** `product_id` (POS Product id). **Query:** `lang`.
 - **Success (200):** (product object is in `data` **directly**, not under `items`)
@@ -552,7 +628,7 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 }
 ```
 - **Notes:** Only sizes/toppings with `is_selling = true` are returned. `max_select: 0` means **unlimited**. Toppings/groups have a resolved `name` only (no `names` map). `price_delta` and topping `price` are integer so'm **deltas**. The **final price is computed client-side**: base `price` + chosen size `price_delta` + sum of chosen topping `price` — the server does NOT pre-sum per-variant; it recomputes authoritatively at quote/order time.
-- **Errors:** `404 {"success": false, "message": "Product not found"}` if not published/selling or category disabled/deleted; closed `bot_off` (200); 401/403; 405.
+- **Errors:** `404 {"success": false, "message": "Product not found"}` if not published/selling or category disabled/deleted; 401/403; 405.
 
 #### `GET /banners`
 - **Auth:** Bearer required. This route is **not** store-open gated; the client decides whether to render Home marketing while `config.enabled` is false.
@@ -579,7 +655,17 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 - **Actions:** `NONE` (no navigation), `CATALOG`, `PRODUCT` (use `product_id`), or `LOYALTY` (open Smart Club).
 - **Media behavior:** managed URLs are relative and public under `/api/smartfood/media/banners/`. A missing/unsafe file is 404. The shipped frontend drops only the broken banner card; if no usable banner remains it can show the config-derived free-delivery fallback. A banner-fetch failure must not block catalog/order flows.
 
-**Managed media contract (products, banners, rewards):** operator upload endpoints inspect the actual bytes and accept JPEG, PNG, or WebP up to and including 8 MB. Pixel dimensions are not rejected server-side; the admin UI recommends 1200×900 (4:3) for products, 1440×720 (2:1, important content centered) for banners, and 800×800 (1:1) for rewards. New files are stored under `/api/smartfood/media/<kind>/<uuid>.<ext>`. Public GET is unauthenticated, immutable for one year, and sends `X-Content-Type-Options: nosniff`; unknown, unsafe, or absent files return 404. A storage write failure returns 503 with stable safe copy and leaves the previous database URL intact. Product catalog/detail images fall back to generated art in the shipped frontend; rewards retain their kind symbol; broken banners are omitted from that Home view.
+**Managed media contract:** operator upload endpoints inspect and fully decode the
+actual bytes and accept JPEG, PNG, or WebP up to and including 8 MB. Recommended
+sizes are 1200×900 (4:3) for products, 1440×720 (2:1, important content centered)
+for banners, 800×800 (1:1) for rewards, and 1200×628 (1.91:1) for Telegram
+broadcast photos. Only broadcast photos enforce Telegram geometry
+(`width + height <= 10000`, aspect ratio no wider than 20:1); broadcast WebP is
+converted to JPEG and must remain within 8 MB after conversion. New files are
+stored under `/api/smartfood/media/<kind>/<uuid>.<ext>`. Public GET is
+unauthenticated, immutable for one year, and sends `X-Content-Type-Options:
+nosniff`; unknown, unsafe, or absent files return 404. A storage write failure
+returns 503 with stable safe copy and leaves the previous database URL intact.
 
 ---
 
@@ -656,7 +742,7 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   "items": [ { "product_id": 42, "size_id": 7, "topping_ids": [3, 9], "quantity": 2 } ],
   "order_type": "DELIVERY",
   "address_id": 15,
-  "phone": "+998901234567",
+  "phone": "998901234567",
   "note": "Leave at door",
   "tip": 5000,
   "points_used": 100,
@@ -666,8 +752,8 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   - `client_order_id`: **required UUID generated by the client.** Persist it before the first network call. Reuse it with the exact same canonical checkout payload after timeout, disconnect, app reload, or ambiguous response. Generate a new UUID only for a genuinely new/changed checkout attempt.
   - `items`: same shape as `cart/quote`; all ids and quantities are strictly validated positive integers. Quantity is optional/default 1 and capped by `SMARTFOOD_MAX_ITEM_QUANTITY`.
   - `order_type`: `"DELIVERY"` (default) or `"PICKUP"`; other values are rejected.
-  - `address_id`: **required when DELIVERY**; ignored for PICKUP.
-  - `phone`: optional; falls back to the customer's stored phone. The final stored value is `(phone or customer.phone or '')` — if both are blank, the order's `phone` is the **empty string `""`**, never `null`.
+  - `address_id`: **required when DELIVERY**; ignored for PICKUP. The owned address must include valid pinned `lat` and `lng` values.
+  - `phone`: optional compatibility field. If supplied, its normalized value must exactly match the confirmed profile phone or the request fails with `profile_phone_mismatch`. The stored order phone always comes from the confirmed customer profile.
   - `note`: optional order-level note.
   - `tip`, `points_used`: as in quote.
   - `payment_method`: `"CASH"` (default) or `"CARD"`; other values are rejected.
@@ -684,9 +770,10 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
     "effective_status": "PENDING",
     "order_type": "DELIVERY",
     "created_at": "2026-06-14T10:05:00+00:00",
-    "phone": "+998901234567",
+    "phone": "998901234567",
     "note": "Leave at door",
     "address_text": "Tashkent, Amir Temur 12, apt 4",
+    "address_location": {"lat": 41.311081, "lng": 69.279737},
     "payment_method": "CASH",
     "totals": { "subtotal": 84000, "delivery_fee": 10000, "discount": 5000, "tip": 5000, "total": 94000 },
     "loyalty_points_used": 100,
@@ -706,8 +793,8 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 }
 ```
 - **Idempotent replay (200):** the same customer + same `client_order_id` + identical normalized payload returns message `"Order already created"` and the original full order object, even if the bot is now disabled or no till is connected. It never creates a second `BotOrder`, reserves points twice, dispatches twice, or consumes retry attempts. Reusing the UUID with a different cart/address/phone/note/tip/points/payment payload returns `409` code `idempotency_conflict`, also independently of current availability.
-- **Notes:** Create commits the PENDING order and a due-now durable job, then returns without trying to dispatch in the HTTP request path. The `smartfood_dispatch` worker owns every dispatch attempt and normally claims due jobs on its five-second loop. Poll detail/track until the restaurant POS link appears. `points_used` is reserved/debited now. `loyalty_points_earned` is the prospective award, not proof of a balance credit: it is not released at create or dispatch. The selected address is frozen in `address_text`, copied into the POS order's `delivery_address`, and sync preserves that value. The human-facing code is `data.code` = `"SF-<id>"`. `phone` may be `""`.
-- **Errors:** closed (200) `bot_off` or `no_cashier`. All `cart/quote` CartError codes apply (flat `{success, code, message}`). Missing/invalid UUID → 422 `invalid_client_order_id`. DELIVERY without address → 422 `address_required` with `errors.address_id`. Address not owned → `404 "Address not found"`. Changed-payload replay → 409 `idempotency_conflict`. Bad JSON 400. 401/403.
+- **Notes:** Create requires `customer.profile_complete`, commits the PENDING order and a due-now durable dispatch job, and queues a localized `placed` Telegram outbox event. The `smartfood_dispatch` worker owns POS dispatch attempts; the independent `smartfood_messages` worker owns Telegram delivery. Poll detail/track until the restaurant POS link appears. `points_used` is reserved/debited now. `loyalty_points_earned` is prospective. Delivery freezes the selected address in both `address_text` and `address_location`; those snapshots drive the linked POS delivery address and courier coordinates even if the saved address is later edited or deleted. The human code is `data.code` = `"SF-<id>"`.
+- **Errors:** closed (200) `bot_off` or `no_cashier`. All `cart/quote` CartError codes apply. Missing/invalid UUID → 422 `invalid_client_order_id`. Incomplete/unconfirmed identity → 422 `profile_required`; supplied phone mismatch → 422 `profile_phone_mismatch`. DELIVERY without address → 422 `address_required`; an owned legacy address without coordinates → 422 `location_required`; address not owned → `404 "Address not found"`. Changed-payload replay → 409 `idempotency_conflict`. Bad JSON 400. 401/403.
 
 #### `GET /orders`  (list my orders)
 - **Auth:** Bearer required; NOT gated (works when bot is off).
@@ -787,13 +874,15 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
   }
 }
 ```
-- **Notes:** `lat`/`lng` emitted as float or `null`. Empty → `items: []`.
+- **Notes:** `lat`/`lng` are floats. Legacy pre-migration rows may still expose
+  `null`; they cannot be used for delivery until updated with a pin. Empty →
+  `items: []`.
 - **Errors:** 401/403.
 
 #### `POST /addresses`  (create)
 - **Auth:** Bearer required.
 - **Purpose:** Add an address. The first address ever, or any with `make_default: true`, becomes the default.
-- **Request:** `line` is **required** (non-empty after trim). Settable fields: `label`, `line`, `lat`, `lng`, `city`, `street`, `house`, `apartment`, `entrance`, `floor`, `intercom`, `comment`, `precision`, plus `make_default` (optional). `null` values are ignored.
+- **Request:** `line`, `lat`, and `lng` are required. Text is trimmed and length-bounded; latitude must be finite and within `[-90, 90]`, longitude within `[-180, 180]`. Settable text fields are `label`, `line`, `city`, `street`, `house`, `apartment`, `entrance`, `floor`, `intercom`, `comment`, and `precision`; `make_default` is optional.
 ```json
 {
   "line": "Toshkent sh., Chilonzor 9-kvartal, 24-uy",
@@ -804,14 +893,14 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 }
 ```
 - **Success (201):** `data` = the created `address_dict` (same fields as a list item, including `is_default`).
-- **Errors:** `422 {"success": false, "message": "An address line is required", "errors": {"line": "required"}}`; bad JSON 400; 401/403.
+- **Errors:** HTTP 422 `"Correct the delivery address."` with field errors for blank/long/non-text values or missing/invalid/out-of-range `lat`/`lng`; bad JSON 400; 401/403.
 
 #### `PUT /addresses/:address_id`  (update)
 - **Auth:** Bearer required; own address only.
 - **Purpose:** Update an address. Only provided non-null fields change. `make_default: true` promotes it.
-- **Request:** any subset of the settable fields above; if `line` is present it must be non-blank.
+- **Request:** any subset of the settable fields above; the resulting state must retain a non-blank line and valid coordinates. Sending `null`/blank coordinates does not remove a pin—it fails validation.
 - **Success (200):** `data` = updated `address_dict`.
-- **Errors:** `404 {"success": false, "message": "Address not found"}`; `422` line-required if `line` blank; bad JSON 400; 401/403. (Only PUT and DELETE allowed on this route — no PATCH; a PATCH returns the framework 405.)
+- **Errors:** `404 {"success": false, "message": "Address not found"}`; 422 field errors for invalid text/coordinates; bad JSON 400; 401/403. (Only PUT and DELETE allowed on this route—no PATCH.)
 
 #### `DELETE /addresses/:address_id`
 - **Auth:** Bearer required; own address only.
@@ -983,13 +1072,10 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 - **Errors:** 401/403.
 
 #### `GET` / `PATCH /me`  (profile)
-- **Auth:** Bearer required. Same path serves GET and PATCH.
-- **GET success (200):** `data` = the `customer_dict`:
-```json
-{ "success": true, "message": "Success", "data": { "id": 12, "telegram_id": 99887766, "name": "Ali Valiyev", "phone": "+998901234567", "language": "uz", "photo_url": "https://...", "loyalty": { "points": 150 } } }
-```
-- **PATCH request (all optional):** `{ "name": "Ali Valiyev", "phone": "+998901234567", "language": "uz" }`. `name` is split on the first space into first/last; `language` is normalized to `uz|ru|en`.
-- **Errors:** 401/403; bad JSON 400 on PATCH.
+
+See §6.0 for the canonical identity, language, confirmation, and promotional
+opt-in contract. This path is listed here only because logout/support clients
+historically grouped profile calls with account utilities.
 
 ---
 
@@ -1007,6 +1093,16 @@ All paths are relative to `https://delivery.78.111.90.65.nip.io/api/smartfood`. 
 | **REJECTED / REJECTED** | A manager rejected it, or durable automatic dispatch exhausted its retry budget. Reserved loyalty points are restored exactly once. For a technical failure, `reject_reason` is localized, customer-safe copy with the configured support contact when available; internal exception text is never exposed. | `null` | Show the safe `reject_reason`, retry action, and support phone/Telegram/email from `/config`. Refresh loyalty and stop polling. |
 | **CANCELED / CANCELED** | Customer canceled their own still-PENDING order; reserved loyalty points are restored exactly once. | `null` | Show canceled, refresh loyalty, and stop polling. |
 
+**Localized Telegram status delivery:** `placed`, `dispatched`, `preparing`,
+`ready`, `completed`, `canceled`, and `rejected` events are persisted as unique
+outbox rows in the customer's language at event time. Earlier pending events for
+one order are delivered before later ones, and order events are claimed ahead of
+broadcasts. The isolated message worker retries transient failures up to five
+delivery attempts, reclaims stale processing claims after five minutes, honors
+Telegram rate-limit delays, and records the Telegram message id on success.
+Telegram is complementary notification delivery; HTTP/WebSocket order state is
+still authoritative.
+
 **Automatic connected-till dispatch:** with `SMARTFOOD_AUTO_DISPATCH=true`, `POST /orders` verifies a live POS terminal and active on-shift cashier before accepting a genuinely new checkout. Creation writes the order and a due-now durable dispatch job atomically, then returns; it never performs a dispatch attempt inside or after the HTTP request. The independent `smartfood_dispatch` worker is the sole automatic dispatcher, scans every five seconds, reclaims crashed jobs, and retries transient failures with bounded exponential backoff. Dispatch is transaction-safe, and the one-to-one job, fenced worker claim, and locked `BotOrder` make repeated workers/retries safe. A manager can still use the admin dispatch/reject endpoints as an operational fallback.
 
 If till presence disappears in the small race after checkout, the accepted order stays PENDING while the worker retries. After the configured maximum attempts, it becomes REJECTED, loyalty is refunded, and the customer receives localized safe failure text (plus Telegram notification when available). The app must keep polling and must offer the `/config.support` contact; never display network stack traces, raw worker errors, or `dispatch_job.last_error`.
@@ -1022,12 +1118,35 @@ List filters use the same effective lifecycle: `?status=active` includes PENDING
 1. **Boot.** Telegram launches the Mini App; read `window.Telegram.WebApp.initData`.
 2. **Auth.** `POST /auth` with `{ init_data }`. The success is **HTTP 200 / "Success"** — do not assert 201. Store `data.token`, set the `Authorization` header. (If `data.is_new`, run onboarding.)
 3. **Record the visit.** Generate one UUID for this page boot and best-effort `POST /analytics/visit` with `{client_visit_id}` after auth. Retrying the same UUID is safe; do not delay or fail the customer experience if telemetry fails.
-4. **Load config and loyalty modes.** `GET /config`. If `data.enabled === false`, render the closed screen (remember `enabled` is `false` by default until an operator turns the bot on). Cache delivery/support values and the independent `loyalty_earning` / `loyalty_spending` flags; use legacy `loyalty` only as a compatibility fallback. Load `/loyalty` for the numeric rates and balance.
-5. **Browse current customer content.** Load `/catalog/categories`, `/catalog/products`, and optional `/banners?lang=...`; load `/rewards?lang=...` for Smart Club. On catalog responses, **check `closed` first**. Open `/catalog/products/:id` for sizes/toppings and enforce group min/max. Treat banner failures as optional-content failures, and use reward `can_redeem` rather than recomputing only from the balance.
-6. **Build cart (client-side).** Maintain the items array `[{product_id, size_id?, topping_ids?[], quantity}]`. Send clean positive integer quantities and a truthy positive `size_id` (or omit it). Estimate prices client-side as base + size delta + toppings, but treat the server quote as authoritative.
-7. **Quote.** On every cart change call `POST /cart/quote` with the full items array, `order_type`, `tip`, `points_used`. Handle conflict `code`s (`item_unavailable`, `topping_*`, `min_order`, `empty_cart`, `invalid_quantity`) by branching on `code` (not message text), and handle `bot_off`. Render `subtotal`, `delivery_fee`, `discount`, `tip`, `total`, and the loyalty preview from the response.
-8. **Create a durable checkout attempt.** Generate a UUID `client_order_id`, persist it with a fingerprint/canonical copy of the checkout payload, then `POST /orders`. For DELIVERY, include a customer-owned `address_id`; its text is snapshotted into `address_text`, copied into the linked POS order's canonical `delivery_address`, and preserved through sync. On timeout or reload, resend the **identical** payload with the same UUID. If the cart/address/payment changes, generate a new UUID. Handle `bot_off`, `no_cashier`, `invalid_client_order_id`, `idempotency_conflict`, address and cart validation. A first create is 201; a successful replay is 200 and returns the same order.
-9. **Track automatic dispatch and POS status.** Subscribe to `/ws/smartfood/orders/:id/` for low-latency full-order frames and poll `GET /orders/:id/track` as the durable fallback. Render `effective_status`, not raw `status` alone. PENDING means accepted but still being delivered/retried; PREPARING/READY come from the restaurant POS; COMPLETED/CANCELED/REJECTED are terminal and stop order polling. Allow customer Cancel only while raw `status === "PENDING"`. On technical rejection, show only `reject_reason` and configured support actions. Refresh `/loyalty` after paid completion or cancellation; `loyalty_points_earned` is prospective until authoritative settlement. Telegram dispatch/reject push is complementary, not the source of truth.
+4. **Apply profile language.** With no explicit local choice, use `/me.language`
+   (Telegram-derived, unknown → Uzbek). Persist an explicit choice through
+   `PATCH /me {language}` so chat and Mini App copy remain aligned.
+5. **Load config and loyalty modes.** `GET /config`. If `data.enabled === false`,
+   show closed-ordering copy but keep the menu browsable. Cache delivery/support
+   values and the independent loyalty flags; load `/loyalty` for rates/balance.
+6. **Browse current customer content.** Load authenticated catalog, optional
+   `/banners?lang=...`, and `/rewards?lang=...` whether ordering is open or closed.
+   Open product detail for sizes/toppings and enforce group min/max.
+7. **Build cart (client-side).** Maintain the items array and treat server quote
+   prices as authoritative.
+8. **Confirm the checkout identity.** If `/me.profile_complete` is false, collect
+   separate first/last names and the Uzbekistan phone, then PATCH all three with
+   `confirm:true`. Later identity edits must be reconfirmed.
+9. **Pin delivery.** For DELIVERY, create/select an owned address with non-null
+   `lat` and `lng`. Keep the last known list visible if refresh fails, surface a
+   retryable stale warning, and never duplicate a successful address write merely
+   because the follow-up list refresh failed.
+10. **Quote.** Call `POST /cart/quote` with the full items array, `order_type`,
+    `tip`, and `points_used`; handle `bot_off` and conflict codes.
+11. **Create a durable checkout attempt.** Generate/persist a UUID
+    `client_order_id`, then `POST /orders`. Send the confirmed profile phone if the
+    compatibility field is included. Delivery freezes both address text and
+    coordinates. Retry an identical ambiguous attempt with the same UUID; use a
+    new UUID if cart/address/payment changes.
+12. **Track automatic dispatch and POS status.** Subscribe to the ownership-scoped
+    WebSocket and keep `/track` polling as durable fallback. Render
+    `effective_status`; allow Cancel only while raw status is PENDING. Localized
+    Telegram status messages are complementary, not the source of truth.
 
 ---
 
@@ -1065,11 +1184,19 @@ List filters use the same effective lifecycle: `?status=active` includes PENDING
 **`topping_group_dict`** — `id`, `name` (resolved only, no `names`), `required`, `min_select`, `max_select` (0 = unlimited), `toppings[]`.
 **`topping_dict`** — `id`, `name` (resolved only), `price` (int UZS). (Only `is_selling` toppings returned.)
 
-**`customer_dict`** — `id`, `telegram_id`, `name` (`"first last".strip()` → username → `str(telegram_id)`), `phone`, `language`, `photo_url`, `loyalty{points}`.
+**`customer_dict`** — `id`, `telegram_id`, `name`, `first_name`, `last_name`,
+canonical `phone`, `language`, `photo_url`, `broadcast_opted_in`,
+`telegram_reachable`, `profile_complete`, `profile_missing[]`,
+`profile_confirmed_at`, `loyalty{points}`.
 
 **`address_dict`** — `id`, `label`, `line`, `lat` (float|null), `lng` (float|null), `city`, `street`, `house`, `apartment`, `entrance`, `floor`, `intercom`, `comment`, `precision`, `is_default`.
 
-**`bot_order_dict`** — `id`, `code` (`SF-<id>`), `client_order_id` (UUID string; nullable only for pre-migration legacy rows), raw `status`, derived `effective_status`, `order_type` (`DELIVERY|PICKUP`), `created_at` (ISO|null), `phone` (string, may be `""`, never null), `note`, `address_text`, `payment_method` (`CASH|CARD`), `totals{subtotal, delivery_fee, discount, tip, total}` (all int UZS), `loyalty_points_used`, prospective `loyalty_points_earned` (not a settlement flag), `items[]`, `pos_order` (null OR `{id, uuid, status, display_id}`), `dispatched_at` (ISO|null), `reject_reason`.
+**`bot_order_dict`** — `id`, `code` (`SF-<id>`), `client_order_id`, raw
+`status`, derived `effective_status`, `order_type`, `created_at`, canonical
+`phone`, `note`, snapshotted `address_text`, snapshotted `address_location`
+(`{lat,lng}` or null for pickup/legacy rows), `payment_method`, totals,
+`loyalty_points_used`, prospective `loyalty_points_earned`, `items[]`, linked
+`pos_order`, `dispatched_at`, and `reject_reason`.
 
 **`bot_order_item_dict`** — `product_id`, `size_id` (int|null), `quantity`, `unit_price` (int UZS), `line_total` (int UZS), `toppings[]` (`[{topping_id, name, price}]`), `detail`.
 
@@ -1101,10 +1228,12 @@ Customers observe the *results* of dispatch/reject/enable through `/config`, ord
   - `SMARTFOOD_DISPATCH_RETRY_BASE_SECONDS` / `SMARTFOOD_DISPATCH_RETRY_MAX_SECONDS` — bounded exponential retry timing (defaults 5 / 60 seconds).
   - `SMARTFOOD_DISPATCH_LEASE_SECONDS` — PROCESSING-job lease before a crashed/stuck claim can be recovered (default 60 seconds).
   - `SMARTFOOD_MAX_ITEM_QUANTITY` — strict per-line quantity ceiling (default 100).
-  - `YANDEX_GEOCODER_KEY` — backs `/geo/reverse` and `/geo/forward`. **It is NOT declared in `settings_base.py`** (read via `getattr(settings, 'YANDEX_GEOCODER_KEY', '')`), so it is empty out of the box and both geo endpoints return `400 "Geocoding not configured"` until it is added. Provide a manual-address-entry fallback.
+  - `YANDEX_GEOCODER_KEY` — backs `/geo/reverse` and `/geo/forward`. **It is NOT declared in `settings_base.py`** (read via `getattr(settings, 'YANDEX_GEOCODER_KEY', '')`), so it is empty out of the box and both geo endpoints return `400 "Geocoding not configured"` until it is added. Keep coordinate pin selection usable and fall back to formatted text or the raw coordinates; text-only address creation is not valid.
 - **Required worker:** run `python manage.py process_smartfood_dispatch_jobs --interval 5 --batch-size 50`. Docker Compose provides this as the restartable `smartfood_dispatch` service and waits for the migrated web service, database, and Redis. The HTTP order path never dispatches. If this worker is absent while automatic dispatch is enabled, accepted orders remain PENDING until a worker or manager handles them. Its bounded loyalty settlement/repair sweep continues even when `SMARTFOOD_AUTO_DISPATCH=false`.
-- **Support/failure contract:** configure `BotConfig.support_phone`, `support_telegram`, or `support_email`. They are exposed by `/config.support` and appended to localized technical rejection copy when available. Telegram notification delivery is best-effort; the persisted order status returned by detail/track is authoritative.
+- **Required message worker:** run `python manage.py process_smartfood_messages --interval 2 --batch-size 25`. Docker Compose provides the restartable `smartfood_messages` service separately from POS dispatch so a slow broadcast cannot delay an accepted order reaching the till. It durably sends/retries localized status events and broadcast fan-out.
+- **Support/failure contract:** configure `BotConfig.support_phone`, `support_telegram`, or `support_email`. They are exposed by `/config.support` and appended to localized technical rejection copy when available. Telegram notifications are durable delivery attempts, but persisted order detail/track remains authoritative.
 - **`CUSTOMER_WEBAPP_URL`** — the URL the customer bot opens for this Mini App, used by the bot's "Open app" button. Confirmed: env var name is `CUSTOMER_WEBAPP_URL`, declared in `settings_base.py` with default `'https://example.com'`. For the checked-in production host it must be `https://delivery.78.111.90.65.nip.io/webapp/`, exactly matching the Telegram menu URL.
+- **Telegram chat entry:** both the webhook and polling handlers immediately offer the Mini App for any update, even while ordering is closed. The reply removes the retired persistent contact keyboard before attaching the inline Web App button. The polling service deletes any webhook before `getUpdates` and best-effort installs the persistent Telegram chat-menu Web App shortcut; webhook and polling modes must not run against the same token simultaneously.
 - **Session transport:** the server accepts the token via either the `Authorization: Bearer <token>` header **or** the `session_key` cookie (cookie checked first). For a Mini App, the Bearer header is recommended.
 - **Production surface:** Caddy exposes Django at `https://pos.78.111.90.65.nip.io`, the customer nginx container at `https://delivery.78.111.90.65.nip.io`, and the standalone console at `https://alpha-pos-admin.78.111.90.65.nip.io`. On the shared `edge` network their stable aliases are `alpha-web`, `delivery-webapp`, and `alpha-pos-admin`. Customer nginx serves `/webapp/` and reverse-proxies `/api/smartfood/` to the `pos.` backend; the admin SPA calls `https://pos.78.111.90.65.nip.io/api/admins` directly.
 
@@ -1125,6 +1254,7 @@ The Bearer-header approach in this guide does **not** require credentialed CORS 
 | 2026-06-14 | Corrections: `POST /auth` is 200/"Success" (not 201/"Created"); documented framework-level 405 envelope shape; clarified login 401-vs-403 logic; quantity is optional/defaults-to-1 with truncating coercion; `size_id` must be truthy-positive; `enabled` defaults to false on fresh install; added admin `/config/enable` toggle; resolved `CUSTOMER_WEBAPP_URL` and CORS from `// verify` to confirmed config; noted `YANDEX_GEOCODER_KEY` is undeclared so geo is off by default; exact `item_unavailable` strings; unrecognized `?status=` returns all; order `phone` may be `""`; logout is idempotent. |
 | 2026-08-08 | Public-launch contract: required UUID `client_order_id` and availability-independent idempotent replay, strict order input, connected-till new-checkout gate, worker-only crash-recoverable automatic dispatch/backoff, fenced claims, `effective_status`, POS delivery-address/status round-trip, paid+completed+tender-evidenced idempotent loyalty settlement/reversal, and terminal customer-safe technical rejection/support behavior. This supersedes the earlier manual-only dispatch, request-path dispatch, dispatch-time loyalty earn, and permissive quantity notes. |
 | 2026-08-20 | Added scheduled Home banners, managed product/banner/reward media, independent earning vs checkout-spending flags, customer reward catalog/redemption limits, exact category-dependent product visibility, and the three-host production deployment surface. |
+| 2026-08-21 | Finalized immediate Telegram Mini App entry, closed-state catalog browsing, Telegram-derived/persisted language, confirmed checkout identity, mandatory pinned delivery locations with order snapshots, server-backed broadcast opt-in, and durable localized order/broadcast delivery through the isolated message worker. |
 
 ---
 

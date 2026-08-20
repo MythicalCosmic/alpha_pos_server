@@ -179,6 +179,48 @@ services:
       redis:
         condition: service_healthy
 
+  smartfood_messages:
+    # Isolated from POS dispatch: a slow Telegram broadcast must never hold up
+    # a newly accepted order on its way to the restaurant till.
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: alpha_pos_server:local
+    command:
+      - python
+      - manage.py
+      - process_smartfood_messages
+      - --interval
+      - "2"
+      - --batch-size
+      - "25"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    env_file:
+      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: '${SECRET_KEY:?SECRET_KEY must be set in .env}'
+      DB_ENGINE: ${DB_ENGINE:-django.db.backends.postgresql}
+      DB_NAME: ${DB_NAME:-alpha_pos}
+      DB_USER: ${DB_USER:-alpha_pos}
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      USE_REDIS: ${USE_REDIS:-True}
+      MEDIA_ROOT: /app/private_media
+    volumes:
+      - media_data:/app/private_media
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   bot:
     # Customer Telegram bot poller (getUpdates). Reuses the web image (built
     # SINGLE instance only — Telegram forbids two getUpdates pollers. The HTTP API

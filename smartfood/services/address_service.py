@@ -7,6 +7,7 @@ hard. Yandex wants geocode="<lng>,<lat>" (longitude first) but our JSON keeps
 the {lat,lng} order the Mini App speaks.
 """
 import logging
+from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
@@ -25,12 +26,67 @@ _FIELDS = (
     'label', 'line', 'lat', 'lng', 'city', 'street', 'house', 'apartment',
     'entrance', 'floor', 'intercom', 'comment', 'precision',
 )
+_TEXT_LIMITS = {
+    'label': 40,
+    'line': 500,
+    'city': 80,
+    'street': 120,
+    'house': 40,
+    'apartment': 40,
+    'entrance': 40,
+    'floor': 40,
+    'intercom': 40,
+    'comment': 500,
+    'precision': 16,
+}
 
 
 def _apply(address, fields):
     for key in _FIELDS:
         if key in fields and fields[key] is not None:
             setattr(address, key, fields[key])
+
+
+def _clean_text(fields):
+    cleaned = {}
+    errors = {}
+    for key, limit in _TEXT_LIMITS.items():
+        if key not in fields or fields[key] is None:
+            continue
+        if not isinstance(fields[key], str):
+            errors[key] = 'Must be text.'
+            continue
+        value = fields[key].strip()
+        if len(value) > limit:
+            errors[key] = f'Must be {limit} characters or fewer.'
+            continue
+        cleaned[key] = value
+    return cleaned, errors
+
+
+def _coordinates(fields, address=None):
+    """Return validated coordinates for the resulting address state."""
+    raw_lat = fields.get('lat', getattr(address, 'lat', None))
+    raw_lng = fields.get('lng', getattr(address, 'lng', None))
+    errors = {}
+    parsed = {}
+    for key, raw, minimum, maximum in (
+        ('lat', raw_lat, Decimal('-90'), Decimal('90')),
+        ('lng', raw_lng, Decimal('-180'), Decimal('180')),
+    ):
+        if raw in (None, '') or isinstance(raw, bool):
+            errors[key] = 'Choose this address on the map.'
+            continue
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            errors[key] = 'Enter a valid coordinate.'
+            continue
+        if not value.is_finite() or value < minimum or value > maximum:
+            errors[key] = 'Coordinate is outside the valid range.'
+            continue
+        parsed[key] = value
+    return parsed, errors
 
 
 class AddressService:
@@ -42,10 +98,19 @@ class AddressService:
     @staticmethod
     @transaction.atomic
     def create(customer, **fields):
-        line = (fields.get('line') or '').strip() if fields.get('line') is not None else ''
+        cleaned, errors = _clean_text(fields)
+        line = cleaned.get('line', '')
         if not line:
-            return ServiceResponse.validation_error({'line': 'required'},
-                                                    'An address line is required')
+            errors['line'] = 'An address line is required.'
+        coordinates, coordinate_errors = _coordinates(fields)
+        errors.update(coordinate_errors)
+        if errors:
+            return ServiceResponse.validation_error(
+                errors,
+                'Correct the delivery address.',
+            )
+        fields.update(cleaned)
+        fields.update(coordinates)
         is_first = not customer.addresses.exists()
         make_default = bool(fields.get('make_default')) or is_first
 
@@ -65,9 +130,18 @@ class AddressService:
         address = Address.objects.filter(id=address_id, customer=customer).first()
         if not address:
             return ServiceResponse.not_found('Address not found')
-        if 'line' in fields and fields['line'] is not None and not str(fields['line']).strip():
-            return ServiceResponse.validation_error({'line': 'required'},
-                                                    'An address line is required')
+        cleaned, errors = _clean_text(fields)
+        if 'line' in fields and not cleaned.get('line'):
+            errors['line'] = 'An address line is required.'
+        coordinates, coordinate_errors = _coordinates(fields, address)
+        errors.update(coordinate_errors)
+        if errors:
+            return ServiceResponse.validation_error(
+                errors,
+                'Correct the delivery address.',
+            )
+        fields.update(cleaned)
+        fields.update(coordinates)
         _apply(address, fields)
         make_default = bool(fields.get('make_default'))
         if make_default:

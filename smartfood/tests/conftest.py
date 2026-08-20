@@ -109,8 +109,14 @@ def product(db, category):
 @pytest.fixture
 def customer(db):
     from smartfood.models import Customer
-    return Customer.objects.create(telegram_id=777001, first_name='Aziz', language='uz',
-                                   phone_number='+998901234567')
+    return Customer.objects.create(
+        telegram_id=777001,
+        first_name='Aziz',
+        last_name='Karimov',
+        language='uz',
+        phone_number='998901234567',
+        profile_confirmed_at=timezone.now(),
+    )
 
 
 @pytest.fixture

@@ -40,7 +40,7 @@ def _closed(reason):
 
 
 def require_open(view_func):
-    """Block browsing/ordering when the bot is OFF."""
+    """Block transactional operations when the bot is OFF."""
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
         ok, reason = bot_open()
