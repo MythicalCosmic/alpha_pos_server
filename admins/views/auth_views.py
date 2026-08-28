@@ -5,7 +5,7 @@ from base.helpers.request import get_client_ip, get_user_agent
 from base.helpers.response import json_response
 from base.helpers.cookie import set_session_cookie, clear_session_cookie
 from base.security.rate_limit import rate_limit, rate_limit_by
-from base.security.permissions import admin_required
+from base.security.permissions import backoffice_required
 from admins.services.auth_service import AdminAuthService
 from admins.requests.auth_requests import (
     login_request,
@@ -52,7 +52,7 @@ def login(request):
 
 @csrf_exempt
 @rate_limit('admin_logout', 10, 60)
-@admin_required
+@backoffice_required
 @require_POST
 def logout(request):
     result, status = AdminAuthService.logout(request.session_key)
@@ -66,7 +66,7 @@ def logout(request):
 
 @csrf_exempt
 @rate_limit('admin_logout_all', 5, 60)
-@admin_required
+@backoffice_required
 @require_POST
 def logout_all(request):
     result, status = AdminAuthService.logout_all(request.session_key)
@@ -79,7 +79,7 @@ def logout_all(request):
 
 
 @csrf_exempt
-@admin_required
+@backoffice_required
 @require_GET
 def me(request):
     result, status = AdminAuthService.me(request.session_key)
@@ -88,7 +88,7 @@ def me(request):
 
 @csrf_exempt
 @rate_limit('admin_change_password', 3, 60)
-@admin_required
+@backoffice_required
 @require_POST
 def change_password(request):
     data, error = change_password_request(request)
@@ -105,7 +105,7 @@ def change_password(request):
 
 
 @csrf_exempt
-@admin_required
+@backoffice_required
 @require_http_methods(["GET", "DELETE"])
 def sessions(request):
     if request.method == "GET":

@@ -3,7 +3,8 @@ import logging
 from django.db import IntegrityError
 from django.db.models import Q
 
-from base.models import User
+from base.models import RolePermission, User
+from base.security.permission_catalog import DEFAULT_ROLE_PERMISSIONS, VALID_KEYS
 from base.security.hashing import hash_password
 from base.helpers.response import ServiceResponse
 
@@ -67,6 +68,19 @@ class AdminUserService:
         # from the cashier login picker (get_pos_staff admits only CASHIER/MANAGER).
         if role == User.RoleChoices.CHEF:
             password = ''
+        elif role == User.RoleChoices.WAREHOUSE:
+            if not email:
+                return ServiceResponse.validation_error(
+                    errors={'email': 'email is required for warehouse users'},
+                    message='Validation failed',
+                )
+            raw_password = str(password or '')
+            if len(raw_password) < 8:
+                return ServiceResponse.validation_error(
+                    errors={'password': 'Password must be at least 8 characters'},
+                    message='Validation failed',
+                )
+            password = hash_password(raw_password)
         else:
             # POS staff sign in with a 4-digit PIN, not a full password.
             pin = str(password or '').strip()
@@ -128,6 +142,11 @@ class AdminUserService:
                 password=password,
                 role=role,
                 status='ACTIVE',
+                permissions=(
+                    RolePermission.objects.filter(role=role)
+                    .values_list('permissions', flat=True).first()
+                    or DEFAULT_ROLE_PERMISSIONS.get(role, [])
+                ) if role == User.RoleChoices.WAREHOUSE else [],
             )
         except IntegrityError:
             return ServiceResponse.error(f"User with email {email} already exists")
@@ -187,19 +206,34 @@ class AdminUserService:
                     errors={'permissions': 'Must be a list of permission strings'},
                     message='Invalid permissions',
                 )
+            unknown = [p for p in perms if p != '*' and p not in VALID_KEYS]
+            if unknown:
+                return ServiceResponse.validation_error(
+                    errors={'permissions': {'unknown': unknown}},
+                    message='Invalid permissions',
+                )
             user.permissions = perms
 
         if kwargs.get('password'):
+            if user.role == User.RoleChoices.WAREHOUSE:
+                raw_password = str(kwargs['password'])
+                if len(raw_password) < 8:
+                    return ServiceResponse.validation_error(
+                        errors={'password': 'Password must be at least 8 characters'},
+                        message='Validation failed',
+                    )
+                user.password = hash_password(raw_password)
+            else:
             # Same 4-digit PIN rule as create_user — otherwise an admin could
             # set a non-PIN password the monoblock id+PIN login can never match,
             # locking the staff member out of the POS.
-            pin = str(kwargs['password']).strip()
-            if not pin.isdigit() or len(pin) != 4:
-                return ServiceResponse.validation_error(
-                    errors={'password': 'PIN must be exactly 4 digits'},
-                    message='Validation failed',
-                )
-            user.password = hash_password(pin)
+                pin = str(kwargs['password']).strip()
+                if not pin.isdigit() or len(pin) != 4:
+                    return ServiceResponse.validation_error(
+                        errors={'password': 'PIN must be exactly 4 digits'},
+                        message='Validation failed',
+                    )
+                user.password = hash_password(pin)
 
         # email is globally UNIQUE; a collision on update must return a clean
         # 400 rather than bubbling an IntegrityError up as a 500.

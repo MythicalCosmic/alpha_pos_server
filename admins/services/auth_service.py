@@ -51,8 +51,12 @@ class AdminAuthService:
         if not verify_password(password, user.password):
             return ServiceResponse.unauthorized("Invalid credentials")
 
-        if user.role != User.RoleChoices.ADMIN:
-            return ServiceResponse.forbidden("Admin access required")
+        if user.role not in (
+            User.RoleChoices.ADMIN,
+            User.RoleChoices.MANAGER,
+            User.RoleChoices.WAREHOUSE,
+        ):
+            return ServiceResponse.forbidden("Back-office access required")
 
         if user.status != User.UserStatus.ACTIVE:
             return ServiceResponse.forbidden("Account is suspended")
@@ -114,8 +118,12 @@ class AdminAuthService:
         _, user = AdminAuthService._get_session_user(session_key)
         if not user:
             return ServiceResponse.unauthorized("Invalid session")
-        if user.role != User.RoleChoices.ADMIN:
-            return ServiceResponse.forbidden("Admin access required")
+        if user.role not in (
+            User.RoleChoices.ADMIN,
+            User.RoleChoices.MANAGER,
+            User.RoleChoices.WAREHOUSE,
+        ):
+            return ServiceResponse.forbidden("Back-office access required")
         data = AdminAuthService._user_data(user)
         data['last_login_at'] = user.last_login_at.isoformat() if user.last_login_at else None
         # The canonical 07:00 opening lets the frontend label operating dates.
