@@ -174,6 +174,14 @@ those remain available to legacy/operator clients only.
 | POST/PATCH/DELETE | `/products/<id>/topping-groups` · `/topping-groups/<id>` | option sets |
 | POST/PATCH/DELETE | `/topping-groups/<id>/toppings` · `/toppings/<id>` | options |
 
+Admin product rows expose both resolved `names` / `descriptions` (with POS
+fallbacks applied) and raw `name_overrides` / `description_overrides`. Editors
+must populate writable fields from the raw override maps so an unrelated save
+does not freeze a fallback as a bot-owned translation. Product writes validate
+localized-name/tag limits and non-negative whole-number `kcal` / `sort_order`
+values before saving; invalid supplied fields return HTTP 422 with an `errors`
+map and do not mutate the product.
+
 Broadcast recipients are the send-time snapshot of customers who are not blocked,
 are opted in, and are currently Telegram-reachable. Russian/English blank copy
 falls back to required Uzbek. The worker checks eligibility again immediately

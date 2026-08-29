@@ -1073,7 +1073,17 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
     if path.endswith("/orders/:bot_order_id/reject"):
         return {"reason": "Postman example rejection"}
     if path.startswith("/api/admins/smartfood/products/") and method == "PATCH":
-        return {"name": "Example product", "price": "{{amount}}"}
+        return {
+            "name_uz": "Misol mahsulot",
+            "name_ru": "Пример товара",
+            "name_en": "Example product",
+            "desc_uz": "Mijoz uchun tavsif",
+            "desc_ru": "Описание для клиента",
+            "desc_en": "Customer-facing description",
+            "tag": "Popular",
+            "kcal": 450,
+            "sort_order": 0,
+        }
     if path.startswith("/api/admins/smartfood/categories/") and method == "PATCH":
         return {"name": "Example category"}
     if path.endswith("/sizes"):

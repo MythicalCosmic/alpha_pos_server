@@ -6394,7 +6394,7 @@
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/products/:product_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH\n\nReplace example values and identifiers before sending a mutating request.",
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"name\": \"Example product\",\n  \"price\": \"{{amount}}\"\n}",
+                          "raw": "{\n  \"name_uz\": \"Misol mahsulot\",\n  \"name_ru\": \"Пример товара\",\n  \"name_en\": \"Example product\",\n  \"desc_uz\": \"Mijoz uchun tavsif\",\n  \"desc_ru\": \"Описание для клиента\",\n  \"desc_en\": \"Customer-facing description\",\n  \"tag\": \"Popular\",\n  \"kcal\": 450,\n  \"sort_order\": 0\n}",
                           "options": {
                             "raw": {
                               "language": "json"

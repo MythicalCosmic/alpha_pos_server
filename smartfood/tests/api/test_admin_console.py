@@ -119,6 +119,25 @@ class TestCatalogAdministration:
         assert product.id in {
             item['id'] for item in listed.json()['data']['items']
         }
+        product_row = next(
+            item for item in listed.json()['data']['items']
+            if item['id'] == product.id
+        )
+        assert product_row['names'] == {
+            'uz': 'Classic',
+            'ru': 'Classic',
+            'en': 'Classic Burger',
+        }
+        assert product_row['name_overrides'] == {
+            'uz': '',
+            'ru': '',
+            'en': 'Classic Burger',
+        }
+        assert product_row['description_overrides'] == {
+            'uz': '',
+            'ru': '',
+            'en': '',
+        }
         assert listed.json()['data']['summary']['published_products'] == 1
 
         filtered = operator_client.get(f'{A}/catalog/products?q=does-not-exist')
@@ -191,6 +210,77 @@ class TestCatalogAdministration:
         assert response.json()['data']['kcal'] is None
         product.bot.refresh_from_db()
         assert product.bot.kcal is None
+
+    def test_updates_customer_facing_product_details(self, operator_client, product):
+        response = operator_client.patch(
+            f'{A}/products/{product.id}',
+            data=json.dumps({
+                'name_uz': 'Klassik burger',
+                'name_ru': 'Классический бургер',
+                'name_en': 'Classic burger',
+                'desc_uz': 'Yangi tayyorlanadi',
+                'desc_ru': 'Готовится свежим',
+                'desc_en': 'Made fresh',
+                'tag': 'Popular',
+                'kcal': 640,
+                'sort_order': 4,
+            }),
+            content_type='application/json',
+        )
+
+        assert response.status_code == 200, response.content
+        data = response.json()['data']
+        assert data['name_overrides']['uz'] == 'Klassik burger'
+        assert data['description_overrides']['en'] == 'Made fresh'
+        product.bot.refresh_from_db()
+        assert product.bot.name_ru == 'Классический бургер'
+        assert product.bot.kcal == 640
+        assert product.bot.sort_order == 4
+
+    @pytest.mark.parametrize(
+        ('payload', 'field'),
+        [
+            ({'sort_order': ''}, 'sort_order'),
+            ({'sort_order': -1}, 'sort_order'),
+            ({'sort_order': 2.5}, 'sort_order'),
+            ({'kcal': -1}, 'kcal'),
+            ({'kcal': 2.5}, 'kcal'),
+            ({'name_uz': 'x' * 121}, 'name_uz'),
+            ({'tag': 'x' * 21}, 'tag'),
+            ({'is_selling': 'false'}, 'is_selling'),
+        ],
+    )
+    def test_invalid_product_edits_return_field_errors(
+        self,
+        operator_client,
+        product,
+        payload,
+        field,
+    ):
+        before = {
+            'sort_order': product.bot.sort_order,
+            'kcal': product.bot.kcal,
+            'name_uz': product.bot.name_uz,
+            'tag': product.bot.tag,
+            'is_selling': product.bot.is_selling,
+        }
+
+        response = operator_client.patch(
+            f'{A}/products/{product.id}',
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
+
+        assert response.status_code == 422, response.content
+        assert field in response.json()['errors']
+        product.bot.refresh_from_db()
+        assert {
+            'sort_order': product.bot.sort_order,
+            'kcal': product.bot.kcal,
+            'name_uz': product.bot.name_uz,
+            'tag': product.bot.tag,
+            'is_selling': product.bot.is_selling,
+        } == before
 
     def test_customer_availability_includes_the_category_gate(
         self,

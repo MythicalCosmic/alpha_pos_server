@@ -17,7 +17,7 @@ from smartfood.models import (
     BotCategory, BotProduct, Size, Topping, ToppingGroup,
 )
 from smartfood.serializers import (
-    category_dict, names, product_dict, size_dict, topping_dict,
+    category_dict, names, overrides, product_dict, size_dict, topping_dict,
     topping_group_dict, tri, uzs,
 )
 
@@ -35,6 +35,15 @@ _TOPPING_FIELDS = ('name_uz', 'name_ru', 'name_en', 'price', 'is_selling', 'sort
 # and floats land cleanly and a bad value is a clean 422, not a 500.
 _DECIMAL_FIELDS = {'price_delta', 'price'}
 _NULLABLE_FIELDS = {'kcal'}
+_DATABASE_INTEGER_MAX = 2_147_483_647
+_PRODUCT_TEXT_LIMITS = {
+    'name_uz': 120,
+    'name_ru': 120,
+    'name_en': 120,
+    'image_url': 200,
+    'tag': 20,
+}
+_PRODUCT_UNBOUNDED_TEXT_FIELDS = {'desc_uz', 'desc_ru', 'desc_en'}
 
 
 def _customer_available_filter():
@@ -67,14 +76,86 @@ def _apply(obj, fields, values):
     return bad
 
 
+def _product_integer(value, *, nullable=False):
+    if value is None:
+        return (None, '') if nullable else (None, 'Enter a whole number.')
+    if isinstance(value, bool):
+        return None, 'Enter a whole number.'
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float) and value.is_integer():
+        parsed = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = int(text, 10) if text else None
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            return None, 'Enter a whole number.'
+    else:
+        return None, 'Enter a whole number.'
+    if parsed < 0:
+        return None, 'Enter zero or a positive whole number.'
+    if parsed > _DATABASE_INTEGER_MAX:
+        return None, 'The number is too large.'
+    return parsed, ''
+
+
+def _clean_product_fields(values):
+    """Validate and normalize the public product-edit contract before save.
+
+    Model ``save()`` does not run Django field validation.  Passing a cleared
+    sort-order input (``''``), a negative calorie value, or oversized text
+    straight through therefore used to raise a database/field exception and
+    turn an ordinary edit into HTTP 500.  Keep PATCH semantics by ignoring
+    unknown/omitted keys, while returning field-level 422 errors for supplied
+    invalid values.
+    """
+    cleaned = {}
+    errors = {}
+    for key, value in values.items():
+        if key not in _PRODUCT_FIELDS:
+            continue
+        if key in _PRODUCT_TEXT_LIMITS:
+            if not isinstance(value, str):
+                errors[key] = 'Enter text.'
+            elif len(value) > _PRODUCT_TEXT_LIMITS[key]:
+                errors[key] = f'Use at most {_PRODUCT_TEXT_LIMITS[key]} characters.'
+            else:
+                cleaned[key] = value
+            continue
+        if key in _PRODUCT_UNBOUNDED_TEXT_FIELDS:
+            if not isinstance(value, str):
+                errors[key] = 'Enter text.'
+            else:
+                cleaned[key] = value
+            continue
+        if key in ('kcal', 'sort_order'):
+            parsed, error = _product_integer(value, nullable=key == 'kcal')
+            if error:
+                errors[key] = error
+            else:
+                cleaned[key] = parsed
+            continue
+        if key == 'is_selling':
+            if not isinstance(value, bool):
+                errors[key] = 'Enter true or false.'
+            else:
+                cleaned[key] = value
+    return cleaned, errors
+
+
 def _admin_product_dict(shadow):
     product = shadow.product
     category_shadow = getattr(product.category, 'bot', None) if product.category else None
     data = product_dict(shadow, lang='uz', detail=False)
     data.update({
         'source_name': product.name,
+        'name_overrides': overrides(shadow, 'name'),
         'description': tri(shadow, 'desc', 'uz', product.description or ''),
         'descriptions': names(shadow, 'desc', product.description or ''),
+        'description_overrides': overrides(shadow, 'desc'),
         'category': {
             'id': product.category_id,
             'name': product.category.name if product.category else '',
@@ -218,10 +299,13 @@ class AdminCatalogService:
         product = Product.objects.filter(id=product_id, is_deleted=False).first()
         if not product:
             return ServiceResponse.not_found('Product not found')
+        cleaned, errors = _clean_product_fields(fields)
+        if errors:
+            return ServiceResponse.validation_error(errors)
         if product.category_id:
             _publish_category(product.category)
         shadow, _ = BotProduct.objects.get_or_create(product=product)
-        bad = _apply(shadow, _PRODUCT_FIELDS, fields)
+        bad = _apply(shadow, _PRODUCT_FIELDS, cleaned)
         if bad:
             return ServiceResponse.validation_error({k: 'invalid number' for k in bad})
         shadow.is_published = True
@@ -238,7 +322,10 @@ class AdminCatalogService:
         shadow = BotProduct.objects.filter(product_id=product_id).first()
         if not shadow:
             return ServiceResponse.not_found('Product not accepted to the bot')
-        bad = _apply(shadow, _PRODUCT_FIELDS, fields)
+        cleaned, errors = _clean_product_fields(fields)
+        if errors:
+            return ServiceResponse.validation_error(errors)
+        bad = _apply(shadow, _PRODUCT_FIELDS, cleaned)
         if bad:
             return ServiceResponse.validation_error({k: 'invalid number' for k in bad})
         shadow.save()

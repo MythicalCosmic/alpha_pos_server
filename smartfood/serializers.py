@@ -31,6 +31,18 @@ def names(obj, prefix, fallback=''):
     return {c: ((getattr(obj, f'{prefix}_{c}', '') or '') or fallback) for c in _LANGS}
 
 
+def overrides(obj, prefix):
+    """Return only values explicitly stored on a localized shadow model.
+
+    Customer payloads deliberately use :func:`names` so a missing translation
+    falls back to another language or the POS-owned source value.  Admin edit
+    forms need the raw values as well: presenting fallbacks as stored values
+    would make an unrelated save persist those fallbacks as overrides and
+    prevent later POS source-name changes from flowing through.
+    """
+    return {c: (getattr(obj, f'{prefix}_{c}', '') or '') for c in _LANGS}
+
+
 # ---- catalog -------------------------------------------------------------- #
 def category_dict(bot_cat, lang='uz'):
     c = bot_cat.category
