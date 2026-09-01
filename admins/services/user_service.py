@@ -146,7 +146,7 @@ class AdminUserService:
                     RolePermission.objects.filter(role=role)
                     .values_list('permissions', flat=True).first()
                     or DEFAULT_ROLE_PERMISSIONS.get(role, [])
-                ) if role == User.RoleChoices.WAREHOUSE else [],
+                ),
             )
         except IntegrityError:
             return ServiceResponse.error(f"User with email {email} already exists")

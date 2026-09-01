@@ -81,6 +81,32 @@ def test_single_tender_writes_one_line():
     assert _lines(o) == [('UZCARD', D('60000.00'))]
 
 
+def test_configured_electronic_provider_is_valid_checkout_tender():
+    from base.models import PaymentMethodConfig
+    from cashbox.services.drawer import expected_payment_totals
+
+    PaymentMethodConfig.objects.update_or_create(
+        code='CLICK',
+        defaults={
+            'label': 'Click',
+            'is_active': True,
+            'treasury_destination': 'BANK',
+        },
+    )
+    cashier = _cashier()
+    order = _unpaid_order(cashier, 60000)
+
+    body, status = AdminOrderService.mark_as_paid(
+        order.id,
+        payment_method='CLICK',
+    )
+
+    assert status == 200, body
+    assert _lines(order) == [('CLICK', D('60000.00'))]
+    shift = order.cashier.shifts.get(status='ACTIVE')
+    assert expected_payment_totals(shift)['CLICK'] == D('60000.00')
+
+
 def test_split_payments_write_lines_and_roll_up_to_mixed():
     c = _cashier()
     o = _unpaid_order(c, 53000)

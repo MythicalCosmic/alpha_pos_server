@@ -13,8 +13,29 @@ pytestmark = pytest.mark.django_db
 
 
 def _recognize(branch_id, tenders, actor, shift_id):
+    from decimal import Decimal
+
+    from base.models import CashReconciliation, Shift
     from base.services.treasury_service import TreasuryService
 
+    shift = Shift.objects.create(
+        pk=shift_id,
+        user=actor,
+        branch_id=branch_id,
+        start_time=timezone.now(),
+        end_time=timezone.now(),
+        status=Shift.Status.ENDED,
+        treasury_settlement_eligible=True,
+    )
+    cash = Decimal(str(tenders.get('CASH', 0)))
+    CashReconciliation.objects.create(
+        shift=shift,
+        expected_cash=cash,
+        actual_cash=cash,
+        difference=0,
+        reconciled_by=actor,
+        branch_id=branch_id,
+    )
     return TreasuryService.post_shift_settlement(
         shift_id,
         tenders,

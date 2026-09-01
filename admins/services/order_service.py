@@ -81,10 +81,11 @@ def _normalize_checkout_contract(
             errors={'discount_percent': 'Must be 0..100'},
         )
 
-    valid_methods = {
-        code for code, _label in order_model.PaymentMethod.choices
-        if code != order_model.PaymentMethod.MIXED
-    }
+    from base.services.tender import (
+        concrete_payment_methods,
+        configured_electronic_methods,
+    )
+    valid_methods = concrete_payment_methods(configured_electronic_methods())
     legacy_method = None
     if legacy_supplied:
         legacy_method = str(payment_method or '').strip().upper()

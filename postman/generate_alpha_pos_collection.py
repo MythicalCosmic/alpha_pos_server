@@ -63,6 +63,8 @@ BASE_VARIABLES = OrderedDict(
         ("idempotencyKey", "postman-example-idempotency-key"),
         ("planId", "1"),
         ("receiptId", "1"),
+        ("purchaseOrderId", "1"),
+        ("supplierPaymentId", "1"),
         ("notificationId", "1"),
         ("redemptionId", "1"),
         ("orderDiscountId", "1"),
@@ -79,6 +81,7 @@ BASE_VARIABLES = OrderedDict(
         ("customerPhone", "+998900000001"),
         ("telegramInitData", ""),
         ("fromDate", "2026-01-01"),
+        ("toDate", "2026-01-31"),
         ("fromAt", "2026-01-01T07:00:00+05:00"),
         ("toAt", "2026-01-02T03:00:00+05:00"),
         ("page", "1"),
@@ -309,6 +312,7 @@ def cloud_folders(path: str) -> list[str]:
             "release-reservation": "Transactions & Reservations",
             "transactions": "Transactions & Reservations",
             "batches": "Batches",
+            "inventory-control": "Inventory Control",
             "suppliers": "Suppliers",
             "purchase-orders": "Purchasing & Receiving",
             "purchase-order": "Purchasing & Receiving",
@@ -400,6 +404,9 @@ def cloud_folders(path: str) -> list[str]:
             "customers": "Users & Customers",
             "inkassa": "Treasury & Inkassa",
             "treasury": "Treasury & Inkassa",
+            "money-control": "Money Control",
+            "expense-categories": "Money Control",
+            "expenses": "Money Control",
             "app-settings": "Application Settings",
             "shift-templates": "Shifts & Reconciliation",
             "shifts": "Shifts & Reconciliation",
@@ -597,6 +604,49 @@ def query_parameters(path: str, method: str) -> list[tuple[str, str, str]]:
         return [("confirm", "true", "Required destructive-operation confirmation")]
     if method != "GET":
         return []
+    if path == "/api/admins/money-control/overview":
+        return [
+            ("date_from", "{{fromDate}}", "Inclusive business date"),
+            ("date_to", "{{toDate}}", "Inclusive business date; maximum 366 days"),
+            ("location_id", "{{locationId}}", "Optional authorized stock location"),
+        ]
+    if path == "/api/admins/stock/inventory-control":
+        return [
+            ("item_type", "RAW", "Stock item type"),
+            ("location_id", "{{locationId}}", "Optional authorized location"),
+            ("category_id", "{{categoryId}}", "Optional exact category"),
+            ("include_descendants", "false", "Include child categories"),
+            ("search", "{{search}}", "Name, SKU, or barcode"),
+            ("low_stock", "true", "Optional low-stock boolean"),
+            ("page", "{{page}}", "1-based page"),
+            ("per_page", "25", "Page size from 1 through 100"),
+        ]
+    if path == "/api/admins/treasury/history":
+        return [
+            ("account", "BANK", "SAFE or BANK"),
+            ("type", "EXPENSE", "Treasury transaction type"),
+            ("date_from", "{{fromDate}}", "Inclusive date"),
+            ("date_to", "{{toDate}}", "Inclusive date"),
+            ("category_id", "{{categoryId}}", "Canonical expense category"),
+            ("reference_type", "Expense", "Reference model"),
+            ("reference_id", "{{expenseId}}", "Reference row ID"),
+            ("performed_by_id", "{{userId}}", "Actor ID"),
+            ("search", "{{search}}", "Description, category, reference, or actor"),
+            ("page", "{{page}}", "1-based page"),
+            ("per_page", "25", "Page size from 1 through 100"),
+        ]
+    if path.endswith("/ledger") and "/stock/suppliers/" in path:
+        return [
+            ("type", "PAYMENT", "Supplier transaction type"),
+            ("source_account", "BANK", "SAFE or BANK"),
+            ("date_from", "{{fromDate}}", "Inclusive date"),
+            ("date_to", "{{toDate}}", "Inclusive date"),
+            ("reference_type", "SupplierPayment", "Reference model"),
+            ("reference_id", "{{supplierPaymentId}}", "Reference row ID"),
+            ("search", "{{search}}", "Note, reference, or actor"),
+            ("page", "{{page}}", "1-based page"),
+            ("per_page", "25", "Page size from 1 through 100"),
+        ]
     params: list[tuple[str, str, str]] = []
     if (
         path.startswith("/api/admins/orders/stats")
@@ -783,6 +833,20 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
         return {"product_id": "{{productId}}", "quantity": 1}
     if "/items/" in path and method in {"PATCH", "PUT"}:
         return {"quantity": 2, "notes": "Postman example"}
+    if path.endswith("/expenses/:expense_id/pay"):
+        return {
+            "source_account": "BANK",
+            "fee_percent": "1.5",
+            "note": "Paid from business bank account",
+        }
+    if path.endswith("/stock/suppliers/:supplier_id/pay"):
+        return {
+            "amount_uzs": 1200000,
+            "source_account": "BANK",
+            "fee_uzs": 12000,
+            "allocation_mode": "AUTO_OLDEST_DUE",
+            "note": "Funded supplier payment",
+        }
     if path.endswith("/pay"):
         return {
             "payment_method": "CASH",
@@ -830,18 +894,39 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
         }
     if path.endswith("/treasury/transfer"):
         return {
-            "from": "CASH_REGISTER",
-            "to": "SAFE",
-            "amount": "{{amount}}",
+            "from": "SAFE",
+            "to": "BANK",
+            "amount_uzs": 100000,
+            "fee_uzs": 0,
             "description": "Postman example transfer",
         }
     if path.endswith("/treasury/expense"):
         return {
-            "account": "CASH_REGISTER",
-            "amount": "{{amount}}",
-            "category": "OPERATING",
+            "source_account": "BANK",
+            "amount_uzs": 350000,
+            "fee_percent": "1.5",
+            "category_id": "{{categoryId}}",
             "description": "Postman example expense",
         }
+    if path == "/api/admins/expenses/:expense_id/void":
+        return {"reason": "Invoice payment reversed by the bank"}
+    if path == "/api/admins/expenses/:expense_id/reject":
+        return {"reason": "Supporting evidence is incomplete"}
+    if path == "/api/admins/expenses/:expense_id/cancel":
+        return {"reason": "Request is no longer needed"}
+    if path.endswith("/suppliers/:supplier_id/payments"):
+        return {
+            "amount_uzs": 1200000,
+            "source_account": "BANK",
+            "fee_uzs": 12000,
+            "allocation_mode": "EXPLICIT",
+            "allocations": [
+                {"purchase_order_id": "{{purchaseOrderId}}", "amount_uzs": 1200000}
+            ],
+            "note": "Supplier transfer for received materials",
+        }
+    if path.endswith("/payments/:payment_id/reverse") and "/suppliers/" in path:
+        return {"reason": "Bank transfer was recalled"}
     if path == "/api/admins/shifts/start":
         return {
             "user_id": "{{userId}}",
@@ -893,6 +978,15 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
                 "PAYME": "0.00",
             },
             "notes": "Manager independently counted physical cash",
+        }
+    if path == "/api/admins/expenses":
+        return {
+            "category_id": "{{categoryId}}",
+            "amount_uzs": 350000,
+            "requested_source": "BANK",
+            "expense_date": "{{fromDate}}",
+            "description": "Internet invoice",
+            "receipt_number": "INV-POSTMAN-001",
         }
     if path.endswith("/expenses"):
         return {
@@ -1200,7 +1294,19 @@ def build_request(
     base = "cloudBaseUrl" if edition == "cloud" else "localBaseUrl"
     auth_note, headers = route_auth(edition, path)
     headers = [dict(header) for header in headers]
-    if path.rstrip("/") == "/api/admins/inkassa/perform":
+    idempotent_mutations = (
+        path.rstrip("/") == "/api/admins/inkassa/perform"
+        or path.rstrip("/") == "/api/admins/treasury/transfer"
+        or path.rstrip("/") == "/api/admins/treasury/expense"
+        or path.rstrip("/").endswith("/reconcile")
+        or path.rstrip("/").endswith("/receiving/:receiving_id/complete")
+        or path.rstrip("/").endswith("/suppliers/:supplier_id/payments")
+        or path.rstrip("/").endswith("/stock/suppliers/:supplier_id/pay")
+        or path.rstrip("/").endswith("/payments/:payment_id/reverse")
+        or path.rstrip("/").endswith("/expenses/:expense_id/pay")
+        or path.rstrip("/").endswith("/expenses/:expense_id/void")
+    )
+    if method in MUTATION_METHODS and idempotent_mutations:
         headers.append({"key": "Idempotency-Key", "value": "{{idempotencyKey}}"})
     body = body_example(edition, path, method)
     if body is not None:

@@ -1,0 +1,419 @@
+openapi: 3.1.0
+info:
+  title: Alpha POS Money Control API
+  version: 1.0.0
+  description: Owner accounting, canonical expenses, inventory value, and funded supplier payments.
+servers:
+  - url: https://pos.example.invalid
+security:
+  - bearerAuth: []
+paths:
+  /api/admins/money-control/overview:
+    get:
+      operationId: moneyControlOverview
+      summary: Return one reconciled owner snapshot
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/LocationId'
+      responses:
+        '200':
+          description: Snapshot; unsafe amounts are null and accompanied by issues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoneyControlResponse'
+              examples:
+                complete:
+                  value:
+                    success: true
+                    data:
+                      as_of: '2026-08-31T18:45:00+05:00'
+                      period: {date_from: '2026-08-01', date_to: '2026-08-31', timezone: Asia/Tashkent}
+                      scope: {branch_id: tashkent-01, location_id: null, treasury: BRANCH, inventory: BRANCH}
+                      completeness: {status: COMPLETE, issues: []}
+                      treasury: {drawer_unreconciled_uzs: 650000, safe_uzs: 12500000, bank_uzs: 8300000, liquid_total_uzs: 21450000}
+                      suppliers: {payable_uzs: 4900000, credit_uzs: 150000, overdue_payable_uzs: 1200000, count_with_balance: 7, top_balances: []}
+                      inventory: {raw_material_value_uzs: 6200000, raw_available_value_uzs: 5870000, raw_item_count: 84, low_stock_count: 11, out_of_stock_count: 3, valuation_method: WEIGHTED_AVERAGE}
+                      expenses: {paid_uzs: 3750000, pending_uzs: 600000, approved_unpaid_uzs: 420000, by_category: []}
+                      working_capital:
+                        amount_uzs: 22900000
+                        formula: SAFE + BANK + DRAWER_UNRECONCILED + RAW_INVENTORY - SUPPLIER_PAYABLE + SUPPLIER_CREDIT
+                      reconciliation: {status: BALANCED, issues: []}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/stock/inventory-control/:
+    get:
+      operationId: inventoryControl
+      summary: Return weighted-average inventory rows and full-filter summary
+      parameters:
+        - {in: query, name: item_type, schema: {type: string, default: RAW}}
+        - $ref: '#/components/parameters/LocationId'
+        - {in: query, name: category_id, schema: {type: integer}}
+        - {in: query, name: include_descendants, schema: {type: boolean, default: false}}
+        - {in: query, name: search, schema: {type: string}}
+        - {in: query, name: low_stock, schema: {type: boolean}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200':
+          description: Inventory control page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InventoryControlResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expense-categories:
+    get:
+      operationId: listExpenseCategories
+      summary: List canonical expense categories
+      parameters:
+        - {in: query, name: include_inactive, schema: {type: boolean, default: false}}
+      responses:
+        '200': {description: Canonical category list}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createExpenseCategory
+      summary: Create a canonical expense category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpenseCategoryCommand'}
+            example:
+              code: UTILITIES
+              name: Utilities
+              reporting_group: OPERATING
+              allowed_sources: [DRAWER, SAFE, BANK]
+              requires_receipt: true
+              requires_description: true
+      responses:
+        '201': {description: Category created}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expense-categories/{category_id}:
+    parameters:
+      - $ref: '#/components/parameters/CategoryPathId'
+    patch:
+      operationId: updateExpenseCategory
+      summary: Update prospective category configuration; code is immutable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpenseCategoryCommand'}
+      responses:
+        '200': {description: Category updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expense-categories/{category_id}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/CategoryPathId'
+    post:
+      operationId: deactivateExpenseCategory
+      summary: Soft-deactivate a category idempotently
+      responses:
+        '200': {description: Category is inactive}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/admins/expenses:
+    get:
+      operationId: listExpenses
+      summary: List branch-scoped requests with full-filter totals
+      parameters:
+        - {in: query, name: status, schema: {type: string}}
+        - {in: query, name: category_id, schema: {type: integer}}
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - {in: query, name: search, schema: {type: string}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200': {description: Filtered expense page and totals}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      operationId: createExpense
+      summary: Create a pending request without moving money
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpenseCreateCommand'}
+            example:
+              category_id: 17
+              amount_uzs: 350000
+              requested_source: BANK
+              expense_date: '2026-08-31'
+              description: August internet invoice
+              receipt_number: INV-2026-08-991
+      responses:
+        '201': {description: Pending request created}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expenses/{expense_id}:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+    get:
+      operationId: getExpense
+      summary: Return request, evidence, payment/reversal, and transition history
+      responses:
+        '200': {description: Expense detail}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {description: Expense not found}
+  /api/admins/expenses/{expense_id}/approve:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+    post:
+      operationId: approveExpense
+      summary: Approve another user's pending request
+      responses:
+        '200': {description: Approved}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/admins/expenses/{expense_id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+    post:
+      operationId: rejectExpense
+      summary: Reject a pending request with a reason
+      requestBody: {$ref: '#/components/requestBodies/Reason'}
+      responses:
+        '200': {description: Rejected}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expenses/{expense_id}/pay:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      operationId: payExpense
+      summary: Atomically debit the approved source and link one posting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpensePayCommand'}
+            example: {source_account: BANK, fee_percent: '1.5', note: Paid from business bank account}
+      responses:
+        '200': {description: Expense paid or exact replay returned}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/expenses/{expense_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+    post:
+      operationId: cancelExpense
+      summary: Cancel before payment under requester/approver rules
+      requestBody: {$ref: '#/components/requestBodies/Reason'}
+      responses:
+        '200': {description: Canceled}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /api/admins/expenses/{expense_id}/void:
+    parameters:
+      - $ref: '#/components/parameters/ExpensePathId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      operationId: voidExpense
+      summary: Append a linked money reversal and preserve the original
+      requestBody: {$ref: '#/components/requestBodies/Reason'}
+      responses:
+        '200': {description: Voided or exact replay returned}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/stock/suppliers/{supplier_id}/payments/:
+    parameters:
+      - {in: path, name: supplier_id, required: true, schema: {type: integer}}
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      operationId: paySupplier
+      summary: Post one funded cross-ledger supplier payment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SupplierPaymentCommand'}
+            example:
+              amount_uzs: 1200000
+              source_account: BANK
+              fee_uzs: 12000
+              allocation_mode: EXPLICIT
+              allocations:
+                - {purchase_order_id: 130, amount_uzs: 700000}
+                - {purchase_order_id: 145, amount_uzs: 500000}
+              note: Supplier transfer for two deliveries
+      responses:
+        '201': {description: Payment posted or exact replay returned}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/treasury/history:
+    get:
+      operationId: treasuryHistory
+      summary: Return server-filtered history and full-result totals
+      parameters:
+        - {in: query, name: account, schema: {type: string, enum: [SAFE, BANK]}}
+        - {in: query, name: type, schema: {type: string}}
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - {in: query, name: category_id, schema: {type: integer}}
+        - {in: query, name: reference_type, schema: {type: string}}
+        - {in: query, name: reference_id, schema: {type: integer}}
+        - {in: query, name: performed_by_id, schema: {type: integer}}
+        - {in: query, name: search, schema: {type: string}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200': {description: History, full-filter totals, and pagination}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/admins/stock/suppliers/{supplier_id}/ledger/:
+    parameters:
+      - {in: path, name: supplier_id, required: true, schema: {type: integer}}
+    get:
+      operationId: supplierLedger
+      summary: Return filtered principal totals and current authoritative balance
+      parameters:
+        - {in: query, name: type, schema: {type: string}}
+        - {in: query, name: source_account, schema: {type: string, enum: [SAFE, BANK]}}
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - {in: query, name: reference_type, schema: {type: string}}
+        - {in: query, name: reference_id, schema: {type: integer}}
+        - {in: query, name: search, schema: {type: string}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      responses:
+        '200': {description: Supplier ledger, totals, current balance, and pagination}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    DateFrom: {in: query, name: date_from, schema: {type: string, format: date}}
+    DateTo: {in: query, name: date_to, schema: {type: string, format: date}}
+    LocationId: {in: query, name: location_id, schema: {type: integer}}
+    CategoryPathId: {in: path, name: category_id, required: true, schema: {type: integer}}
+    ExpensePathId: {in: path, name: expense_id, required: true, schema: {type: integer}}
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 128}
+  requestBodies:
+    Reason:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [reason]
+            properties: {reason: {type: string, minLength: 1}}
+  responses:
+    Forbidden:
+      description: Permission or branch/location scope denied
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    ValidationError:
+      description: Field validation failed
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Conflict:
+      description: Illegal state, concurrency conflict, or reused key
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  schemas:
+    Error:
+      type: object
+      required: [success, code, message]
+      properties:
+        success: {const: false}
+        code: {type: string}
+        message: {type: string}
+        errors: {type: object, additionalProperties: true}
+        details: {type: object, additionalProperties: true}
+    CompletenessIssue:
+      type: object
+      required: [code, severity, title, message, entity_type, entity_id, amount_uzs, details]
+      properties:
+        code: {type: string}
+        severity: {type: string, enum: [WARNING, ERROR]}
+        title: {type: string}
+        message: {type: string}
+        entity_type: {type: [string, 'null']}
+        entity_id: {type: [integer, 'null']}
+        amount_uzs: {type: [integer, 'null']}
+        details: {type: object, additionalProperties: true}
+    MoneyControlResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {const: true}
+        data: {type: object, additionalProperties: true}
+    InventoryControlResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {const: true}
+        data:
+          type: object
+          required: [summary, items, pagination]
+          additionalProperties: true
+    ExpenseCategoryCommand:
+      type: object
+      additionalProperties: false
+      properties:
+        code: {type: string, pattern: '^[A-Z0-9_]+$'}
+        name: {type: string, minLength: 1, maxLength: 100}
+        description: {type: string}
+        reporting_group: {type: string}
+        is_active: {type: boolean}
+        sort_order: {type: integer, minimum: 0}
+        allowed_sources:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [DRAWER, SAFE, BANK]}
+        requires_receipt: {type: boolean}
+        requires_description: {type: boolean}
+    ExpenseCreateCommand:
+      type: object
+      additionalProperties: false
+      required: [category_id, amount_uzs, requested_source, expense_date]
+      properties:
+        category_id: {type: integer}
+        amount_uzs: {type: integer, minimum: 1}
+        requested_source: {type: string, enum: [DRAWER, SAFE, BANK]}
+        shift_id: {type: integer}
+        expense_date: {type: string, format: date}
+        description: {type: string}
+        receipt_number: {type: string}
+    ExpensePayCommand:
+      type: object
+      additionalProperties: false
+      required: [source_account]
+      properties:
+        source_account: {type: string, enum: [DRAWER, SAFE, BANK]}
+        fee_uzs: {type: integer, minimum: 0}
+        fee_percent: {type: string, pattern: '^(100(?:\.0{1,4})?|\d{1,2}(?:\.\d{1,4})?)$'}
+        note: {type: string}
+      oneOf:
+        - required: [fee_uzs]
+        - required: [fee_percent]
+        - not: {anyOf: [{required: [fee_uzs]}, {required: [fee_percent]}]}
+    SupplierPaymentCommand:
+      type: object
+      additionalProperties: false
+      required: [amount_uzs, source_account, allocation_mode]
+      properties:
+        amount_uzs: {type: integer, minimum: 1}
+        source_account: {type: string, enum: [SAFE, BANK]}
+        fee_uzs: {type: integer, minimum: 0, default: 0}
+        allocation_mode: {type: string, enum: [EXPLICIT, AUTO_OLDEST_DUE]}
+        allocations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [purchase_order_id, amount_uzs]
+            properties:
+              purchase_order_id: {type: integer}
+              amount_uzs: {type: integer, minimum: 1}
+        note: {type: string}

@@ -1,7 +1,11 @@
 """Cross-domain regression tests for the admin application."""
+import secrets
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.test import Client
+from django.utils import timezone
 
 from admins.services.user_service import AdminUserService
 from admins.services.inkassa_service import AdminInkassaService
@@ -9,10 +13,73 @@ from admins.services.inkassa_service import AdminInkassaService
 pytestmark = pytest.mark.django_db
 
 
+def _authenticated_client(user):
+    from base.models import Session
+    from base.repositories.session import SessionRepository
+
+    token = secrets.token_hex(32)
+    user_agent = 'money-control-permission-test'
+    Session.objects.create(
+        user_id=user,
+        ip_address='127.0.0.1',
+        user_agent=user_agent,
+        payload=SessionRepository.hash_token(token),
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    return Client(
+        HTTP_AUTHORIZATION=f'Bearer {token}',
+        HTTP_USER_AGENT=user_agent,
+    )
+
+
+def test_warehouse_cannot_access_money_control_or_treasury():
+    from base.models import User
+    from base.security.permission_catalog import DEFAULT_ROLE_PERMISSIONS
+
+    warehouse = User.objects.create(
+        first_name='Warehouse',
+        last_name='Restricted',
+        email='warehouse-money-control@test.local',
+        password='unused',
+        role=User.RoleChoices.WAREHOUSE,
+        status=User.UserStatus.ACTIVE,
+        permissions=DEFAULT_ROLE_PERMISSIONS['WAREHOUSE'],
+        branch_id='branch1',
+    )
+    client = _authenticated_client(warehouse)
+    assert client.get('/api/admins/money-control/overview').status_code == 403
+    assert client.get('/api/admins/treasury/accounts').status_code == 403
+
+
 def _recognize_settlement(branch_id, tenders, admin_user, shift_id):
     """Seed the reconciliation-first treasury evidence Inkassa consumes."""
+    from django.utils import timezone
+
+    from base.models import CashReconciliation, Shift
     from base.services.treasury_service import TreasuryService
 
+    shift, _ = Shift.objects.get_or_create(
+        pk=shift_id,
+        defaults={
+            'user': admin_user,
+            'branch_id': branch_id,
+            'start_time': timezone.now(),
+            'end_time': timezone.now(),
+            'status': Shift.Status.ENDED,
+            'treasury_settlement_eligible': True,
+        },
+    )
+    cash = Decimal(str(tenders.get('CASH', 0)))
+    CashReconciliation.objects.get_or_create(
+        shift=shift,
+        defaults={
+            'expected_cash': cash,
+            'actual_cash': cash,
+            'difference': 0,
+            'reconciled_by': admin_user,
+            'branch_id': branch_id,
+        },
+    )
     return TreasuryService.post_shift_settlement(
         shift_id,
         tenders,
@@ -168,7 +235,7 @@ class TestInkassaTreasuryRouting:
         _recognize_settlement(
             register.branch_id, {'PAYME': '500'}, admin_user, shift_id=9202,
         )
-        safe_before = TreasuryAccount.objects.get(kind='SAFE').balance
+        bank_before = TreasuryAccount.objects.get(kind='BANK').balance
         result, status = AdminInkassaService.perform(
             admin_user,
             {'payme': '500'},
@@ -177,7 +244,7 @@ class TestInkassaTreasuryRouting:
         )
         assert status == 200, result  # card inkassa not bounded by cash drawer
         assert CashRegister.objects.first().current_balance == Decimal('0')
-        assert TreasuryAccount.objects.get(kind='SAFE').balance == safe_before
+        assert TreasuryAccount.objects.get(kind='BANK').balance == bank_before
         assert result['data']['treasury_posting']['status'] == 'not_posted'
 
 

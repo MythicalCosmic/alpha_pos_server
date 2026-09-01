@@ -11,12 +11,41 @@ from django.utils import timezone
 pytestmark = pytest.mark.django_db
 
 
+def _recognize(branch_id, tenders, actor, shift_id):
+    from base.models import CashReconciliation, Shift
+    from base.services.treasury_service import TreasuryService
+
+    shift = Shift.objects.create(
+        pk=shift_id,
+        user=actor,
+        branch_id=branch_id,
+        start_time=timezone.now(),
+        end_time=timezone.now(),
+        status=Shift.Status.ENDED,
+        treasury_settlement_eligible=True,
+    )
+    cash = Decimal(str(tenders.get('CASH', 0)))
+    CashReconciliation.objects.create(
+        shift=shift,
+        expected_cash=cash,
+        actual_cash=cash,
+        difference=0,
+        reconciled_by=actor,
+        branch_id=branch_id,
+    )
+    return TreasuryService.post_shift_settlement(
+        shift_id,
+        tenders,
+        performed_by=actor,
+        branch_id=branch_id,
+    )
+
+
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
 def test_inkassa_cursor_windows_are_half_open_and_late_safe(
     admin_user, regular_user, monkeypatch,
 ):
     from base.models import CashRegister, Inkassa, Order, OrderRefund
-    from base.services.treasury_service import TreasuryService
     from admins.services import inkassa_service
 
     admin_user.branch_id = 'cloud'
@@ -53,11 +82,11 @@ def test_inkassa_cursor_windows_are_half_open_and_late_safe(
     OrderRefund.objects.filter(pk=refund.pk).update(
         accounting_recorded_at=cutoff,
     )
-    TreasuryService.post_shift_settlement(
-        9401,
+    _recognize(
+        'branch-a',
         {'PAYME': '3.00'},
-        performed_by=admin_user,
-        branch_id='branch-a',
+        admin_user,
+        shift_id=9401,
     )
 
     monkeypatch.setattr(inkassa_service.timezone, 'now', lambda: cutoff)

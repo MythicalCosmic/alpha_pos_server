@@ -5,7 +5,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from base.helpers.request import parse_json_body, safe_page, safe_per_page
 from base.helpers.response import json_response
-from base.security.permissions import manager_required, pos_staff_required
+from base.security.idempotency import idempotent
+from base.security.permissions import (
+    backoffice_permission_required,
+    manager_required,
+    pos_staff_required,
+)
 from base.security.audit import audit
 from base.models import AuditLog
 from admins.services.shift_service import ShiftTemplateService, ShiftService
@@ -167,7 +172,13 @@ def shift_end(request, shift_id):
 
 @csrf_exempt
 @require_POST
-@manager_required
+@backoffice_permission_required('money.control.reconcile')
+@idempotent(
+    'shift.settlement',
+    required=True,
+    expose_action_id=True,
+    recover_inflight_after_seconds=5,
+)
 def shift_reconcile(request, shift_id):
     data, error = parse_json_body(request)
     if error:
@@ -176,8 +187,13 @@ def shift_reconcile(request, shift_id):
     actual_cash = data.get('actual_cash')
     if actual_cash is None:
         return JsonResponse(
-            {"success": False, "message": "actual_cash is required"},
-            status=400,
+            {
+                "success": False,
+                "code": "VALIDATION_ERROR",
+                "message": "Validation failed",
+                "errors": {"actual_cash": ["This field is required."]},
+            },
+            status=422,
         )
 
     result, status_code = ShiftService.reconcile(
@@ -187,8 +203,11 @@ def shift_reconcile(request, shift_id):
         reconciled_by_id=request.user.id,
         actor=request.user,
         # {method: confirmed_amount} the manager accepts; defaults per method to
-        # the cashier's counted figure. Every confirmed tender posts to SAFE.
+        # the cashier's counted figure. Treasury classifies each destination.
         confirmed=data.get('confirmed'),
+        action_id=getattr(request, 'idempotency_action_id', None),
+        idempotency_key=getattr(request, 'idempotency_key', ''),
+        request_hash=getattr(request, 'idempotency_request_hash', ''),
     )
     if result.get('success'):
         payload = result.get('data', {})

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1fa66fb-c18d-4c13-8e3e-5481f86ddf55",
     "name": "Alpha POS — Cloud, Local POS & Realtime API",
-    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **397** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **521** distinct edition/path HTTP registrations in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEvery registered HTTP path is covered. Most multi-method Django views use one\nrepresentative request with all methods documented; safety-critical workflows may\nalso include dedicated method-specific examples. Smart Food order listing and\nidempotent order creation are intentionally separate requests. Django's generated\n`/admin/` HTML application and standalone core test URLconf are excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\nThe Smart Food create request generates `smartfoodClientOrderId` once and reuses\nit so an ambiguous response can be retried without duplicating an order; clear\nthat collection variable only when intentionally starting a new checkout.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
+    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **475** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **599** edition/path HTTP entries in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEach distinct registered HTTP path appears exactly once per deployed edition.\nFor multi-method Django views, the item description lists every allowed method\nand the request uses one representative method. Django's generated `/admin/`\nHTML application and the standalone core test URLconf are deliberately excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -122,6 +122,16 @@
       "type": "string"
     },
     {
+      "key": "purchaseOrderId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "supplierPaymentId",
+      "value": "1",
+      "type": "string"
+    },
+    {
       "key": "notificationId",
       "value": "1",
       "type": "string"
@@ -202,6 +212,11 @@
       "type": "string"
     },
     {
+      "key": "toDate",
+      "value": "2026-01-31",
+      "type": "string"
+    },
+    {
       "key": "fromAt",
       "value": "2026-01-01T07:00:00+05:00",
       "type": "string"
@@ -267,12 +282,27 @@
       "type": "string"
     },
     {
+      "key": "adjustmentId",
+      "value": "1",
+      "type": "string"
+    },
+    {
       "key": "anomalyId",
       "value": "1",
       "type": "string"
     },
     {
       "key": "attendanceId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "auditId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "bannerId",
       "value": "1",
       "type": "string"
     },
@@ -297,8 +327,13 @@
       "type": "string"
     },
     {
-      "key": "smartfoodClientOrderId",
-      "value": "",
+      "key": "broadcastId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "caseId",
+      "value": "1",
       "type": "string"
     },
     {
@@ -323,6 +358,16 @@
     },
     {
       "key": "contractId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "correctionId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "costId",
       "value": "1",
       "type": "string"
     },
@@ -377,8 +422,18 @@
       "type": "string"
     },
     {
+      "key": "excuseId",
+      "value": "1",
+      "type": "string"
+    },
+    {
       "key": "expenseId",
       "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "filename",
+      "value": "sample",
       "type": "string"
     },
     {
@@ -452,6 +507,11 @@
       "type": "string"
     },
     {
+      "key": "profileId",
+      "value": "1",
+      "type": "string"
+    },
+    {
       "key": "qrToken",
       "value": "replace-with-minted-qr-token",
       "type": "string"
@@ -463,6 +523,11 @@
     },
     {
       "key": "recipeId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "requestId",
       "value": "1",
       "type": "string"
     },
@@ -482,7 +547,17 @@
       "type": "string"
     },
     {
+      "key": "ruleId",
+      "value": "1",
+      "type": "string"
+    },
+    {
       "key": "salaryId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "scheduleId",
       "value": "1",
       "type": "string"
     },
@@ -499,6 +574,11 @@
     {
       "key": "slug",
       "value": "sample-slug",
+      "type": "string"
+    },
+    {
+      "key": "source",
+      "value": "sample",
       "type": "string"
     },
     {
@@ -577,6 +657,502 @@
         {
           "name": "Cloud Administration",
           "item": [
+            {
+              "name": "Money Control",
+              "item": [
+                {
+                  "name": "[GET] Overview",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/money-control/overview?date_from={{fromDate}}&date_to={{toDate}}&location_id={{locationId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/money-control/overview`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `date_from` — Inclusive business date\n- `date_to` — Inclusive business date; maximum 366 days\n- `location_id` — Optional authorized stock location\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] List Expense Categories",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expense-categories",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expense-categories`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Expense Category Detail",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expense-categories/{{categoryId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expense-categories/:category_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, PATCH\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, PATCH**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[POST] Expense Category Deactivate",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expense-categories/{{categoryId}}/deactivate",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expense-categories/:category_id/deactivate`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[GET] List Expenses",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses?page={{page}}&per_page={{perPage}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nExample query parameters:\n- `page` — 1-based page\n- `per_page` — Page size\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Expense Detail",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[POST] Expense Approve",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}/approve",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id/approve`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Reviewed in Postman\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[POST] Expense Reject",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}/reject",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id/reject`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"reason\": \"Supporting evidence is incomplete\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[POST] Expense Pay",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Idempotency-Key",
+                        "value": "{{idempotencyKey}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}/pay",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id/pay`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"source_account\": \"BANK\",\n  \"fee_percent\": \"1.5\",\n  \"note\": \"Paid from business bank account\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[POST] Expense Cancel",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}/cancel",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id/cancel`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"reason\": \"Request is no longer needed\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[POST] Expense Void",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Idempotency-Key",
+                        "value": "{{idempotencyKey}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/expenses/{{expenseId}}/void",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/expenses/:expense_id/void`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"reason\": \"Invoice payment reversed by the bank\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Other",
+              "item": [
+                {
+                  "name": "[GET] Profitability",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] List Setup",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/setup",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/setup`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, PATCH\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, PATCH**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] List Product Costs",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/product-costs",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/product-costs`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[PATCH] Product Cost Detail",
+                  "request": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/product-costs/{{profileId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/product-costs/:profile_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[GET] List Recurring Costs",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/recurring-costs",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/recurring-costs`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[PATCH] Recurring Cost Detail",
+                  "request": {
+                    "method": "PATCH",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/recurring-costs/{{costId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/recurring-costs/:cost_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[GET] List Adjustments",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/adjustments",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/adjustments`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[POST] Adjustment Approve",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/adjustments/{{adjustmentId}}/approve",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/adjustments/:adjustment_id/approve`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Reviewed in Postman\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[DELETE] Adjustment Detail",
+                  "request": {
+                    "method": "DELETE",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/adjustments/{{adjustmentId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/adjustments/:adjustment_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** DELETE\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[PUT] Cashbox Classification",
+                  "request": {
+                    "method": "PUT",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/cashbox-expenses/{{expenseId}}/classification",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/cashbox-expenses/:expense_id/classification`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PUT\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[PUT] Expense Category Group",
+                  "request": {
+                    "method": "PUT",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/categories/{{source}}/{{categoryId}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/categories/:source/:category_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PUT\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "[POST] Period Close",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/admins/finance/profitability/periods/close",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/finance/profitability/periods/close`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
             {
               "name": "Authentication & Access",
               "item": [
@@ -1915,6 +2491,10 @@
                         "value": "Bearer {{adminToken}}"
                       },
                       {
+                        "key": "Idempotency-Key",
+                        "value": "{{idempotencyKey}}"
+                      },
+                      {
                         "key": "Content-Type",
                         "value": "application/json"
                       }
@@ -1923,7 +2503,7 @@
                     "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/treasury/transfer`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"from\": \"CASH_REGISTER\",\n  \"to\": \"SAFE\",\n  \"amount\": \"{{amount}}\",\n  \"description\": \"Postman example transfer\"\n}",
+                      "raw": "{\n  \"from\": \"SAFE\",\n  \"to\": \"BANK\",\n  \"amount_uzs\": 100000,\n  \"fee_uzs\": 0,\n  \"description\": \"Postman example transfer\"\n}",
                       "options": {
                         "raw": {
                           "language": "json"
@@ -1942,6 +2522,10 @@
                         "value": "Bearer {{adminToken}}"
                       },
                       {
+                        "key": "Idempotency-Key",
+                        "value": "{{idempotencyKey}}"
+                      },
+                      {
                         "key": "Content-Type",
                         "value": "application/json"
                       }
@@ -1950,7 +2534,7 @@
                     "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/treasury/expense`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"account\": \"CASH_REGISTER\",\n  \"amount\": \"{{amount}}\",\n  \"category\": \"OPERATING\",\n  \"description\": \"Postman example expense\"\n}",
+                      "raw": "{\n  \"source_account\": \"BANK\",\n  \"amount_uzs\": 350000,\n  \"fee_percent\": \"1.5\",\n  \"category_id\": \"{{categoryId}}\",\n  \"description\": \"Postman example expense\"\n}",
                       "options": {
                         "raw": {
                           "language": "json"
@@ -1969,8 +2553,8 @@
                         "value": "Bearer {{adminToken}}"
                       }
                     ],
-                    "url": "{{cloudBaseUrl}}/api/admins/treasury/history?from_at={{fromAt}}&to_at={{toAt}}",
-                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/treasury/history`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `from_at` — Inclusive ISO-8601 reporting start\n- `to_at` — Exclusive ISO-8601 reporting end\n\nReplace example values and identifiers before sending a mutating request."
+                    "url": "{{cloudBaseUrl}}/api/admins/treasury/history?account=BANK&type=EXPENSE&date_from={{fromDate}}&date_to={{toDate}}&category_id={{categoryId}}&reference_type=Expense&reference_id={{expenseId}}&performed_by_id={{userId}}&search={{search}}&page={{page}}&per_page=25",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/treasury/history`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `account` — SAFE or BANK\n- `type` — Treasury transaction type\n- `date_from` — Inclusive date\n- `date_to` — Inclusive date\n- `category_id` — Canonical expense category\n- `reference_type` — Reference model\n- `reference_id` — Reference row ID\n- `performed_by_id` — Actor ID\n- `search` — Description, category, reference, or actor\n- `page` — 1-based page\n- `per_page` — Page size from 1 through 100\n\nReplace example values and identifiers before sending a mutating request."
                   }
                 }
               ]
@@ -2146,6 +2730,10 @@
                       {
                         "key": "Authorization",
                         "value": "Bearer {{adminToken}}"
+                      },
+                      {
+                        "key": "Idempotency-Key",
+                        "value": "{{idempotencyKey}}"
                       },
                       {
                         "key": "Content-Type",
@@ -2637,6 +3225,25 @@
               "name": "Inventory & Stock",
               "item": [
                 {
+                  "name": "Inventory Control",
+                  "item": [
+                    {
+                      "name": "[GET] Inventory Control",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/inventory-control/?item_type=RAW&location_id={{locationId}}&category_id={{categoryId}}&include_descendants=false&search={{search}}&low_stock=true&page={{page}}&per_page=25",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/inventory-control/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `item_type` — Stock item type\n- `location_id` — Optional authorized location\n- `category_id` — Optional exact category\n- `include_descendants` — Include child categories\n- `search` — Name, SKU, or barcode\n- `low_stock` — Optional low-stock boolean\n- `page` — 1-based page\n- `per_page` — Page size from 1 through 100\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    }
+                  ]
+                },
+                {
                   "name": "Configuration & Alerts",
                   "item": [
                     {
@@ -3099,6 +3706,106 @@
                   ]
                 },
                 {
+                  "name": "Other",
+                  "item": [
+                    {
+                      "name": "[GET] List Adjustment Requests",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/adjustment-requests/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/adjustment-requests/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Adjustment Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/adjustment-requests/{{requestId}}/{{action}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/adjustment-requests/:request_id/:action/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[PATCH] Patch Purchase Receiving Item Detail",
+                      "request": {
+                        "method": "PATCH",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/receiving-items/{{itemId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving-items/:item_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **PATCH** method; supported methods: **PATCH, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Purchase Receiving Correction Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/receiving-corrections/{{correctionId}}/{{action}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving-corrections/:correction_id/:action/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
                   "name": "Batches",
                   "item": [
                     {
@@ -3255,6 +3962,10 @@
                             "value": "Bearer {{adminToken}}"
                           },
                           {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
                             "key": "Content-Type",
                             "value": "application/json"
                           }
@@ -3263,7 +3974,83 @@
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/pay/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"payment_method\": \"CASH\",\n  \"amount_received\": \"{{amount}}\",\n  \"currency\": \"{{currency}}\"\n}",
+                          "raw": "{\n  \"amount_uzs\": 1200000,\n  \"source_account\": \"BANK\",\n  \"fee_uzs\": 12000,\n  \"allocation_mode\": \"AUTO_OLDEST_DUE\",\n  \"note\": \"Funded supplier payment\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Supplier Pay",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/suppliers/{{supplierId}}/payments/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/payments/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"amount_uzs\": 1200000,\n  \"source_account\": \"BANK\",\n  \"fee_uzs\": 12000,\n  \"allocation_mode\": \"EXPLICIT\",\n  \"allocations\": [\n    {\n      \"purchase_order_id\": \"{{purchaseOrderId}}\",\n      \"amount_uzs\": 1200000\n    }\n  ],\n  \"note\": \"Supplier transfer for received materials\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] Supplier Payment Detail",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/suppliers/{{supplierId}}/payments/{{paymentId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/payments/:payment_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Supplier Payment Reverse",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/suppliers/{{supplierId}}/payments/{{paymentId}}/reverse/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/payments/:payment_id/reverse/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"reason\": \"Bank transfer was recalled\"\n}",
                           "options": {
                             "raw": {
                               "language": "json"
@@ -3282,8 +4069,8 @@
                             "value": "Bearer {{adminToken}}"
                           }
                         ],
-                        "url": "{{cloudBaseUrl}}/api/admins/stock/suppliers/{{supplierId}}/ledger/",
-                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/ledger/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/suppliers/{{supplierId}}/ledger/?type=PAYMENT&source_account=BANK&date_from={{fromDate}}&date_to={{toDate}}&reference_type=SupplierPayment&reference_id={{supplierPaymentId}}&search={{search}}&page={{page}}&per_page=25",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/suppliers/:supplier_id/ledger/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `type` — Supplier transaction type\n- `source_account` — SAFE or BANK\n- `date_from` — Inclusive date\n- `date_to` — Inclusive date\n- `reference_type` — Reference model\n- `reference_id` — Reference row ID\n- `search` — Note, reference, or actor\n- `page` — 1-based page\n- `per_page` — Page size from 1 through 100\n\nReplace example values and identifiers before sending a mutating request."
                       }
                     }
                   ]
@@ -3374,30 +4161,17 @@
                       }
                     },
                     {
-                      "name": "[POST] Purchase Receiving",
+                      "name": "[GET] List Purchase Receiving",
                       "request": {
-                        "method": "POST",
+                        "method": "GET",
                         "header": [
                           {
                             "key": "Authorization",
                             "value": "Bearer {{adminToken}}"
-                          },
-                          {
-                            "key": "Content-Type",
-                            "value": "application/json"
                           }
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/stock/purchase-order/{{poId}}/receiving/",
-                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/purchase-order/:po_id/receiving/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
-                        "body": {
-                          "mode": "raw",
-                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
-                          "options": {
-                            "raw": {
-                              "language": "json"
-                            }
-                          }
-                        }
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/purchase-order/:po_id/receiving/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
                       }
                     },
                     {
@@ -3428,30 +4202,17 @@
                       }
                     },
                     {
-                      "name": "[POST] Purchase Receiving Items",
+                      "name": "[GET] List Purchase Receiving Items",
                       "request": {
-                        "method": "POST",
+                        "method": "GET",
                         "header": [
                           {
                             "key": "Authorization",
                             "value": "Bearer {{adminToken}}"
-                          },
-                          {
-                            "key": "Content-Type",
-                            "value": "application/json"
                           }
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/stock/receiving/{{receivingId}}/items/",
-                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving/:receiving_id/items/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
-                        "body": {
-                          "mode": "raw",
-                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
-                          "options": {
-                            "raw": {
-                              "language": "json"
-                            }
-                          }
-                        }
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving/:receiving_id/items/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
                       }
                     },
                     {
@@ -3464,12 +4225,70 @@
                             "value": "Bearer {{adminToken}}"
                           },
                           {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
                             "key": "Content-Type",
                             "value": "application/json"
                           }
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/stock/receiving/{{receivingId}}/complete/",
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving/:receiving_id/complete/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Purchase Receiving Approve Over",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/receiving/{{receivingId}}/approve-over-receipt/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving/:receiving_id/approve-over-receipt/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Purchase Receiving Correction Request",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/receiving/{{receivingId}}/corrections/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/receiving/:receiving_id/corrections/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                         "body": {
                           "mode": "raw",
                           "raw": "{\n  \"supplier_id\": \"{{supplierId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"items\": [\n    {\n      \"item_id\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
@@ -4383,7 +5202,7 @@
                           }
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/hr/expense-categories/{{categoryId}}/",
-                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/expense-categories/:category_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, PUT, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, PUT, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/expense-categories/:category_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, PUT, PATCH, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, PUT, PATCH, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
                       }
                     },
                     {
@@ -4492,6 +5311,10 @@
                             "value": "Bearer {{adminToken}}"
                           },
                           {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
                             "key": "Content-Type",
                             "value": "application/json"
                           }
@@ -4500,7 +5323,7 @@
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/expenses/:expense_id/pay/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"payment_method\": \"CASH\",\n  \"amount_received\": \"{{amount}}\",\n  \"currency\": \"{{currency}}\"\n}",
+                          "raw": "{\n  \"source_account\": \"BANK\",\n  \"fee_percent\": \"1.5\",\n  \"note\": \"Paid from business bank account\"\n}",
                           "options": {
                             "raw": {
                               "language": "json"
@@ -5341,6 +6164,434 @@
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/hr/attendance/{{attendanceId}}/?from_at={{fromAt}}&to_at={{toAt}}",
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance/:attendance_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `from_at` — Inclusive ISO-8601 reporting start\n- `to_at` — Exclusive ISO-8601 reporting end\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Attendance Manual Entry",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance/manual-entry/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance/manual-entry/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] Attendance Summary",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance/summary/?from_at={{fromAt}}&to_at={{toAt}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance/summary/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `from_at` — Inclusive ISO-8601 reporting start\n- `to_at` — Exclusive ISO-8601 reporting end\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Attendance Adjustment Request",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance/{{attendanceId}}/adjustment-requests/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance/:attendance_id/adjustment-requests/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Attendance Excuse Create",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance/{{attendanceId}}/excuses/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance/:attendance_id/excuses/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "Other",
+                  "item": [
+                    {
+                      "name": "[POST] Attendance Adjustment Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance-adjustments/{{requestId}}/{{action}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance-adjustments/:request_id/:action/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Attendance Excuse Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/attendance-excuses/{{excuseId}}/{{action}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/attendance-excuses/:excuse_id/:action/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] List Work Schedules",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/work-schedules/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/work-schedules/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[PATCH] Work Schedule Detail",
+                      "request": {
+                        "method": "PATCH",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/work-schedules/{{scheduleId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/work-schedules/:schedule_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] List Discipline Rules",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/discipline-rules/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/discipline-rules/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[PATCH] Discipline Rule Detail",
+                      "request": {
+                        "method": "PATCH",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/discipline-rules/{{ruleId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/discipline-rules/:rule_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] List Discipline Cases",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/discipline-cases/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/discipline-cases/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Discipline Case Detail",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/discipline-cases/{{caseId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/discipline-cases/:case_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Discipline Case Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/discipline-cases/{{caseId}}/{{action}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/discipline-cases/:case_id/:action/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] Preparation Audits",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/preparation-audits/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/preparation-audits/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Preparation Audit Detail",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/preparation-audits/{{auditId}}/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/preparation-audits/:audit_id/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Preparation Audit Categories",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/preparation-audit-categories/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/preparation-audit-categories/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Preparation Audit Review",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/preparation-audits/{{auditId}}/review/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/preparation-audits/:audit_id/review/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Preparation Audit Reopen",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/preparation-audits/{{auditId}}/reopen/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/preparation-audits/:audit_id/reopen/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] Audit Dashboard",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/audit-dashboard/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/audit-dashboard/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Audit Period Close",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/hr/audit-periods/close/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/hr/audit-periods/close/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
                       }
                     }
                   ]
@@ -6207,6 +7458,231 @@
               "name": "SmartFood Management",
               "item": [
                 {
+                  "name": "Other",
+                  "item": [
+                    {
+                      "name": "[GET] Overview",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/analytics/overview",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/analytics/overview`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Visitors",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/visitors",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/visitors`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] List Broadcasts",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/broadcasts",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/broadcasts`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Broadcast Detail",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/broadcasts/{{broadcastId}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/broadcasts/:broadcast_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, PATCH, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, PATCH, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Broadcast Send",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/broadcasts/{{broadcastId}}/send",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/broadcasts/:broadcast_id/send`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Create Broadcast Image",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/broadcasts/{{broadcastId}}/image",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/broadcasts/:broadcast_id/image`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **POST** method; supported methods: **POST, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] Users Summary",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/users/summary",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/users/summary`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] Users",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/users?page={{page}}&per_page={{perPage}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/users`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `page` — 1-based page\n- `per_page` — Page size\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] User Detail",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/users/{{customerId}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/users/:customer_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[GET] List Banners",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/marketing/banners",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/marketing/banners`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[PATCH] Patch Banner Detail",
+                      "request": {
+                        "method": "PATCH",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/marketing/banners/{{bannerId}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/marketing/banners/:banner_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **PATCH** method; supported methods: **PATCH, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Create Banner Image",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/marketing/banners/{{bannerId}}/image",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/marketing/banners/:banner_id/image`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **POST** method; supported methods: **POST, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
                   "name": "Configuration",
                   "item": [
                     {
@@ -6349,6 +7825,20 @@
                   "name": "Catalog Review",
                   "item": [
                     {
+                      "name": "[GET] Catalog Products",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/catalog/products?page={{page}}&per_page={{perPage}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/catalog/products`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `page` — 1-based page\n- `per_page` — Page size\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
                       "name": "[GET] Unpublished Products",
                       "request": {
                         "method": "GET",
@@ -6360,6 +7850,33 @@
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/smartfood/catalog/unpublished",
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/catalog/unpublished`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Import Products",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/catalog/import",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/catalog/import`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
                       }
                     },
                     {
@@ -6442,6 +7959,33 @@
                         ],
                         "url": "{{cloudBaseUrl}}/api/admins/smartfood/products/{{productId}}/resume",
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/products/:product_id/resume`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[POST] Create Product Image",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/products/{{productId}}/image",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/products/:product_id/image`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **POST** method; supported methods: **POST, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
                       }
                     },
                     {
@@ -6785,6 +8329,74 @@
                         "body": {
                           "mode": "raw",
                           "raw": "{\n  \"redemption_id\": \"{{redemptionId}}\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[GET] List Rewards",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/loyalty/rewards",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/loyalty/rewards`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request."
+                      }
+                    },
+                    {
+                      "name": "[PATCH] Patch Reward Detail",
+                      "request": {
+                        "method": "PATCH",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/loyalty/rewards/{{rewardId}}",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/loyalty/rewards/:reward_id`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** PATCH, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **PATCH** method; supported methods: **PATCH, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example update — replace fields before sending\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Create Reward Image",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/smartfood/loyalty/rewards/{{rewardId}}/image",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/smartfood/loyalty/rewards/:reward_id/image`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST, DELETE\n\nThis registered path accepts multiple methods. This item uses the safe representative **POST** method; supported methods: **POST, DELETE**. Duplicate path items are intentionally avoided.\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
                           "options": {
                             "raw": {
                               "language": "json"
@@ -7561,70 +9173,6 @@
               "name": "Orders",
               "item": [
                 {
-                  "name": "[POST] Create Order (Idempotent)",
-                  "request": {
-                    "method": "POST",
-                    "header": [
-                      {
-                        "key": "Authorization",
-                        "value": "Bearer {{customerToken}}"
-                      },
-                      {
-                        "key": "Content-Type",
-                        "value": "application/json"
-                      }
-                    ],
-                    "url": "{{cloudBaseUrl}}/api/smartfood/orders",
-                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed method for this item:** POST\n\nCreates a customer order and due-now durable automatic-dispatch job. The HTTP request never attempts POS dispatch; the five-second `smartfood_dispatch` worker owns all attempts, crash recovery, and backoff. `client_order_id` is required and must be a UUID. This request generates `smartfoodClientOrderId` once; resend the identical request with the same value after a timeout to retrieve the original order without double creation, loyalty reservation, or POS dispatch. An identical existing-key replay remains discoverable even if the bot closes or the till disconnects, and it never bypasses worker backoff. Clear `smartfoodClientOrderId` only when starting a genuinely new checkout, and use a new UUID whenever cart, address, phone, note, tip, points, or payment changes. A conflicting payload returns `idempotency_conflict` (409), independently of current availability.\n\nA genuinely new checkout is accepted only when the bot is enabled and a live connected restaurant till has an active on-shift cashier. The first create returns 201; an idempotent replay returns 200. A successful response is initially PENDING while the crash-recoverable worker sends it to the till. Poll detail/track and render `effective_status`; delivery `address_text` is copied into the POS order and status returns through sync. `loyalty_points_earned` is prospective: it is credited exactly once only after COMPLETED + paid + paid_at + valid concrete tender evidence. Cancel/reject restores reserved points once, and linked POS cancellation reverses any released earn once. Technical dispatch exhaustion becomes a customer-safe localized REJECTED response with configured support details.\n\nThe example uses DELIVERY and therefore `addressId` must belong to the authenticated customer. Set valid `productId` and `addressId` collection variables before sending.",
-                    "body": {
-                      "mode": "raw",
-                      "raw": "{\n  \"client_order_id\": \"{{smartfoodClientOrderId}}\",\n  \"items\": [\n    {\n      \"product_id\": {{productId}},\n      \"quantity\": 1,\n      \"topping_ids\": []\n    }\n  ],\n  \"order_type\": \"DELIVERY\",\n  \"address_id\": {{addressId}},\n  \"phone\": \"{{phone}}\",\n  \"note\": \"Postman Smart Food launch-contract test\",\n  \"tip\": 0,\n  \"points_used\": 0,\n  \"payment_method\": \"CASH\"\n}",
-                      "options": {
-                        "raw": {
-                          "language": "json"
-                        }
-                      }
-                    }
-                  },
-                  "event": [
-                    {
-                      "listen": "prerequest",
-                      "script": {
-                        "type": "text/javascript",
-                        "exec": [
-                          "if (!pm.collectionVariables.get('smartfoodClientOrderId')) {",
-                          "  pm.collectionVariables.set('smartfoodClientOrderId', pm.variables.replaceIn('{{$guid}}'));",
-                          "}"
-                        ]
-                      }
-                    },
-                    {
-                      "listen": "test",
-                      "script": {
-                        "type": "text/javascript",
-                        "exec": [
-                          "let payload = {};",
-                          "try { payload = pm.response.json(); } catch (e) { payload = {}; }",
-                          "pm.test('Order is created/replayed or checkout is safely closed', function () {",
-                          "  if (payload.closed === true) {",
-                          "    pm.expect(['bot_off', 'no_cashier']).to.include(payload.reason);",
-                          "  } else {",
-                          "    pm.expect([200, 201]).to.include(pm.response.code);",
-                          "    pm.expect(payload.success).to.eql(true);",
-                          "    pm.expect(payload.data).to.be.an('object');",
-                          "    pm.expect(payload.data.client_order_id).to.eql(pm.collectionVariables.get('smartfoodClientOrderId'));",
-                          "  }",
-                          "});",
-                          "if (payload.success === true && payload.data && payload.data.id) {",
-                          "  pm.collectionVariables.set('botOrderId', String(payload.data.id));",
-                          "  pm.collectionVariables.set('orderId', String(payload.data.id));",
-                          "}"
-                        ]
-                      }
-                    }
-                  ]
-                },
-                {
                   "name": "[GET] List Orders",
                   "request": {
                     "method": "GET",
@@ -7634,8 +9182,8 @@
                         "value": "Bearer {{customerToken}}"
                       }
                     ],
-                    "url": "{{cloudBaseUrl}}/api/smartfood/orders?status=active",
-                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed method for this item:** GET\n\nCustomer order lists are not paginated. `status=active` returns PENDING orders plus dispatched orders whose linked POS order is not terminal; `status=history` returns rejected/canceled bot orders plus dispatched POS orders that are COMPLETED/CANCELED. Omit `status` for all. Each Smart Food order includes the raw durable `status`, derived customer-facing `effective_status`, `client_order_id`, delivery `address_text`, and linked `pos_order` after dispatch."
+                    "url": "{{cloudBaseUrl}}/api/smartfood/orders?page={{page}}&per_page={{perPage}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/orders`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET, POST\n\nThis registered path accepts multiple methods. This item uses the safe representative **GET** method; supported methods: **GET, POST**. Duplicate path items are intentionally avoided.\n\nExample query parameters:\n- `page` — 1-based page\n- `per_page` — Page size\n\nReplace example values and identifiers before sending a mutating request."
                   }
                 },
                 {
@@ -7784,6 +9332,108 @@
                     ],
                     "url": "{{cloudBaseUrl}}/api/smartfood/geo/forward?q={{addressQuery}}",
                     "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/geo/forward`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nExample query parameters:\n- `q` — Address search\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Other",
+              "item": [
+                {
+                  "name": "[GET] Banners",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/banners",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/banners`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Product Image",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/media/products/{{filename}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/media/products/:filename`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Banner Image",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/media/banners/{{filename}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/media/banners/:filename`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Reward Image",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/media/rewards/{{filename}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/media/rewards/:filename`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[GET] Broadcast Image",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/media/broadcasts/{{filename}}",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/media/broadcasts/:filename`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+                  }
+                },
+                {
+                  "name": "[POST] Record Visit",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Authorization",
+                        "value": "Bearer {{customerToken}}"
+                      },
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": "{{cloudBaseUrl}}/api/smartfood/analytics/visit",
+                    "description": "**Edition:** cloud server  \n**Registered route:** `/api/smartfood/analytics/visit`  \n**Authentication:** SmartFood customer bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"notes\": \"Example action — review endpoint fields before sending\"\n}",
+                      "options": {
+                        "raw": {
+                          "language": "json"
+                        }
+                      }
+                    }
                   }
                 }
               ]
@@ -8488,6 +10138,25 @@
           ]
         },
         {
+          "name": "Other",
+          "item": [
+            {
+              "name": "[GET] Legacy Dashboard",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  }
+                ],
+                "url": "{{cloudBaseUrl}}/legacy-dashboard",
+                "description": "**Edition:** cloud server  \n**Registered route:** `/legacy-dashboard`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** GET\n\nReplace example values and identifiers before sending a mutating request."
+              }
+            }
+          ]
+        },
+        {
           "name": "Realtime WebSockets",
           "item": [
             {
@@ -8541,7 +10210,7 @@
                 "method": "GET",
                 "header": [],
                 "url": "{{cloudWsBaseUrl}}/ws/smartfood/orders/{{orderId}}/?token={{customerToken}}",
-                "description": "Ownership-scoped, read-only Smart Food customer order stream. Postman supports WebSocket requests through New → WebSocket; copy this URL there. Authenticate with the Smart Food customer token and an `orderId` owned by that customer. The server first sends `{event: connected, data: {order_id}}`, then full `bot_order_dict` lifecycle frames for dispatch, rejection, cancellation, and synced POS kitchen status. Render `data.effective_status` and keep `GET /api/smartfood/orders/:id/track` polling as the durable fallback because realtime delivery is best-effort."
+                "description": "Registered cloud server ASGI WebSocket route. Postman supports WebSocket requests through its New → WebSocket flow; copy this URL there. The URL includes the expected `?token=` transport because a cookie alone does not authenticate the cloud consumers."
               }
             }
           ]

@@ -11,6 +11,36 @@ from django.utils import timezone
 pytestmark = pytest.mark.django_db
 
 
+def _recognize(branch_id, tenders, actor, shift_id):
+    from base.models import CashReconciliation, Shift
+    from base.services.treasury_service import TreasuryService
+
+    shift = Shift.objects.create(
+        pk=shift_id,
+        user=actor,
+        branch_id=branch_id,
+        start_time=timezone.now(),
+        end_time=timezone.now(),
+        status=Shift.Status.ENDED,
+        treasury_settlement_eligible=True,
+    )
+    cash = Decimal(str(tenders.get('CASH', 0)))
+    CashReconciliation.objects.create(
+        shift=shift,
+        expected_cash=cash,
+        actual_cash=cash,
+        difference=0,
+        reconciled_by=actor,
+        branch_id=branch_id,
+    )
+    return TreasuryService.post_shift_settlement(
+        shift_id,
+        tenders,
+        performed_by=actor,
+        branch_id=branch_id,
+    )
+
+
 def _freeze_at_open_business_time(monkeypatch):
     """Keep current-period assertions outside the deliberate 03:00-07:00 gap."""
     from base.services.business_day import business_date, day_window
@@ -54,15 +84,14 @@ def test_cloud_requires_branch_when_multiple_registers(admin_user):
 @override_settings(DEPLOYMENT_MODE='cloud', BRANCH_ID='cloud')
 def test_inkassa_changes_only_selected_branch(admin_user):
     from base.models import CashRegister
-    from base.services.treasury_service import TreasuryService
     from admins.services.inkassa_service import AdminInkassaService
 
     admin_user.branch_id = 'cloud'
     admin_user.save(update_fields=['branch_id'])
     first = CashRegister.objects.create(branch_id='branch-a', current_balance=100)
     second = CashRegister.objects.create(branch_id='branch-b', current_balance=200)
-    TreasuryService.post_shift_settlement(
-        9301, {'CASH': '30'}, performed_by=admin_user, branch_id='branch-a',
+    _recognize(
+        'branch-a', {'CASH': '30'}, admin_user, shift_id=9301,
     )
 
     result, status = AdminInkassaService.perform(
@@ -85,7 +114,6 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
     admin_user, cashier_user, regular_user, monkeypatch,
 ):
     from base.models import CashRegister, Inkassa, Order
-    from base.services.treasury_service import TreasuryService
     from admins.services.inkassa_service import AdminInkassaService
 
     frozen_now = _freeze_at_open_business_time(monkeypatch)
@@ -112,11 +140,11 @@ def test_mixed_inkassa_batch_owns_period_revenue_once(
     register = CashRegister.objects.get(branch_id='branch-a')
     register.current_balance = Decimal('100.00')
     register.save(update_fields=['current_balance'])
-    TreasuryService.post_shift_settlement(
-        9302,
+    _recognize(
+        'branch-a',
         {'CASH': '10.00', 'UZCARD': '20.00'},
-        performed_by=admin_user,
-        branch_id='branch-a',
+        admin_user,
+        shift_id=9302,
     )
 
     result, status = AdminInkassaService.perform(
