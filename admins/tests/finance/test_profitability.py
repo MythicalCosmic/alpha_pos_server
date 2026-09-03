@@ -384,7 +384,7 @@ def test_owner_draw_stays_out_of_profit_but_remains_in_cash_movement(
     assert classified['coverage']['can_close'] is True
 
 
-def test_payroll_and_approved_hr_expense_are_accrued_by_period(
+def test_payroll_accrues_but_approved_unpaid_expense_is_not_realized(
     admin_user, product,
 ):
     from hr.models import Employee, Expense, ExpenseCategory, SalaryPayment
@@ -444,8 +444,8 @@ def test_payroll_and_approved_hr_expense_are_accrued_by_period(
     )
 
     assert report['summary']['payroll'] == '1700.00'
-    assert report['summary']['utilities'] == '310.00'
-    assert report['summary']['net_profit'] == '490.00'
+    assert report['summary']['utilities'] == '0.00'
+    assert report['summary']['net_profit'] == '800.00'
     assert report['coverage']['can_close'] is True
     assert all(
         blocker['code'] != 'PENDING_PAYROLL'
@@ -453,6 +453,182 @@ def test_payroll_and_approved_hr_expense_are_accrued_by_period(
     )
 
 
+def test_profitability_counts_canonical_paid_expense_and_fee_once(
+    admin_user, product,
+):
+    from base.models import Shift, TreasuryAccount, TreasuryTransaction
+    from cashbox.models import CashboxExpense
+    from hr.models import Expense, ExpenseCategory
+
+    end = date(2026, 8, 31)
+    _ready_config(admin_user, end)
+    _paid_order(admin_user, product, date(2026, 8, 20), amount='1000.00')
+    save_product_cost('branch1', {
+        'product_id': product.id,
+        'treatment': 'ZERO',
+        'effective_from': '2026-08-15',
+    }, admin_user)
+    category = ExpenseCategory.objects.create(
+        code='CANONICAL_UTILITIES', name='Utilities',
+        reporting_group='UTILITIES', allowed_sources=['DRAWER', 'BANK'],
+    )
+    common = {
+        'category': category,
+        'category_code_snapshot': category.code,
+        'category_name_snapshot': category.name,
+        'expense_date': date(2026, 8, 20),
+        'created_by': admin_user,
+        'branch_id': 'branch1',
+    }
+    Expense.objects.create(
+        amount='100', status=Expense.Status.PENDING, **common,
+    )
+    Expense.objects.create(
+        amount='200', status=Expense.Status.APPROVED, **common,
+    )
+    drawer_expense = Expense.objects.create(
+        amount='300', status=Expense.Status.PAID,
+        requested_source='DRAWER', paid_at=_at(date(2026, 8, 20)), **common,
+    )
+    shift = Shift.objects.create(
+        user=admin_user,
+        start_time=_at(date(2026, 8, 20), 8),
+        status=Shift.Status.ACTIVE,
+        branch_id='branch1',
+    )
+    cashbox = CashboxExpense.objects.create(
+        shift=shift,
+        canonical_category=category,
+        canonical_expense=drawer_expense,
+        amount='300',
+        comment='Canonical drawer payment',
+        created_by=admin_user,
+        branch_id='branch1',
+    )
+    CashboxExpense.objects.filter(pk=cashbox.pk).update(
+        created_at=_at(date(2026, 8, 20)),
+    )
+    bank = TreasuryAccount.objects.create(
+        kind='BANK', balance='0', branch_id='branch1',
+    )
+    bank_payment = TreasuryTransaction.objects.create(
+        account=bank,
+        type=TreasuryTransaction.Type.EXPENSE,
+        delta='-105',
+        fee='5',
+        balance_before='105',
+        balance_after='0',
+        branch_id='branch1',
+    )
+    Expense.objects.create(
+        amount='100', fee_uzs='5', status=Expense.Status.PAID,
+        requested_source='BANK', paid_at=_at(date(2026, 8, 20)),
+        treasury_transaction=bank_payment, **common,
+    )
+    void_payment = TreasuryTransaction.objects.create(
+        account=bank,
+        type=TreasuryTransaction.Type.EXPENSE,
+        delta='-50',
+        balance_before='50',
+        balance_after='0',
+        branch_id='branch1',
+    )
+    void_reversal = TreasuryTransaction.objects.create(
+        account=bank,
+        type=TreasuryTransaction.Type.EXPENSE_REVERSAL,
+        delta='50',
+        balance_before='0',
+        balance_after='50',
+        reversal_of=void_payment,
+        branch_id='branch1',
+    )
+    Expense.objects.create(
+        amount='50', status=Expense.Status.VOIDED,
+        requested_source='BANK', paid_at=_at(date(2026, 8, 20)),
+        voided_at=_at(date(2026, 8, 21)),
+        treasury_transaction=void_payment,
+        treasury_reversal=void_reversal,
+        **common,
+    )
+
+    report = profitability_report(
+        '2026-08-15', '2026-08-31', branch_id='branch1', live=True,
+    )
+
+    assert report['summary']['utilities'] == '405.00'
+    assert report['summary']['total_operating_expenses'] == '405.00'
+    assert report['summary']['net_profit'] == '595.00'
+
+
+def test_waste_stock_entry_posts_once_and_linked_reversal_removes_it(
+    admin_user,
+):
+    from stock.models import StockItem, StockLocation, StockTransaction, StockUnit
+
+    _ready_config(admin_user, date(2026, 8, 31))
+    unit = StockUnit.objects.create(
+        name='Waste kilogram', short_name='wkg', unit_type='WEIGHT',
+        is_base_unit=True,
+    )
+    location = StockLocation.objects.create(
+        name='Waste kitchen', type='KITCHEN', branch_id='branch1',
+    )
+    item = StockItem.objects.create(
+        name='Waste ingredients', base_unit=unit, item_type='RAW',
+        avg_cost_price='100', branch_id='branch1',
+    )
+    original = StockTransaction.objects.create(
+        transaction_number='TRX-WASTE-PNL',
+        stock_item=item,
+        location=location,
+        movement_type=StockTransaction.MovementType.WASTE,
+        quantity='2',
+        unit=unit,
+        base_quantity='2',
+        quantity_before='10',
+        quantity_after='8',
+        unit_cost='100',
+        total_cost='200',
+        reference_type='StockWaste',
+        user=admin_user,
+        branch_id='branch1',
+    )
+    StockTransaction.objects.filter(pk=original.pk).update(
+        created_at=_at(date(2026, 8, 20)),
+    )
+    before_reversal = profitability_report(
+        '2026-08-15', '2026-08-31', branch_id='branch1', live=True,
+    )
+    assert before_reversal['summary']['waste_spoilage'] == '200.00'
+
+    reversal = StockTransaction.objects.create(
+        transaction_number='TRX-WASTE-PNL-REVERSAL',
+        stock_item=item,
+        location=location,
+        movement_type=StockTransaction.MovementType.ADJUSTMENT_PLUS,
+        quantity='2',
+        unit=unit,
+        base_quantity='2',
+        quantity_before='8',
+        quantity_after='10',
+        unit_cost='100',
+        total_cost='200',
+        reference_type='StockAdjustmentReversal',
+        reference_id=original.id,
+        reversal_of=original,
+        user=admin_user,
+        branch_id='branch1',
+    )
+    StockTransaction.objects.filter(pk=reversal.pk).update(
+        created_at=_at(date(2026, 8, 21)),
+    )
+    after_reversal = profitability_report(
+        '2026-08-15', '2026-08-31', branch_id='branch1', live=True,
+    )
+    assert after_reversal['summary']['waste_spoilage'] == '0.00'
+
+
+@pytest.mark.django_db(transaction=True)
 def test_period_close_is_idempotent_immutable_and_revisioned(
     monkeypatch, admin_user, product,
 ):

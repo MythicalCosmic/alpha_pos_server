@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1fa66fb-c18d-4c13-8e3e-5481f86ddf55",
     "name": "Alpha POS — Cloud, Local POS & Realtime API",
-    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **475** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **599** edition/path HTTP entries in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEach distinct registered HTTP path appears exactly once per deployed edition.\nFor multi-method Django views, the item description lists every allowed method\nand the request uses one representative method. Django's generated `/admin/`\nHTML application and the standalone core test URLconf are deliberately excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
+    "description": "# Alpha POS API\n\nImport-ready Postman Collection v2.1 for the deployed Alpha POS cloud server and\nlocal POS editions.\n\n## Coverage\n\n- **476** distinct cloud HTTP paths\n- **124** distinct local HTTP paths\n- **600** edition/path HTTP entries in total\n- **6** cloud and **5** local ASGI WebSocket routes\n\nEach distinct registered HTTP path appears exactly once per deployed edition.\nFor multi-method Django views, the item description lists every allowed method\nand the request uses one representative method. Django's generated `/admin/`\nHTML application and the standalone core test URLconf are deliberately excluded.\n\n## Safety and setup\n\nAll hosts, credentials, phone numbers, UUIDs and IDs are placeholders. No\nproduction key or customer record is embedded. Set the collection variables for\nthe environment you intend to test, run the relevant login request, and inspect\nevery example body before sending mutations. Login/create tests only capture\nauthoritative token or ID fields when a successful JSON response supplies them.\n\n## Synchronization authentication\n\nBranch replication uses `Branch {{branchToken}}` plus `X-Branch-ID`;\ncloud-to-local receive uses `Cloud {{cloudSyncToken}}`; management controls\nuse `Management {{managementToken}}`. Trigger, trigger-pull, full-push, and\nthe Cloud form of `/api/sync/receive` are local-only behavior gates; shift-close\nacknowledgement is cloud-only. All eleven shared URL patterns are still\nregistered by both editions.\n",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -3604,6 +3604,10 @@
                             "value": "Bearer {{adminToken}}"
                           },
                           {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
                             "key": "Content-Type",
                             "value": "application/json"
                           }
@@ -3612,7 +3616,38 @@
                         "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/adjust/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"item_id\": \"{{itemId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"quantity\": 1,\n  \"reason\": \"Postman example adjustment\"\n}",
+                          "raw": "{\n  \"stock_item_id\": \"{{itemId}}\",\n  \"location_id\": \"{{locationId}}\",\n  \"quantity\": \"1.0000\",\n  \"movement_type\": \"WASTE\",\n  \"reason\": \"Damaged during storage\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "[POST] Stock Adjust Reverse",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Authorization",
+                            "value": "Bearer {{adminToken}}"
+                          },
+                          {
+                            "key": "Idempotency-Key",
+                            "value": "{{idempotencyKey}}"
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": "{{cloudBaseUrl}}/api/admins/stock/adjust/{{transactionId}}/reverse/",
+                        "description": "**Edition:** cloud server  \n**Registered route:** `/api/admins/stock/adjust/:transaction_id/reverse/`  \n**Authentication:** Cloud administrator bearer token  \n**Allowed methods:** POST\n\nReplace example values and identifiers before sending a mutating request.",
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"reason\": \"Recovered stock after recount\"\n}",
                           "options": {
                             "raw": {
                               "language": "json"

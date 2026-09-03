@@ -1,6 +1,6 @@
 # Money Control backend contract
 
-Date: 2026-09-01
+Date: 2026-09-03
 Timezone: `Asia/Tashkent`
 Currency: whole UZS
 
@@ -28,6 +28,12 @@ It is named working capital and is not profit, revenue, net worth, or spending
 authority. Any unsafe component is `null`; the API does not replace missing or
 ambiguous accounting evidence with zero.
 
+Strict fail-closed cases include a supplier ledger mismatch, a completed shift
+without a valid posted reconciliation manifest, and a voided expense without
+its linked reversal. The affected supplier values, drawer value, or paid
+expense total are `null`, respectively. Working capital is also `null` whenever
+any formula component is unsafe.
+
 ### `GET /api/admins/stock/inventory-control/`
 
 Requires `stock.inventory_control.view`.
@@ -47,6 +53,39 @@ available_value_uzs = (quantity - reserved_quantity) * avg_cost_price
 Quantities and unit costs are canonical four-place decimal strings. New UZS
 properties are JSON integers. Totals aggregate unrounded `Decimal` values and
 round only at serialization with `ROUND_HALF_UP`.
+
+### `GET /api/admins/stock/locations/`
+
+The location selector accepts either `stock.level.view` or
+`stock.inventory_control.view` and returns only the authenticated actor's
+branch locations. Detail reads use the same scope. Creating, updating,
+activating, deactivating, or selecting a default location still requires
+`stock.manage`; a submitted `branch_id` cannot override the actor's branch.
+
+## Controlled stock adjustments and waste
+
+`POST /api/admins/stock/adjust/` requires
+`stock.adjustment.approve` and `Idempotency-Key`. Its accepted movement types
+are `ADJUSTMENT_PLUS`, `ADJUSTMENT_MINUS`, `WASTE`, and `SPOILAGE`; item and
+location must be active and belong to the actor's branch, quantity must be a
+positive decimal with at most four places, and `reason` is mandatory.
+
+```json
+{
+  "stock_item_id": 204,
+  "location_id": 3,
+  "quantity": "2.5000",
+  "movement_type": "WASTE",
+  "reason": "Damaged during storage"
+}
+```
+
+Waste and spoilage decrease stock using the item's current perpetual
+weighted-average cost. The resulting `StockTransaction.total_cost` is the
+single waste P&L source; it does not move Treasury or create a paid operating
+expense. `POST /api/admins/stock/adjust/{transaction_id}/reverse/` requires the
+same permission and idempotency header plus a reason, and creates a linked
+opposite transaction without changing the original.
 
 ## Canonical expense workflow
 
@@ -157,6 +196,15 @@ collection action and never recognizes revenue again.
 `GET /api/admins/treasury/history` accepts `account`, `type`, `date_from`,
 `date_to`, `category_id`, `reference_type`, `reference_id`, `performed_by_id`,
 `search`, `page`, and `per_page`. Totals cover the complete filtered ledger.
+Because a transfer stores its fee on both linked ledger rows,
+`total_fee_uzs` de-duplicates the pair for unfiltered history while an
+account-filtered view still reports that account's one economic fee.
+
+The profitability report recognizes canonical `PAID` expenses by payment date,
+includes their persisted bank fees, ignores pending/approved/validly voided
+requests, and never adds the linked cashbox payment a second time. Standalone
+legacy cashbox operating expenses remain visible as a close blocker until
+linked or explicitly classified as represented elsewhere.
 
 `GET /api/admins/stock/suppliers/{id}/ledger/` accepts `type`,
 `source_account`, `date_from`, `date_to`, `reference_type`, `reference_id`,

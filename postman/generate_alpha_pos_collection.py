@@ -1076,12 +1076,15 @@ def body_example(edition: str, path: str, method: str) -> dict[str, Any] | None:
         return {"employee_id": "{{employeeId}}", "occurred_at": "{{fromAt}}"}
     if path.endswith("/progress"):
         return {"progress": 50, "notes": "Postman example"}
+    if path.endswith("/stock/adjust/:transaction_id/reverse"):
+        return {"reason": "Recovered stock after recount"}
     if path.endswith("/adjust"):
         return {
-            "item_id": "{{itemId}}",
+            "stock_item_id": "{{itemId}}",
             "location_id": "{{locationId}}",
-            "quantity": 1,
-            "reason": "Postman example adjustment",
+            "quantity": "1.0000",
+            "movement_type": "WASTE",
+            "reason": "Damaged during storage",
         }
     if path.endswith("/units/convert"):
         return {
@@ -1305,6 +1308,8 @@ def build_request(
         or path.rstrip("/").endswith("/payments/:payment_id/reverse")
         or path.rstrip("/").endswith("/expenses/:expense_id/pay")
         or path.rstrip("/").endswith("/expenses/:expense_id/void")
+        or path.rstrip("/") == "/api/admins/stock/adjust"
+        or path.rstrip("/").endswith("/stock/adjust/:transaction_id/reverse")
     )
     if method in MUTATION_METHODS and idempotent_mutations:
         headers.append({"key": "Idempotency-Key", "value": "{{idempotencyKey}}"})

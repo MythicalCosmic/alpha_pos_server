@@ -566,32 +566,37 @@ def profitability_report(
         )
     }
     for expense in cashbox_rows:
+        if expense.canonical_expense_id:
+            continue
         override = overrides.get(expense.id)
         group = (
             override.reporting_group if override
             else expense.category.reporting_group if expense.category_id
             else FinancialReportingGroup.REVIEW
         )
-        if group == FinancialReportingGroup.REVIEW:
-            unclassified_cashbox.append(expense)
-            continue
         if override and override.represented_elsewhere:
             continue
-        if group in expense_groups:
-            expense_groups[group] += Decimal(expense.amount)
+        if group == FinancialReportingGroup.REVIEW or group in PROFIT_EXPENSE_GROUPS:
+            unclassified_cashbox.append(expense)
 
-    hr_expenses = Expense.objects.filter(
+    period_expenses = Expense.objects.filter(
         is_deleted=False,
         branch_id=branch_id,
         expense_date__gte=window.date_from,
         expense_date__lte=window.date_to,
     ).select_related('category')
-    pending_hr = hr_expenses.filter(status=Expense.Status.PENDING)
-    approved_hr = hr_expenses.filter(
-        status__in=[Expense.Status.APPROVED, Expense.Status.PAID]
+    pending_hr = period_expenses.filter(status=Expense.Status.PENDING)
+    paid_expenses = window.filter(
+        Expense.objects.filter(
+            is_deleted=False,
+            branch_id=branch_id,
+            status=Expense.Status.PAID,
+            paid_at__isnull=False,
+        ).select_related('category'),
+        'paid_at',
     )
     unclassified_hr = []
-    for expense in approved_hr:
+    for expense in paid_expenses:
         group = (
             expense.category.reporting_group
             if expense.category_id else FinancialReportingGroup.REVIEW
@@ -599,7 +604,9 @@ def profitability_report(
         if group == FinancialReportingGroup.REVIEW:
             unclassified_hr.append(expense)
         elif group in expense_groups:
-            expense_groups[group] += Decimal(expense.amount)
+            expense_groups[group] += (
+                Decimal(expense.amount) + Decimal(expense.fee_uzs or ZERO)
+            )
 
     salary_period = (
         (
@@ -656,7 +663,7 @@ def profitability_report(
                 window.date_to,
             )
 
-    waste_cost = window.filter(
+    waste_rows = window.filter(
         StockTransaction.objects.filter(
             is_deleted=False,
             branch_id=branch_id,
@@ -664,9 +671,25 @@ def profitability_report(
                 StockTransaction.MovementType.WASTE,
                 StockTransaction.MovementType.SPOILAGE,
             ],
+            reversal_of__isnull=True,
+        ),
+        'created_at',
+    )
+    reversed_waste = window.filter(
+        StockTransaction.objects.filter(
+            is_deleted=False,
+            branch_id=branch_id,
+            reversal_of__movement_type__in=[
+                StockTransaction.MovementType.WASTE,
+                StockTransaction.MovementType.SPOILAGE,
+            ],
         ),
         'created_at',
     ).aggregate(total=Sum('total_cost'))['total'] or ZERO
+    waste_cost = (
+        (waste_rows.aggregate(total=Sum('total_cost'))['total'] or ZERO)
+        - reversed_waste
+    )
     expense_groups[FinancialReportingGroup.WASTE_SPOILAGE] += Decimal(waste_cost)
 
     adjustments = ProfitAdjustment.objects.filter(
@@ -761,8 +784,8 @@ def profitability_report(
     )
     if unclassified_cashbox:
         _add_blocker(
-            blockers, 'UNCLASSIFIED_CASHBOX_EXPENSES',
-            'Classify every post-launch drawer payout.',
+            blockers, 'NONCANONICAL_CASHBOX_EXPENSES',
+            'Link operating drawer payouts to a canonical paid expense.',
             count=len(unclassified_cashbox), amount=unclassified_cashbox_amount,
         )
     unclassified_hr_amount = sum(
