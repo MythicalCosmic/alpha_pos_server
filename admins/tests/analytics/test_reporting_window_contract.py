@@ -308,7 +308,7 @@ def test_iso_window_is_consistent_for_orders_stats_and_shift_summary(
     stats = client.get('/api/admins/orders/stats', query, **auth)
     assert stats.status_code == 200, stats.content
     assert stats.json()['data']['total_orders'] == 1
-    assert stats.json()['data']['total_revenue'] == '200'
+    assert Decimal(stats.json()['data']['total_revenue']) == Decimal('200')
 
     shifts = client.get('/api/admins/shifts', query, **auth)
     assert shifts.status_code == 200, shifts.content

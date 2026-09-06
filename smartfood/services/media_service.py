@@ -327,7 +327,8 @@ class BroadcastMediaService:
     def _get(broadcast_id, *, for_update=False):
         queryset = BotBroadcast.objects.select_related('created_by')
         if for_update:
-            queryset = queryset.select_for_update()
+            # PostgreSQL cannot lock the nullable created_by outer join.
+            queryset = queryset.select_for_update(of=('self',))
         return queryset.filter(
             id=broadcast_id,
         ).first()

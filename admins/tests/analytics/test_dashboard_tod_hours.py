@@ -94,7 +94,7 @@ def test_product_ids_filter_orders_and_stats():
 
     stats = AdminOrderService.get_order_stats('2026-07-08', '2026-07-08', product_ids=str(p1.id))
     d = stats[0]['data']
-    assert d['total_orders'] == 1 and d['total_revenue'] == '20000', d
+    assert d['total_orders'] == 1 and Decimal(d['total_revenue']) == Decimal('20000'), d
 
 
 def test_working_hours_settings_get_put():

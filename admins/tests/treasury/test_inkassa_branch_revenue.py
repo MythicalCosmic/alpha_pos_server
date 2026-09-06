@@ -265,12 +265,16 @@ def test_sales_stats_book_refund_at_refunded_at(
     assert stats['today']['order_count'] == 0
     assert stats['today']['refund_count'] == 1
     assert Decimal(stats['today']['refund_total']) == Decimal('80.00')
-    assert stats['cashier_performance'] == [{
+    performance = [
+        {**row, 'total_revenue': Decimal(row['total_revenue'])}
+        for row in stats['cashier_performance']
+    ]
+    assert performance == [{
         'cashier_id': cashier_user.id,
         'cashier_name': (
             f'{cashier_user.first_name} {cashier_user.last_name}'
         ).strip(),
-        'total_revenue': '-80',
+        'total_revenue': Decimal('-80'),
         'order_count': 0,
         'refund_count': 1,
     }]

@@ -140,7 +140,8 @@ class BroadcastService:
     @transaction.atomic
     def update(broadcast_id, payload, actor=None):
         broadcast = (
-            BotBroadcast.objects.select_for_update()
+            # The creator is nullable; only the broadcast owns this mutation.
+            BotBroadcast.objects.select_for_update(of=('self',))
             .select_related('created_by')
             .filter(id=broadcast_id)
             .first()
@@ -191,7 +192,8 @@ class BroadcastService:
     @transaction.atomic
     def send(broadcast_id, actor=None, expected_updated_at=None):
         broadcast = (
-            BotBroadcast.objects.select_for_update()
+            # The creator is nullable; only the broadcast owns this mutation.
+            BotBroadcast.objects.select_for_update(of=('self',))
             .select_related('created_by')
             .filter(id=broadcast_id)
             .first()
