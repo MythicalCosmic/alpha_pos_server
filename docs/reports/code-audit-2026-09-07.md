@@ -1,6 +1,6 @@
 # Alpha POS code audit — 7 September 2026
 
-**Result: 11 findings at the initial audit checkpoint; one additional finding confirmed during PostgreSQL validation.** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
+**Result: 11 findings at the initial audit checkpoint; three additional findings confirmed during PostgreSQL validation (14 total).** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
 
 This is a code and isolated database audit, not a reconciliation of the restaurant's physical counter. No dated cash counts or card/provider statements were supplied. A software reproduction proves a defect exists; it does not prove how frequently that defect occurred at the restaurant or assign responsibility to its staff.
 
@@ -166,6 +166,26 @@ The package declares Python ≥3.11 while pinning Django 6.0.3, whose installed 
 **Evidence:** `fixed-server-server.xml` (84 passed, 1 failed); `repro-json-replay-core-cloud.xml` (nested-object byte comparison and array replay both fail). The idempotency implementation was unchanged from each released baseline when reproduced: cloud SHA-256 `3dcf852859ce43904d3249e0fc8fb59cefd0cbd6d4cb841c8125ed7e1ff21116`; desktop SHA-256 `5b028192781ba529b13a569e461aae2f1523d0a2d9be0f40fc30331816250aea`.
 
 **Fix:** use consistent key sorting for initial and replayed JSON response bodies and allow array bodies on replay. Preserve the first response's headers and cookies. Regression checks cover both database round-trip cases, one execution only, status, content length and first-response header/cookie preservation. No payment identity or request fingerprint rules need to change.
+
+### AUD-013 — P2 — Broadcast edits/media/queueing fail on PostgreSQL
+
+**Added during the full PostgreSQL server run, before this item's fix.** Seven existing Smartfood broadcast cases fail because the mutation query applies `FOR UPDATE` to all selected tables while joining nullable `created_by`. PostgreSQL rejects locking the nullable side of that outer join. Draft editing, image upload/validation and queueing return HTTP 500; dependent worker tests then find no queued message.
+
+**Location:** server `smartfood/services/broadcast_service.py` (`update`, `send`) and `smartfood/services/media_service.py` (`BroadcastMediaService._get`). Both source files were identical to released baseline `4b30331` when reproduced.
+
+**Fix:** restrict each mutation's lock to the broadcast row using `select_for_update(of=('self',))`. Keep draft-version review, immutable queued content and outbound idempotency guards. Use the existing broadcast integration suite against PostgreSQL, including media, changed-draft rejection, opt-out and duplicate delivery checks. Test messages use synthetic recipients and mocked delivery; no restaurant customers are contacted.
+
+**Evidence:** seven broadcast failures in `verified-full-server.xml` / `.log`; exception `FOR UPDATE cannot be applied to the nullable side of an outer join`.
+
+### AUD-014 — P3 — Three sales-report tests assume SQLite decimal formatting
+
+**Added during the full PostgreSQL server run, before this item's fix.** Three report assertions require exact strings such as `200`, `20000` and `-80`. PostgreSQL returns numerically identical strings `200.00`, `20000.00` and `-80.00`. Requests succeed and the measured amounts agree; this is a test portability issue, not another money-calculation defect.
+
+**Location:** server tests `admins/tests/analytics/test_dashboard_tod_hours.py`, `admins/tests/analytics/test_reporting_window_contract.py`, and `admins/tests/treasury/test_inkassa_branch_revenue.py`.
+
+**Fix:** compare monetary values with Decimal while retaining exact order membership, counts, cashier identity and reporting-window assertions. Keep production arithmetic and formatting unchanged.
+
+**Evidence:** three non-broadcast failures in `verified-full-server.xml`; together with AUD-013 this first full PostgreSQL server run has 646 passes and 10 failures.
 
 ## Evidence and reproducibility
 
