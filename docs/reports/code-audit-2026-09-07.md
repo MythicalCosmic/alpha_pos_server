@@ -1,0 +1,187 @@
+# Alpha POS code audit — 7 September 2026
+
+**Result: 11 confirmed findings.** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
+
+This is a code and isolated database audit, not a reconciliation of the restaurant's physical counter. No dated cash counts or card/provider statements were supplied. A software reproduction proves a defect exists; it does not prove how frequently that defect occurred at the restaurant or assign responsibility to its staff.
+
+## Scope and baseline
+
+Audited the released desktop/server code and their respective shared-core generations. Original working directories contained existing work and were preserved; investigation and fixes use separate Git worktrees.
+
+| Component | Reviewed baseline | Fix branch under MythicalCosmic |
+| --- | --- | --- |
+| Desktop app (`alpha_pos_local`) | `7b7215fc21156da835e5c45015f9874f410ca519` | `audit/reliability-2026-09-07` |
+| Desktop core (`alpha_pos_core`) | `14f423ac7e997fa1bff8bcc274bcffa2ae4a2239` | `audit/desktop-core-2026-09-07` |
+| Server (`alpha_pos_server`) | `4b30331f8dbcf580b79f9e9ec49c98bab19a6495` | `audit/reliability-2026-09-07` |
+| Cloud core (`alpha_pos_core`) | `05718d43c843474b6c44e78ce30adf241d6af958` | `audit/cloud-core-2026-09-07` |
+
+The September 4–6 work report was pushed first in server commit `0714777`. The desktop and cloud core histories differ, so each receives the applicable changes and its parent repository must pin the matching commit.
+
+Coverage: checkout, order edits, tender attribution, report windows, staff/courier/customer authentication, sync queues and publication, selected courier and Smartfood lifecycle paths, input/media boundaries, desktop updater tests, and finance/stock/treasury regression suites. Static checks covered tracked application Python, excluding migrations/tests/vendor bundles. This is not an exhaustive penetration test, dependency vulnerability scan, or manual review of every line.
+
+All reproductions use synthetic records. SQLite databases and a separate PostgreSQL 17 container were used; test processes block external network connections. No live restaurant records were changed during this audit. Test runtime: Python 3.13.14, Django 6.0.3, pytest 8.3.4. Reporting timezone: Asia/Tashkent.
+
+## Baseline verification before fixes
+
+| Suite | Passed | Failed | Skipped | Interpretation |
+| --- | ---: | ---: | ---: | --- |
+| Desktop app | 560 | 0 | 11 | Three PostgreSQL cases and eight Windows cases skipped in this Linux/SQLite run |
+| Server | 621 | 0 | 1 | PostgreSQL order-creation concurrency case skipped |
+| Desktop core | 1,026 | 0 | 2 | Server-edition loyalty integration cases skipped |
+| Cloud core | 1,067 | 1 | 6 | Four PostgreSQL cases and two edition integration cases skipped; failure explained by AUD-009 |
+| **Total** | **3,274** | **1** | **20** | Distinct suite executions; shared code is tested in both core generations |
+
+Ruff checks `F401,F811,F821,F823,F841` found zero issues across 333 desktop-core, 345 cloud-core, 97 desktop-app and 153 server Python files. This does not establish the absence of dead code: unused private methods can pass these checks. An AST scan found no unconditional-exit unreachable-code candidates; manual call-site review identified AUD-010.
+
+Targeted tests added before application edits produced **58 failing cases** demonstrating the findings below. Some failures are parameter variations of one defect, not 58 separate bugs. An unchanged expense test passed when run with a controlled noon clock, isolating the baseline failure's cause.
+
+## Findings and intended fixes
+
+Priorities: **P1** = payment consistency or access revocation; **P2** = input robustness or audit reliability; **P3** = test/build/maintenance correctness. At the audit checkpoint all items are **confirmed, not yet fixed**. A completion section will record subsequent implementation and checks.
+
+### AUD-001 — P1 — Cloud order edits race with checkout
+
+**Location:** server `admins/services/order_service.py`, `update_order`, `update_order_item`, `remove_item_from_order`.
+
+Checkout locks the order, but these edit paths read an unlocked snapshot. An edit can read an unpaid order while checkout is running and save that old state after payment commits. Metadata edits save the whole model; quantity edits recalculate a total without sharing checkout's lock.
+
+**Reproduction:** three PostgreSQL tests overlap a 20,000 UZS order's 10% discounted card checkout with increasing quantity, decreasing quantity or changing a note. All three fail on the baseline. Payment records contain 18,000 UZS, while a decrease leaves the order at 10,000 UZS; a note edit restores `is_paid=False` and 20,000 UZS. This requires neither deleting nor canceling an order.
+
+**Fix:** serialize edits with checkout using the existing order row lock; limit metadata saves to fields actually edited; reject quantity changes after payment. This revalidates a previously prepared, unreleased patch.
+
+**Evidence:** `admins/tests/checkout/test_checkout_edit_races.py`; `repro-checkout-server.xml` (3 failed).
+
+### AUD-002 — P1 — Staff/courier authentication can retain revoked access
+
+**Location:** both cores, `base/repositories/session.py`; invalidation wiring in `base/signals.py`.
+
+Authentication caches a Session joined to its User for 300 seconds. Invalidation during an uncommitted role/status change can be followed by another request refilling the old committed row. A read already in progress can also refill stale data after revocation completes. Saving an earlier expiry does not invalidate the cached Session at all.
+
+**Reproduction:** role change, deactivation and deletion with a PostgreSQL transaction held open; late cache fill after role change/deletion; and shortened expiry. All six fail on the cloud core baseline. The same repository implementation exists in desktop core.
+
+**Fix:** use the indexed session hash lookup and joined current User on each authentication request, removing this cache as an authorization source. This adds one database query per authenticated lookup; it avoids relying on process-local cache invalidation or another timing-sensitive cache protocol. An already-running request is not retroactively canceled.
+
+**Evidence:** `base/tests/security/test_session_cache_transactions.py`; six failures in `repro-core-core-cloud.xml`.
+
+### AUD-003 — P1 — Customer sessions retain blocked/deleted/expired identities
+
+**Location:** server `smartfood/repositories.py`, used by `smartfood/security.py::customer_required`.
+
+The customer-session cache mirrors the staff cache, but Customer saves and CustomerSession saves/deletes have no corresponding invalidation signals. A cached customer can remain unblocked after the database marks it blocked; a deleted or shortened session can remain usable. Explicit logout deletion alone also cannot prevent an in-flight cache refill.
+
+**Reproduction:** block, delete and expiry changes after a cached lookup; late fills following block/delete. All five fail.
+
+**Fix:** authenticate against the indexed CustomerSession lookup and current joined Customer, using the same cache-removal approach as AUD-002.
+
+**Evidence:** `smartfood/tests/api/test_auth_cache_revocation.py`; five failures in `repro-customer-auth-server.xml`.
+
+### AUD-004 — P2 — Checkout rounds an undiscounted fractional bill differently
+
+**Location:** desktop `customers/services/order_service.py`; server `admins/services/order_service.py`.
+
+The payment calculation rounds to a whole UZS even when no new discount is requested, while the stored bill retains its fractional amount. Synthetic 10,000.25 and 10,000.75 UZS bills expose differences in cash/card/provider settlement paths. This is a legacy-data/input compatibility defect; this audit did not establish that the restaurant actually had fractional bills.
+
+**Fix:** preserve the stored amount when the new discount is zero. Apply the existing whole-UZS discount policy only when a positive new discount is requested. This adopts a previously prepared, unreleased patch.
+
+**Evidence:** desktop `customers/tests/payments/test_fractional_checkout.py` (6 failing cases); server `admins/tests/checkout/test_admin_pay_tender.py` (4 new failures, 44 existing tests passed).
+
+### AUD-005 — P2 — Order item validation accepts malformed values
+
+**Location:** desktop/server `customers/requests/order_requests.py` and `admins/requests/order_requests.py`; related add-item views.
+
+Create-order validation assumes each item is a dictionary. Nulls, numbers and lists can raise exceptions. Boolean quantities pass an integer check. Product identifiers are not normalized or strictly validated: dictionaries and oversized IDs pass the request layer, and numeric strings remain strings despite the service indexing products by integer ID. Add-item paths have similar identifier coercion gaps, including boolean/float acceptance.
+
+**Fix:** reject non-object items; accept only supported positive integral IDs within database capacity; normalize numeric-string IDs before product lookup; reject boolean or unstorable quantities; apply the ID helper consistently to add-item views.
+
+**Evidence:** each edition's `test_order_payload_validation.py` produces 14 baseline failures (28 total). View validation boundaries were also inspected in source.
+
+### AUD-006 — P2 — Quantity parsing can exceed storage limits or raise an exception
+
+**Location:** both cores, `base/helpers/request.py::coerce_quantity`; `OrderItem.quantity` is a PositiveIntegerField.
+
+The helper accepts quantities at or above 2³¹ despite PostgreSQL's column limit of 2³¹−1. A 5,000-digit ASCII numeric string raises Python's integer-conversion ValueError instead of producing a validation response.
+
+**Fix:** bound the positive integer before accepting it; reject oversized text safely; retain existing supported whole-number float/string input behavior. This is a quantity boundary fix, not a claim that every conceivable monetary overflow has been audited.
+
+**Evidence:** `base/tests/runtime/test_quantity_limits.py`; four failures and two valid-boundary passes in `repro-core-core-cloud.xml`.
+
+### AUD-007 — P2 — Tender audit hides unpaid headers with collected money
+
+**Location:** both cores, `base/management/commands/audit_tender_attribution.py`.
+
+The command filters `is_paid=True` before auditing. An unpaid header with till payment rows—the state AUD-001 can create—disappears from the audit. The baseline command returns successfully even with `--fail` for a synthetic unpaid order with a card collection.
+
+**Fix:** include unpaid headers with till payment evidence, missing payment timestamps and negative paid totals; support branch-scoped JSON output and one read-only PostgreSQL snapshot; include recent payment evidence for older orders. Preserve legitimate partial external collections and explicitly distinguish internal consistency from physical reconciliation. This extends a previously prepared diagnostic patch and does not repair history automatically.
+
+**Evidence:** `base/tests/management/test_audit_unpaid_payment.py`; `repro-audit-gap-core-cloud.xml` (1 failed). Additional audit tests cover branch/date scope and absence of writes.
+
+### AUD-008 — P2 — Malformed Telegram login hash raises TypeError
+
+**Location:** server `smartfood/security.py::verify_init_data`.
+
+`hmac.compare_digest` rejects a non-ASCII string argument. An untrusted `hash` field containing non-ASCII characters reaches this call and raises TypeError instead of returning authentication failure. This demonstrates error handling failure, not authentication bypass.
+
+**Fix:** validate the supplied SHA-256 hex digest format before constant-time comparison; retain tests for valid and tampered signatures.
+
+**Evidence:** `test_non_ascii_init_data_hash_is_rejected_without_server_error`; one failure in `repro-customer-auth-server.xml`.
+
+### AUD-009 — P3 — Expense regression depends on the wall-clock hour
+
+**Location:** cloud core `base/tests/finance/test_money_control_contract.py::test_voided_expense_without_reversal_nulls_paid_total`.
+
+The fixture records a payment at `timezone.now()` but queries the current calendar date's 07:00–next-day-03:00 business window. At closed hours the fixture falls outside that window, so the expected missing-reversal condition is absent. The unchanged test passes at local noon.
+
+**Fix:** set the fixture payment and void timestamps explicitly inside the selected business day. Keep the production reporting window unchanged.
+
+**Evidence:** sole failure in `baseline-core-cloud.xml`; `expense-noon-core-cloud.xml` (1 passed with a diagnostic noon-clock fixture).
+
+### AUD-010 — P3 — Unused private helpers and misleading legacy sync controls
+
+**Location:** both cores `SyncMixin._is_sync_on_save`, `_queue_for_sync`, `_is_sync_denylisted`; server `admins/services/dashboard_service.py::_range_window`; core `base/management/commands/sync.py`.
+
+Manual call-site review found these private helpers unreferenced by application code. The dashboard uses the central reporting-window resolver. The sync engine now queues durably within the write transaction, but `--on-save`/`--off-save` and status/help output still imply an old flag controls that behavior. Stale comments also describe the old best-effort queue path.
+
+**Fix:** remove the confirmed unused private helpers and obsolete comments. Retain accepted CLI flags with explicit deprecation messaging and report actual durable queue behavior. Do not let a compatibility flag disable durable queue writes.
+
+**Retained intentionally:** Django signal handlers, decorated Telegram handlers, test fixtures, migration code and the public `check_tender_attribution` command alias. Lack of direct calls is not sufficient evidence to delete framework-registered or compatibility entry points.
+
+**Evidence:** AST candidate scan plus repository call-site searches; `SyncMixin.save` and sync command behavior inspected directly. No production behavior fix is inferred merely from a lint count.
+
+### AUD-011 — P3 — Package advertises an unsupported Python minimum
+
+**Location:** both cores, `pyproject.toml`.
+
+The package declares Python ≥3.11 while pinning Django 6.0.3, whose installed distribution metadata requires Python ≥3.12. Installation on the advertised minimum cannot satisfy the dependency set.
+
+**Fix:** declare Python ≥3.12. No dependency upgrade is required. Tests here run on Python 3.13; this does not constitute a full supported-version matrix.
+
+**Evidence:** project metadata compared with the installed Django distribution's `Requires-Python` field.
+
+## Evidence and reproducibility
+
+Local evidence directory: `.audit-work/2026-09-07/evidence/` in the project root. Baseline XML/log files are retained separately from later runs. Synthetic regression tests will be committed with the fixes; raw live restaurant evidence and credentials are not part of this GitHub audit report.
+
+| Reproduction run | Passed | Failed | Findings |
+| --- | ---: | ---: | --- |
+| `repro-checkout-server.xml` (PostgreSQL) | 0 | 3 | AUD-001 |
+| `repro-core-core-cloud.xml` (PostgreSQL) | 2 | 10 | AUD-002, AUD-006 |
+| `repro-customer-auth-server.xml` (PostgreSQL) | 0 | 6 | AUD-003, AUD-008 |
+| `repro-input-money-local.xml` | 0 | 20 | AUD-004, AUD-005 |
+| `repro-input-money-server.xml` | 44 | 18 | AUD-004, AUD-005 |
+| `repro-audit-gap-core-cloud.xml` | 0 | 1 | AUD-007 |
+
+Example after setting up each repository's test dependencies and a disposable database:
+
+```bash
+python -m pytest -q admins/tests/checkout/test_checkout_edit_races.py
+python -m pytest -q base/tests/security/test_session_cache_transactions.py
+python -m pytest -q smartfood/tests/api/test_auth_cache_revocation.py
+```
+
+Concurrency cases need PostgreSQL and independent connections. A passing SQLite suite does not prove row-lock behavior. The audit harness additionally isolates configuration and blocks non-loopback network access.
+
+## Implementation and release status
+
+**Audit checkpoint: complete; application fixes have not started.** This version is committed before implementation. The follow-up section will record fixed items, commit links, final checks and remaining limitations.
+
+The previously published desktop 1.0.43 addresses the original report timestamp defect. The work in this audit is separate from that installer. Pushing audit branches is not equivalent to deploying the server, publishing a new installer, or updating the restaurant's computer. Native Windows updater checks and a restaurant cash/card reconciliation remain necessary for their respective claims; this report does not promise that sales can never be wrong again.

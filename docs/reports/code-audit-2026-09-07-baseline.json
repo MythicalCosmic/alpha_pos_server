@@ -1,0 +1,72 @@
+{
+  "phase": "before-application-fixes",
+  "report_sha256": "cce52496b04eb06691f7691d41292ede08084720e9d893daa8eb058ba0e4a31a",
+  "suites": {
+    "baseline-core-cloud": {
+      "tests": 1074,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 6
+    },
+    "baseline-core-desktop": {
+      "tests": 1028,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2
+    },
+    "baseline-local": {
+      "tests": 571,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 11
+    },
+    "baseline-server": {
+      "tests": 622,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "expense-noon-core-cloud": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-audit-gap-core-cloud": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-checkout-server": {
+      "tests": 3,
+      "failures": 3,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-core-core-cloud": {
+      "tests": 12,
+      "failures": 10,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-customer-auth-server": {
+      "tests": 6,
+      "failures": 6,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-input-money-local": {
+      "tests": 20,
+      "failures": 20,
+      "errors": 0,
+      "skipped": 0
+    },
+    "repro-input-money-server": {
+      "tests": 62,
+      "failures": 18,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}
