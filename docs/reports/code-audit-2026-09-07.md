@@ -1,6 +1,8 @@
 # Alpha POS code audit — 7 September 2026
 
-**Result: 11 findings at the initial audit checkpoint; three additional findings confirmed during PostgreSQL validation (14 total).** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
+**Outcome: 14 confirmed findings addressed and pushed to GitHub under MythicalCosmic.** The four final full suites pass 3,416 tests; selected PostgreSQL checks also pass. The initial 11 findings were recorded and committed before application fixes; three more were recorded before their fixes when broader PostgreSQL validation exposed them.
+
+Two defects can make stored sales disagree with collected payments. Authentication, input handling, PostgreSQL compatibility, diagnostic coverage and maintenance issues were also addressed. Findings and before/after evidence are retained below.
 
 This is a code and isolated database audit, not a reconciliation of the restaurant's physical counter. No dated cash counts or card/provider statements were supplied. A software reproduction proves a defect exists; it does not prove how frequently that defect occurred at the restaurant or assign responsibility to its staff.
 
@@ -37,7 +39,7 @@ Targeted tests added before application edits produced **58 failing cases** demo
 
 ## Findings and intended fixes
 
-Priorities: **P1** = payment consistency or access revocation; **P2** = input robustness or audit reliability; **P3** = test/build/maintenance correctness. At the audit checkpoint all items are **confirmed, not yet fixed**. A completion section will record subsequent implementation and checks.
+Priorities: **P1** = payment consistency or access revocation; **P2** = input robustness or audit reliability; **P3** = test/build/maintenance correctness. At the initial audit checkpoint AUD-001–AUD-011 were confirmed and not yet fixed. AUD-012–AUD-014 were documented as validation addenda before their fixes. **All are now addressed; the completion section records implementation and checks.**
 
 ### AUD-001 — P1 — Cloud order edits race with checkout
 
@@ -129,7 +131,7 @@ The command filters `is_paid=True` before auditing. An unpaid header with till p
 
 **Location:** cloud core `base/tests/finance/test_money_control_contract.py::test_voided_expense_without_reversal_nulls_paid_total`.
 
-The fixture records a payment at `timezone.now()` but queries the current calendar date's 07:00–next-day-03:00 business window. At closed hours the fixture falls outside that window, so the expected missing-reversal condition is absent. The unchanged test passes at local noon.
+The fixture records a payment at `timezone.now()` but queries the current calendar date's 07:00–next-day-03:00 business window. Before 07:00 the fixture falls outside the selected current-date window, including after-midnight hours that belong to the previous business day, so the expected missing-reversal condition is absent. The unchanged test passes at local noon.
 
 **Fix:** set the fixture payment and void timestamps explicitly inside the selected business day. Keep the production reporting window unchanged.
 
@@ -210,8 +212,70 @@ python -m pytest -q smartfood/tests/api/test_auth_cache_revocation.py
 
 Concurrency cases need PostgreSQL and independent connections. A passing SQLite suite does not prove row-lock behavior. The audit harness additionally isolates configuration and blocks non-loopback network access.
 
-## Implementation and release status
+## Completion and GitHub delivery
 
-**Audit checkpoint: complete; application fixes have not started.** This version is committed before implementation. The follow-up section will record fixed items, commit links, final checks and remaining limitations.
+All 14 findings below are addressed in source. The audit-before-fixes checkpoint is server commit `f379e96`; additional findings were recorded in `7bfcd06` and `da894aa` before their respective fixes. The original checkpoint's SHA-256 remains `cce52496b04eb06691f7691d41292ede08084720e9d893daa8eb058ba0e4a31a`.
 
-The previously published desktop 1.0.43 addresses the original report timestamp defect. The work in this audit is separate from that installer. Pushing audit branches is not equivalent to deploying the server, publishing a new installer, or updating the restaurant's computer. Native Windows updater checks and a restaurant cash/card reconciliation remain necessary for their respective claims; this report does not promise that sales can never be wrong again.
+| Finding | Area | Completed change / evidence |
+| --- | --- | --- |
+| AUD-001 | Cloud checkout/edit race | Order locks and partial metadata saves; three concurrent checkout cases pass |
+| AUD-002 | Staff/courier session revocation | Current database identity on every lookup; transaction, late-read, expiry and rollback checks pass |
+| AUD-003 | Customer session revocation | Current joined customer/session lookup; block/delete/expiry and late-read checks pass |
+| AUD-004 | Fractional undiscounted bills | Stored amount preserved; cash/card/provider and retry cases pass |
+| AUD-005 | Malformed order items/IDs | Object validation and bounded ID normalization in create/add-item paths |
+| AUD-006 | Oversized quantities | Bounded integer parsing with long-input and database-boundary checks |
+| AUD-007 | Incomplete tender audit | Branch/date-scoped JSON and header anomaly checks; PostgreSQL snapshot is read-only |
+| AUD-008 | Non-ASCII Telegram digest | Invalid digest format returns authentication failure; valid login tests pass |
+| AUD-009 | Clock-dependent expense test | Fixture uses a timestamp inside its selected business day |
+| AUD-010 | Dead helpers and obsolete sync controls | Four private helpers removed across applicable editions; deprecated flags report actual queue behavior |
+| AUD-011 | Python minimum metadata | Both core packages declare Python ≥3.12 to match pinned Django |
+| AUD-012 | JSON replay serialization | Consistent JSON key ordering and array replay; one-execution and response checks pass |
+| AUD-013 | PostgreSQL broadcast locking | Lock targets the broadcast row; full PostgreSQL server suite passes |
+| AUD-014 | Decimal formatting test assumptions | Exact monetary comparisons use Decimal; identity/count/window assertions retained |
+
+### Pushed source commits
+
+Remote branch tips and parent core pointers were verified against GitHub after pushing. Documentation-only commits may follow these code commits on the server branch.
+
+| Component | Source commit | GitHub branch |
+| --- | --- | --- |
+| Desktop app | [9af7e5447bec](https://github.com/MythicalCosmic/alpha_pos_local/commit/9af7e5447beca46d15408e4fbe8bbb83cf9f9395) | [audit/reliability-2026-09-07](https://github.com/MythicalCosmic/alpha_pos_local/tree/audit/reliability-2026-09-07) |
+| Server | [bc9267ddd3db](https://github.com/MythicalCosmic/alpha_pos_server/commit/bc9267ddd3db3adf33e4ab844279787cf5a524f5) | [audit/reliability-2026-09-07](https://github.com/MythicalCosmic/alpha_pos_server/tree/audit/reliability-2026-09-07) |
+| Desktop core | [c741b026fc90](https://github.com/MythicalCosmic/alpha_pos_core/commit/c741b026fc9028f429c3fa4ae16915546b775fc8) | [audit/desktop-core-2026-09-07](https://github.com/MythicalCosmic/alpha_pos_core/tree/audit/desktop-core-2026-09-07) |
+| Cloud core | [eb1ce3af94e5](https://github.com/MythicalCosmic/alpha_pos_core/commit/eb1ce3af94e58577453f3e8e4621eaf7f8e5422f) | [audit/cloud-core-2026-09-07](https://github.com/MythicalCosmic/alpha_pos_core/tree/audit/cloud-core-2026-09-07) |
+
+Local implementation worktrees are `.audit-work/2026-09-07/local`, `server`, `core-desktop` and `core-cloud` beneath the project root. The original working directories and their pre-existing uncommitted changes were preserved. These changes were pushed on audit branches; `main` was not merged or reset.
+
+### Final validation
+
+| Full suite | Database | Passed | Failed | Skipped | Evidence |
+| --- | --- | ---: | ---: | ---: | --- |
+| Desktop app | SQLite | 594 | 0 | 11 | `verified-full-local.xml` |
+| Server | PostgreSQL 17 | 656 | 0 | 0 | `accepted-full-server.xml` |
+| Desktop core | SQLite | 1,062 | 0 | 5 | `verified-full-core-desktop.xml` |
+| Cloud core | SQLite | 1,104 | 0 | 9 | `verified-full-core-cloud.xml` |
+| **Total** | | **3,416** | **0** | **25** | Shared core behavior is tested in both generations |
+
+| Supplemental PostgreSQL checks | Passed | Evidence |
+| --- | ---: | --- |
+| Desktop payment, shift and courier cutoff checks | 49 | `verified-postgres-local.xml` |
+| Desktop core authentication, replay and tender audit | 27 | `verified-postgres-core-desktop.xml` |
+| Cloud core authentication, input boundaries and tender audit | 56 | `fixed-core-core-cloud.xml` |
+| Cloud core JSON replay and related regressions | 21 | `fixed-json-replay-core-cloud.xml` |
+| Cloud treasury/expense/receiving concurrency | 4 | `postgres-finance-core-cloud.xml` |
+
+These supplemental executions overlap full suites; they are not additional distinct feature guarantees. They exercise all 13 PostgreSQL cases skipped across the final SQLite runs. Eight native Windows checks and four server-edition loyalty integration cases remain unexecuted in their respective suites. The latter are explicitly skipped because those core-only environments do not load the server integration. The full server suite has zero skips.
+
+Django system checks pass in all four worktrees, and `makemigrations --check --dry-run` reports no changes. No schema migration is needed for these fixes. Selected Ruff checks pass across the application Python and all changed/new Python test files. Test-only missing-static-directory warnings remain in the SQLite suites and do not establish a packaged UI validation.
+
+The first broad post-fix core run also exposed cache state leaking from the new legacy-sync-flag test into later tests. Its cleanup now restores the prior cache setting, and the complete core suites pass. Earlier failing outputs are retained separately; the final rows above identify the accepted runs. The first full PostgreSQL server run's 10 failures are explained by AUD-013 and AUD-014 and are resolved in the accepted full run.
+
+Machine-readable final evidence summary: `docs/reports/code-audit-2026-09-07-validation.json` in the server repository; local original XML/logs remain in `.audit-work/2026-09-07/evidence/`.
+
+### Deployment status and practical limits
+
+The previously published desktop 1.0.43 addressed the original order report timestamp defect. This audit delivers additional source fixes on the branches above. Applying them in production requires deploying the updated server and building/releasing a desktop installer with the updated desktop core. This audit did not publish another installer or deploy its new code to the live restaurant/server.
+
+Authentication now adds one indexed, joined database query per lookup instead of trusting a cached identity. A query-count regression verifies that lookup shape; this audit does not include production load testing or retroactively cancel requests already executing when an account is revoked.
+
+Financial regressions, locking checks and a read-only tender audit support the fixes. They do not measure physical counter money, reconcile card/acquirer statements, automatically repair old records, or guarantee that future totals can never be wrong. Dated cash/card/provider evidence and restaurant installation/monitoring remain necessary to measure the actual end-of-day result.

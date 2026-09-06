@@ -1,0 +1,188 @@
+{
+  "report_date": "2026-09-07",
+  "timezone": "Asia/Tashkent",
+  "findings_addressed": [
+    "AUD-001",
+    "AUD-002",
+    "AUD-003",
+    "AUD-004",
+    "AUD-005",
+    "AUD-006",
+    "AUD-007",
+    "AUD-008",
+    "AUD-009",
+    "AUD-010",
+    "AUD-011",
+    "AUD-012",
+    "AUD-013",
+    "AUD-014"
+  ],
+  "code_refs_verified_on_github": {
+    "core-desktop": {
+      "branch": "audit/desktop-core-2026-09-07",
+      "head": "c741b026fc9028f429c3fa4ae16915546b775fc8",
+      "remote_head": "c741b026fc9028f429c3fa4ae16915546b775fc8"
+    },
+    "core-cloud": {
+      "branch": "audit/cloud-core-2026-09-07",
+      "head": "eb1ce3af94e58577453f3e8e4621eaf7f8e5422f",
+      "remote_head": "eb1ce3af94e58577453f3e8e4621eaf7f8e5422f"
+    },
+    "local": {
+      "branch": "audit/reliability-2026-09-07",
+      "head": "9af7e5447beca46d15408e4fbe8bbb83cf9f9395",
+      "remote_head": "9af7e5447beca46d15408e4fbe8bbb83cf9f9395",
+      "pinned_core": "c741b026fc9028f429c3fa4ae16915546b775fc8"
+    },
+    "server": {
+      "branch": "audit/reliability-2026-09-07",
+      "head": "bc9267ddd3db3adf33e4ab844279787cf5a524f5",
+      "remote_head": "bc9267ddd3db3adf33e4ab844279787cf5a524f5",
+      "pinned_core": "eb1ce3af94e58577453f3e8e4621eaf7f8e5422f"
+    }
+  },
+  "full_suites": {
+    "local": {
+      "tests": 605,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 11,
+      "passed": 594,
+      "evidence": "verified-full-local.xml",
+      "sha256": "499d942d3e99d262091e931017f5f7de931372127769884b5c4eb18033e67ea1",
+      "database": "SQLite"
+    },
+    "server": {
+      "tests": 656,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 656,
+      "evidence": "accepted-full-server.xml",
+      "sha256": "391904111ce07e30590e8ef45945cc21747293123f259851670f0720361919b0",
+      "database": "PostgreSQL 17"
+    },
+    "core-desktop": {
+      "tests": 1067,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 5,
+      "passed": 1062,
+      "evidence": "verified-full-core-desktop.xml",
+      "sha256": "e97fb6f34e0400adb9536c91f3db6e97bddcb719df855d42dcab7144c8d19e95",
+      "database": "SQLite"
+    },
+    "core-cloud": {
+      "tests": 1113,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 9,
+      "passed": 1104,
+      "evidence": "verified-full-core-cloud.xml",
+      "sha256": "e8cb456689a97add9010ebea240cbf16353003107d336515df450450001aac59",
+      "database": "SQLite"
+    }
+  },
+  "supplemental_postgresql": {
+    "Desktop payment, shift and courier cutoff checks": {
+      "tests": 49,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 49,
+      "evidence": "verified-postgres-local.xml",
+      "sha256": "d2b8ea348a4824a01770d6d5f5b54f613775c68d0e066bca3170fcdace43b8ff"
+    },
+    "Desktop core authentication, replay and tender audit": {
+      "tests": 27,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 27,
+      "evidence": "verified-postgres-core-desktop.xml",
+      "sha256": "677e246a3b00054f5d5f8cf849ff2f2518d32d28d878b4674cec1c9dafee9544"
+    },
+    "Cloud core authentication, input boundaries and tender audit": {
+      "tests": 56,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 56,
+      "evidence": "fixed-core-core-cloud.xml",
+      "sha256": "0ef333f3225689b34cf35c478f2239639089cb2d8606eb781db3f37cbc372155"
+    },
+    "Cloud core JSON replay and related regressions": {
+      "tests": 21,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 21,
+      "evidence": "fixed-json-replay-core-cloud.xml",
+      "sha256": "09138201eb86e94269409defaed41b365e21daa3d46919fefb91ea6f7c9436b5"
+    },
+    "Cloud treasury/expense/receiving concurrency": {
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 4,
+      "evidence": "postgres-finance-core-cloud.xml",
+      "sha256": "517b836af5e1de0119e9a3ede8f5895529ab51cc041be325ca9d95979e06313b"
+    }
+  },
+  "system_checks": {
+    "local": {
+      "component": "local",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "server": {
+      "component": "server",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "core-desktop": {
+      "component": "core-desktop",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "core-cloud": {
+      "component": "core-cloud",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    }
+  },
+  "changed_python_lint": {
+    "core-desktop": {
+      "files_checked": 14,
+      "exit_code": 0,
+      "findings": []
+    },
+    "core-cloud": {
+      "files_checked": 15,
+      "exit_code": 0,
+      "findings": []
+    },
+    "local": {
+      "files_checked": 6,
+      "exit_code": 0,
+      "findings": []
+    },
+    "server": {
+      "files_checked": 15,
+      "exit_code": 0,
+      "findings": []
+    }
+  },
+  "full_suite_passed": 3416,
+  "full_suite_failures": 0,
+  "full_suite_skipped": 25,
+  "schema_migrations_required": false,
+  "audit_code_deployed_to_production": false,
+  "new_installer_published_by_audit": false,
+  "report_sha256": "9a96d0f42eea43277d57461c5a7636ebb00a561898280a161f21be1ed754e210"
+}
