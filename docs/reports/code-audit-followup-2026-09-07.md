@@ -1,6 +1,6 @@
 # Alpha POS follow-up audit — 7 September 2026
 
-**Audit checkpoint: five additional findings reproduced; application fixes have not yet started at this checkpoint.** This report continues AUD-001–AUD-014 in `CODE_AUDIT_2026-09-07.md`. The completion section will record the resulting fixes, verification, and GitHub commits.
+**Six additional findings confirmed; implementation and final validation are in progress.** This report continues AUD-001–AUD-014 in `CODE_AUDIT_2026-09-07.md`. AUD-015–AUD-019 were recorded and committed before application fixes; AUD-020 was added before its fix when HTTP-level validation exposed an additional transaction boundary. The completion section will record the resulting fixes, verification, and GitHub commits.
 
 ## The 24 outstanding changes
 
@@ -51,7 +51,7 @@ For buy two/get one, a basket of two units enters the calculation but contains n
 
 `Order.subtotal` and `total_amount` store at most 99,999,999.99; `OrderItem.quantity` stores at most 2,147,483,647. Existing input checks do not validate a projected order subtotal or the combined quantity when incrementing an existing line. Some service update paths also accept boolean quantities.
 
-**Reproduction:** changing a 60,000,000-priced line from one to two units raises PostgreSQL numeric overflow; adding one to an existing quantity of 2,147,483,647 raises integer overflow. New-order paths also calculate unchecked totals. These are failure/invalid-storage cases, not evidence of a silent ordinary-sized sale being miscounted. The original desktop create test used the wrong shift branch and was corrected before drawing a conclusion from that case; its first failure is retained as a fixture issue.
+**Reproduction:** changing a 60,000,000-priced line from one to two units raises PostgreSQL numeric overflow; adding one to an existing quantity of 2,147,483,647 raises integer overflow. New-order paths also calculate unchecked totals. These are failure/invalid-storage cases, not evidence of a silent ordinary-sized sale being miscounted. The original desktop create fixture omitted the required terminal binding; using the real shift-start service corrected it. Both desktop creation paths then reached stock processing with an oversized order on SQLite. The first fixture failures are retained but excluded from defect evidence.
 
 **Intended fix:** check the actual model capacity and projected live-line total under the existing order lock, before writing lines, totals, stock, or allocating order numbers. Check creation totals before allocating identifiers or resolving a new cloud customer. Test unchanged persisted state on rejection and acceptance at the exact monetary limit. Keep the database schema and normal-sized order behavior unchanged.
 
@@ -75,6 +75,16 @@ JSON `null` parses as Python `None`. Assigning that directly to the non-nullable
 
 **Intended fix:** store an explicitly typed JSON value so JSON null remains distinct from SQL NULL. Keep the schema, first-response cookies/headers, and existing retry action identity unchanged. This tests the generic decorator; it does not demonstrate that a live payment endpoint returns a null body.
 
+### AUD-020 — P3 — A rejected HTTP order leaves a newly created customer behind
+
+**Location:** desktop `customers/views/order_views.py`, `create_order`.
+
+The HTTP view resolves/creates a customer before entering the order service's transaction. If order validation rejects the request, the customer write has already succeeded. The service-level storage checks therefore cannot make the whole HTTP operation atomic.
+
+**Reproduction:** an HTTP request with a new customer and an oversized basket returns 422 but leaves that customer in the database; a successful-order control passes. Evidence: `reproduce-customer-rollback-local.xml` (one failure, one pass), using synthetic records.
+
+**Intended fix:** encompass customer resolution and order creation in one transaction, roll back that operation on an unsuccessful service result, and retain the customer association when creation succeeds. Keep idempotency response persistence outside this rollback boundary.
+
 ## Evidence before application fixes
 
 Regression tests were added before application edits. Test files include `discounts/tests/test_discount_eligibility_and_scaling.py`, `base/tests/security/test_idempotency_json_response.py`, and each app's `test_order_storage_limits.py` and `test_order_payload_validation.py`.
@@ -83,6 +93,6 @@ Local evidence directory: `.audit-work/2026-09-07-followup/evidence/`. Baseline 
 
 ## Completion and operational limits
 
-Pending at the audit checkpoint: implement the five findings, verify both core editions and apps, publish source and this report under MythicalCosmic, and update the original active folders to the final clean commits.
+Pending at the audit checkpoint: implement the six findings, verify both core editions and apps, publish source and this report under MythicalCosmic, and update the original active folders to the final clean commits.
 
 The earlier desktop 1.0.43 release and production timestamp fix remain separate completed work. This follow-up is source work; it does not establish installation of a new restaurant build or a production deployment of these additional fixes. There are still no dated physical cash counts and card/provider statements to reconcile. Neither these tests nor a clean Git status prove the restaurant's historical counter balance or assign responsibility to staff.
