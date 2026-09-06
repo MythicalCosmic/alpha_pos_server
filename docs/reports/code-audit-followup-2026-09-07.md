@@ -1,6 +1,6 @@
 # Alpha POS follow-up audit — 7 September 2026
 
-**Six additional findings confirmed; implementation and final validation are in progress.** This report continues AUD-001–AUD-014 in `CODE_AUDIT_2026-09-07.md`. AUD-015–AUD-019 were recorded and committed before application fixes; AUD-020 was added before its fix when HTTP-level validation exposed an additional transaction boundary. The completion section will record the resulting fixes, verification, and GitHub commits.
+**Six additional findings fixed and pushed to GitHub under MythicalCosmic. All five active repository folders now show zero pending changes.** The four final full suites pass **3,547 tests**, with **zero failures and 25 skips**. This report continues AUD-001–AUD-014 in `CODE_AUDIT_2026-09-07.md`. AUD-015–AUD-019 were recorded and committed before application fixes; AUD-020 was added before its fix when HTTP-level validation exposed an additional transaction boundary.
 
 ## The 24 outstanding changes
 
@@ -23,7 +23,9 @@ Evidence is retained locally in `.audit-work/2026-09-07-followup/evidence/remain
 
 This pass reviews discount eligibility/calculation, order creation and editing, remaining reference-ID validation, and idempotency response persistence. It is a bounded follow-up, not a claim that every possible defect has been eliminated. Code is tested in isolated worktrees using synthetic records, SQLite, and a separate PostgreSQL 17 container. Test processes block external network connections and do not inherit production configuration. Runtime: Python 3.13.14, Django 6.0.3, pytest 8.3.4; reporting timezone Asia/Tashkent.
 
-## Confirmed findings and intended fixes
+## Confirmed findings and fixes
+
+All six findings below are addressed. Their original reproductions and intended fixes are retained to show the evidence available before implementation; completion details follow.
 
 ### AUD-015 — P2 — Coupon application checks the wrong subtotal and can use obsolete eligibility
 
@@ -91,8 +93,44 @@ Regression tests were added before application edits. Test files include `discou
 
 Local evidence directory: `.audit-work/2026-09-07-followup/evidence/`. Baseline logs and JUnit XML are named `reproduce-discount-retry-*`, `reproduce-order-limits-*`, `reproduce-reference-ids-*`, and `reproduce-waiter-ids-*`. Failures include parameter variants of the same defect and must not be counted as separate bugs.
 
-## Completion and operational limits
+## Completion and verification
 
-Pending at the audit checkpoint: implement the six findings, verify both core editions and apps, publish source and this report under MythicalCosmic, and update the original active folders to the final clean commits.
+| Finding | Implemented result |
+| --- | --- |
+| AUD-015 | One eligibility routine checks the locked coupon and actual order subtotal; qualifying minimums work and intervening eligibility changes are rejected. |
+| AUD-016 | Buy/get calculations preserve Decimal zero and select cheapest units by sorted order lines. The large-basket regression stays below its 1 MB allocation budget. |
+| AUD-017 | Shared model-capacity checks validate creation totals, projected live-line totals, and combined quantities before writes. Invalid changes preserve order/line/counter state and do not reach stock writes. Exact-limit totals remain accepted. |
+| AUD-018 | Used customer/user/cashier/courier and waiter product/place/table references receive strict positive-ID validation; numeric strings normalize, and blank optional references normalize to null. |
+| AUD-019 | Explicit JSON typing persists JSON null without attempting SQL NULL. First responses and retries retain the same status/body and execute the endpoint once. |
+| AUD-020 | Customer resolution and order creation share a transaction. Unsuccessful service results roll it back; successful orders retain their linked customer. |
 
-The earlier desktop 1.0.43 release and production timestamp fix remain separate completed work. This follow-up is source work; it does not establish installation of a new restaurant build or a production deployment of these additional fixes. There are still no dated physical cash counts and card/provider statements to reconcile. Neither these tests nor a clean Git status prove the restaurant's historical counter balance or assign responsibility to staff.
+| Final full suite | Database | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| Desktop app | SQLite | 650 | 0 | 11 |
+| Server | PostgreSQL 17 | 699 | 0 | 0 |
+| Desktop core | SQLite | 1,078 | 0 | 5 |
+| Cloud core | SQLite | 1,120 | 0 | 9 |
+| **Total** | | **3,547** | **0** | **25** |
+
+These are four suite executions, including shared-code tests in both core editions, not 3,547 unique business scenarios. Skips comprise 13 PostgreSQL-specific cases in SQLite suites, eight Windows-only cases, and four core-only server-integration cases. Focused PostgreSQL checks additionally pass **195** desktop order/payment/waiter tests, **82** cloud discount/security/finance tests, and **18** desktop-core discount/retry tests. They cover nine of the 13 PostgreSQL skips in this pass; the remaining four passed in the earlier audit and were not repeated here. Windows-only and core-only server-integration skips remain unexecuted in this environment.
+
+Selected Ruff checks (`F401,F811,F821,F823,F841`) pass across 930 tracked application Python files and all changed Python files including tests. No additional confirmed dead-code removals were identified in the reviewed paths. All four Django system checks and migration-drift checks pass; no migrations are introduced.
+
+An intermediate cloud-core run exposed an implementation mistake when the desktop idempotency module was initially copied over the cloud variant. Before publication, the cloud's required-key, branch-scoping, canonical request-fingerprint, and error-code behavior was restored; only JSON-null storage was changed there. The final cloud suite passes 1,120 tests and its focused PostgreSQL run passes 82. The earlier failed log is retained as intermediate validation evidence, not counted as another pre-existing defect or as a final result.
+
+| Component | Tested source commit | Published branch |
+| --- | --- | --- |
+| Desktop app | [`35f88c9`](https://github.com/MythicalCosmic/alpha_pos_local/commit/35f88c9a1af00760785cc7ae10ac62f7891976e8) | `audit/reliability-followup-2026-09-07` |
+| Server | [`d53d861`](https://github.com/MythicalCosmic/alpha_pos_server/commit/d53d861e386b919112e567059e277307dd6c72b7) | `audit/reliability-followup-2026-09-07` |
+| Desktop core | [`8451faa`](https://github.com/MythicalCosmic/alpha_pos_core/commit/8451faa3361ca1ca8cce9db2ad0a1dfac094b9ba) | `audit/core-desktop-followup-2026-09-07` |
+| Cloud core | [`30be48b`](https://github.com/MythicalCosmic/alpha_pos_core/commit/30be48bb7489d04c6cc8f97ae0cda09cd2843d73) | `audit/core-cloud-followup-2026-09-07` |
+
+The server branch also contains the documentation checkpoints and final report. The desktop/server parent repositories pin their matching core commits. Active original folders are on these follow-up branches, nested cores are at the correct detached commits, and all five folders were checked clean after synchronization. Existing `main` branches were not merged or force-pushed. Recovery archives and stashes remain available locally.
+
+Public validation summary: `docs/reports/code-audit-followup-2026-09-07.validation.json`. Full local logs/XML remain in `.audit-work/2026-09-07-followup/evidence/`; definitive full-suite files are `final-full-local.xml`, `final-full-server.xml`, `final-full-core-desktop.xml`, and `final-verified-core-cloud.xml`.
+
+## Operational limits
+
+These source changes are available on the published follow-up branches. The earlier desktop 1.0.43 release and production timestamp fix are separate completed work; this pass did not build/publish another installer or deploy these additional changes to production. Test infrastructure was isolated from the restaurant, and no live restaurant records were modified. The temporary PostgreSQL container was removed after verification.
+
+There are still no dated physical cash counts and card/provider statements to reconcile. Neither these tests nor a clean Git status prove the restaurant's historical counter balance, assign responsibility to staff, or guarantee that future software calculations can never be wrong.

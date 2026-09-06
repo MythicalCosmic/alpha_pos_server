@@ -1,0 +1,162 @@
+{
+  "report_date": "2026-09-07",
+  "timezone": "Asia/Tashkent",
+  "report_sha256": "ba6bb257f02262877e91efd24417d1b5f6c9534bc373ad57ab9072f0f00f0bfc",
+  "findings_fixed": [
+    "AUD-015",
+    "AUD-016",
+    "AUD-017",
+    "AUD-018",
+    "AUD-019",
+    "AUD-020"
+  ],
+  "tested_code": {
+    "core-desktop": {
+      "commit": "8451faa3361ca1ca8cce9db2ad0a1dfac094b9ba",
+      "branch": "audit/core-desktop-followup-2026-09-07",
+      "origin": "https://github.com/MythicalCosmic/alpha_pos_core.git"
+    },
+    "core-cloud": {
+      "commit": "30be48bb7489d04c6cc8f97ae0cda09cd2843d73",
+      "branch": "audit/core-cloud-followup-2026-09-07",
+      "origin": "https://github.com/MythicalCosmic/alpha_pos_core.git"
+    },
+    "local": {
+      "commit": "35f88c9a1af00760785cc7ae10ac62f7891976e8",
+      "branch": "audit/reliability-followup-2026-09-07",
+      "origin": "https://github.com/MythicalCosmic/alpha_pos_local.git"
+    },
+    "server": {
+      "commit": "d53d861e386b919112e567059e277307dd6c72b7",
+      "branch": "audit/reliability-followup-2026-09-07",
+      "origin": "https://github.com/MythicalCosmic/alpha_pos_server.git"
+    }
+  },
+  "final_checks": [
+    {
+      "file": "final-full-local.xml",
+      "component": "local",
+      "database": "SQLite",
+      "kind": "full",
+      "sha256": "7918bd1e11eb6d4e554ab6326f25e9ef7bcf754cedb98712e2935dd24f4972ed",
+      "tests": 661,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 11,
+      "passed": 650
+    },
+    {
+      "file": "final-full-server.xml",
+      "component": "server",
+      "database": "PostgreSQL 17",
+      "kind": "full",
+      "sha256": "e8a4824cbb7d06bedfe432bb1c1947469a2dcd80fa61b5fd41c0099d219c5687",
+      "tests": 699,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 699
+    },
+    {
+      "file": "final-full-core-desktop.xml",
+      "component": "core-desktop",
+      "database": "SQLite",
+      "kind": "full",
+      "sha256": "6635f5a5180983b5def440dd152e3293bcf35189a844cda8a068555ceab6184c",
+      "tests": 1083,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 5,
+      "passed": 1078
+    },
+    {
+      "file": "final-verified-core-cloud.xml",
+      "component": "core-cloud",
+      "database": "SQLite",
+      "kind": "full",
+      "sha256": "c57658783d1b2567a7a38f71be2594126eae8891041960176803b63855597f79",
+      "tests": 1129,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 9,
+      "passed": 1120
+    },
+    {
+      "file": "postgres-order-regressions-local.xml",
+      "component": "local",
+      "database": "PostgreSQL 17",
+      "kind": "targeted",
+      "sha256": "118c632f58a44db9bf5afa72143987d66f2283cb1ec9922829767cab6f80b1e0",
+      "tests": 195,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 195
+    },
+    {
+      "file": "postgres-core-regressions-core-cloud.xml",
+      "component": "core-cloud",
+      "database": "PostgreSQL 17",
+      "kind": "targeted",
+      "sha256": "f7eeeb712ed9b2d14132cca042dbf89578b0e45e7b0c6071d6f6dacb65148486",
+      "tests": 82,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 82
+    },
+    {
+      "file": "fixed-discount-retry-core-desktop.xml",
+      "component": "core-desktop",
+      "database": "PostgreSQL 17",
+      "kind": "targeted",
+      "sha256": "35f2c09a7a992c3d2f8b54172a66b4fd44106cd30529730987c3062896846ccb",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 18
+    }
+  ],
+  "full_suite_totals": {
+    "passed": 3547,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 25
+  },
+  "static_checks": {
+    "core-desktop": [],
+    "core-cloud": [],
+    "local": [],
+    "server": []
+  },
+  "django_checks": {
+    "core-desktop": {
+      "component": "core-desktop",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "core-cloud": {
+      "component": "core-cloud",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "local": {
+      "component": "local",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "server": {
+      "component": "server",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    }
+  },
+  "workspace_pending_changes": 0,
+  "scope": "Source fixes on follow-up branches. No new installer or production deployment in this pass.",
+  "intermediate_validation": "final-full-core-cloud.xml is a superseded failed implementation run; the final passing cloud result is final-verified-core-cloud.xml."
+}
