@@ -81,6 +81,32 @@ def test_single_tender_writes_one_line():
     assert _lines(o) == [('UZCARD', D('60000.00'))]
 
 
+@pytest.mark.parametrize('due', ['10000.25', '10000.75'])
+@pytest.mark.parametrize('method', ['UZCARD', 'PAYME'])
+def test_fractional_bill_matches_collected_tender_and_retry(due, method):
+    from base.services.tender import order_tender_sources
+
+    cashier = _cashier()
+    order = _unpaid_order(cashier, due)
+    action = uuid4()
+    body, status = AdminOrderService.mark_as_paid(
+        order.id, payment_method=method, payment_action_id=action,
+    )
+    assert status == 200, body
+    order.refresh_from_db()
+    assert order.total_amount == D(due)
+    assert _lines(order) == [(method, D(due))]
+    split, _detail, drawer = order_tender_sources(order)
+    assert split['unknown'] == 0
+    assert sum(split.values()) == D(due)
+    assert drawer == 0
+    retry, retry_status = AdminOrderService.mark_as_paid(
+        order.id, payment_method=method, payment_action_id=action,
+    )
+    assert retry_status == 200, retry
+    assert retry == body
+
+
 def test_configured_electronic_provider_is_valid_checkout_tender():
     from base.models import PaymentMethodConfig
     from cashbox.services.drawer import expected_payment_totals

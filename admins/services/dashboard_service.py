@@ -358,28 +358,6 @@ def get_today():
     }
 
 
-def _range_window(date_from, date_to):
-    """Parse YYYY-MM-DD from/to into an aware [start, end) BUSINESS-DAY window
-    (defaults to the current operating date, swapped if reversed). Each selected
-    date runs from 07:00 through the following 03:00 close."""
-    from datetime import datetime
-    from base.services.business_day import business_date, range_window
-
-    def _d(s):
-        try:
-            return datetime.strptime((s or '').strip(), '%Y-%m-%d').date()
-        except (ValueError, TypeError, AttributeError):
-            return None
-
-    default_day = business_date()
-    d_from = _d(date_from) or default_day
-    d_to = _d(date_to) or default_day
-    if d_to < d_from:
-        d_from, d_to = d_to, d_from
-    start, end = range_window(d_from, d_to)
-    return d_from, d_to, start, end
-
-
 def get_range(date_from=None, date_to=None, tod_from=None, tod_to=None,
               datetime_from=None, datetime_to=None, from_at=None, to_at=None,
               *, _window=None, _include_related=True):

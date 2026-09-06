@@ -1,5 +1,7 @@
 import json
 
+from base.helpers.request import coerce_positive_id, coerce_quantity
+
 
 def create_order_request(request):
     try:
@@ -34,18 +36,32 @@ def create_order_request(request):
         }, 422)
 
     for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            return None, ({
+                "success": False,
+                "message": f"Invalid item {idx}",
+                "errors": {f"items[{idx}]": "Each item must be an object"},
+            }, 422)
         if 'product_id' not in item:
             return None, ({
                 "success": False,
                 "message": f"Item {idx} missing product_id",
                 "errors": {f"items[{idx}].product_id": "product_id is required"},
             }, 422)
+        product_id = coerce_positive_id(item['product_id'])
+        if product_id is None:
+            return None, ({
+                "success": False,
+                "message": f"Invalid product_id for item {idx}",
+                "errors": {f"items[{idx}].product_id": "Must be a positive integer ID"},
+            }, 422)
+        item['product_id'] = product_id
         qty = item.get('quantity', 1)
-        if not isinstance(qty, int) or qty <= 0:
+        if not isinstance(qty, int) or coerce_quantity(qty) is None:
             return None, ({
                 "success": False,
                 "message": f"Invalid quantity for item {idx}",
-                "errors": {f"items[{idx}].quantity": "quantity must be greater than 0"},
+                "errors": {f"items[{idx}].quantity": "quantity must be an integer from 1 to 2147483647"},
             }, 422)
 
     return data, None

@@ -1,7 +1,7 @@
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
-from base.helpers.request import parse_json_body, safe_page, safe_per_page, safe_int, coerce_quantity
+from base.helpers.request import parse_json_body, safe_page, safe_per_page, safe_int, coerce_quantity, coerce_positive_id
 from base.helpers.response import json_response
 from base.security.permissions import admin_required, permission_required
 from base.security.audit import audit
@@ -147,13 +147,13 @@ def add_item(request, order_id):
     if error:
         return json_response(error)
 
-    product_id = data.get('product_id')
+    product_id = coerce_positive_id(data.get('product_id'))
     quantity = coerce_quantity(data.get('quantity', 1))
 
-    if not product_id:
+    if product_id is None:
         return json_response(({
-            "success": False, "message": "Missing product_id",
-            "errors": {"product_id": "product_id is required"},
+            "success": False, "message": "Invalid product_id",
+            "errors": {"product_id": "product_id must be a positive integer ID"},
         }, 422))
 
     if quantity is None:

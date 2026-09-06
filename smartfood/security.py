@@ -62,7 +62,8 @@ def verify_init_data(init_data, bot_token=None, max_age=None):
     except Exception:
         return None
     received_hash = pairs.pop('hash', None)
-    if not received_hash:
+    if (not received_hash or len(received_hash) != 64
+            or any(char not in '0123456789abcdef' for char in received_hash)):
         return None
     data_check_string = '\n'.join(f"{k}={pairs[k]}" for k in sorted(pairs))
     secret_key = hmac.new(b'WebAppData', bot_token.encode('utf-8'), hashlib.sha256).digest()

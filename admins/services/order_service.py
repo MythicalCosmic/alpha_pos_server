@@ -1060,10 +1060,14 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def update_order(order_id, **kwargs):
-        order = OrderRepository.get_by_id(order_id)
+        # Serialize even metadata edits with checkout and inbound payment sync.
+        # Saving an unpaid snapshot after settlement used to erase paid_at,
+        # payment_action_id, and the discounted total together with is_paid.
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
+        update_fields = []
         customer_name = kwargs.get('customer_name')
         resulting_phone = kwargs.get('phone_number', order.phone_number)
         clean_customer_name = (
@@ -1081,13 +1085,16 @@ class AdminOrderService:
                 create=True,
             )
             order.customer = customer
+            update_fields.append('customer')
 
         allowed = {'phone_number', 'description', 'order_type'}
         for key, value in kwargs.items():
             if key in allowed and hasattr(order, key):
                 setattr(order, key, value)
+                update_fields.append(key)
 
-        order.save()
+        if update_fields:
+            order.save(update_fields=update_fields + ['updated_at'])
         return ServiceResponse.success(message='Order updated successfully')
 
     @staticmethod
@@ -1160,7 +1167,8 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def update_order_item(order_id, item_id, quantity):
-        order = OrderRepository.get_by_id(order_id)
+        # The paid check and the total rewrite must share checkout's row lock.
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
@@ -1201,7 +1209,7 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def remove_item_from_order(order_id, item_id):
-        order = OrderRepository.get_by_id(order_id)
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
@@ -1381,9 +1389,14 @@ class AdminOrderService:
                 },
             )
         pct = contract['discount_percent']
-        effective_total = (
-            base_total * (Decimal('1') - pct / Decimal('100'))
-        ).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+        # Without a new discount the stored bill is already the amount due.
+        # Rounding just the collection left a different sale total on the order
+        # and could make an otherwise successful payment unattributable.
+        effective_total = base_total
+        if pct > 0:
+            effective_total = (
+                base_total * (Decimal('1') - pct / Decimal('100'))
+            ).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
 
         if contract['kind'] == 'structured':
             lines = contract['lines']
