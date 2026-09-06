@@ -1,0 +1,389 @@
+{
+  "audit": "code-cleanup-stock-2026-09-07",
+  "runtime": {
+    "python": "3.13.14",
+    "django": "6.0.3"
+  },
+  "code_commits": {
+    "core-desktop": "fbbc9ec05bb8f5cb394a64f79c8948c531cf08b6",
+    "core-cloud": "21d54a747057826bd95da40e885957122620d6a3",
+    "local": "222938d4a47c5e9ee5b080c5474d8ddfe79172ac",
+    "server": "6c4a51760251520b509c50b7e40be3c0475ec490"
+  },
+  "full_suites": [
+    {
+      "component": "core-desktop",
+      "database": "SQLite",
+      "passed": 1146,
+      "tests": 1153,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 7,
+      "evidence": "final-verified-core-desktop.xml",
+      "sha256": "7468127755b8917a632806d88644c5e40285f7fde4cab81f64b9376afca1d6ab"
+    },
+    {
+      "component": "core-cloud",
+      "database": "SQLite",
+      "passed": 1188,
+      "tests": 1199,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 11,
+      "evidence": "final-verified-core-cloud.xml",
+      "sha256": "896a75f0f3ef5ba41e4633106c53b200d89bda9fa263b1eb04a004838cf8c748"
+    },
+    {
+      "component": "local",
+      "database": "SQLite",
+      "passed": 650,
+      "tests": 661,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 11,
+      "evidence": "final-verified-local.xml",
+      "sha256": "2da8462a31b5fe68b1ae7e5d123d94779463bfab9c33f7c8652b485bc08020a1"
+    },
+    {
+      "component": "server",
+      "database": "PostgreSQL 17",
+      "passed": 699,
+      "tests": 699,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "evidence": "final-verified-server.xml",
+      "sha256": "fc5863d8404c3751828860ac8a6602bea456784a01effa4c214045f13b16a41a"
+    }
+  ],
+  "supplemental_stock_suites": [
+    {
+      "component": "core-desktop",
+      "database": "PostgreSQL 17",
+      "passed": 177,
+      "evidence": "final-stock-pg-core-desktop.xml",
+      "sha256": "400db9dca5957ea3b2c21d165ea36fde1cdad9a1986e853db89dd2110e7b94e0"
+    },
+    {
+      "component": "core-cloud",
+      "database": "PostgreSQL 17",
+      "passed": 188,
+      "evidence": "final-stock-pg-core-cloud.xml",
+      "sha256": "09e0eea78667981c33b9baeee1cfa673221604d9a350f593ae430d4b57f5df1d"
+    }
+  ],
+  "full_suite_passed": 3683,
+  "full_suite_skipped": 29,
+  "sql_query_counts": {
+    "test_inventory_page_has_bounded_queries[1]": 3,
+    "test_inventory_page_has_bounded_queries[20]": 3,
+    "test_recipe_availability_has_bounded_queries[1]": 6,
+    "test_recipe_availability_has_bounded_queries[20]": 6,
+    "test_recipe_details_batch_live_children_and_cost[1]": 6,
+    "test_recipe_details_batch_live_children_and_cost[20]": 6,
+    "test_stock_snapshot_has_bounded_recipe_queries[1]": 11,
+    "test_stock_snapshot_has_bounded_recipe_queries[20]": 11,
+    "test_stock_snapshot_batches_and_limits_supplier_items": 12
+  },
+  "removed_methods": [
+    {
+      "component": "core-desktop",
+      "path": "stock/services/recipe_service.py",
+      "method": "RecipeService.scale_recipe",
+      "lines": 60
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/purchase_service.py",
+      "method": "PurchaseOrderService.create_from_low_stock",
+      "lines": 48
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/purchase_service.py",
+      "method": "PurchaseReceivingItemService.add_all_pending",
+      "lines": 30
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderService.get_schedule",
+      "lines": 24
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderService.create_from_low_stock",
+      "lines": 33
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderIngredientService.record_actual",
+      "lines": 29
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/unit_service.py",
+      "method": "StockItemUnitService.add_unit",
+      "lines": 38
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/unit_service.py",
+      "method": "StockItemUnitService.remove_unit",
+      "lines": 10
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/services/supplier_service.py",
+      "method": "SupplierService.update_balance",
+      "lines": 25
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/recipe_service.py",
+      "method": "RecipeService.scale_recipe",
+      "lines": 60
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/purchase_service.py",
+      "method": "PurchaseOrderService.create_from_low_stock",
+      "lines": 48
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/purchase_service.py",
+      "method": "PurchaseReceivingItemService.add_all_pending",
+      "lines": 30
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderService.get_schedule",
+      "lines": 24
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderService.create_from_low_stock",
+      "lines": 33
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/production_service.py",
+      "method": "ProductionOrderIngredientService.record_actual",
+      "lines": 29
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/unit_service.py",
+      "method": "StockItemUnitService.add_unit",
+      "lines": 38
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/unit_service.py",
+      "method": "StockItemUnitService.remove_unit",
+      "lines": 10
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/services/supplier_service.py",
+      "method": "SupplierService.update_balance",
+      "lines": 9
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/repositories/unit.py",
+      "method": "StockItemUnitRepository.unit_exists_for_item",
+      "lines": 5
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/repositories/unit.py",
+      "method": "StockItemUnitRepository.clear_default",
+      "lines": 6
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/repositories/recipe.py",
+      "method": "RecipeRepository.get_versions",
+      "lines": 7
+    },
+    {
+      "component": "core-desktop",
+      "path": "stock/repositories/recipe.py",
+      "method": "RecipeRepository.get_next_code_seq",
+      "lines": 11
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/repositories/unit.py",
+      "method": "StockItemUnitRepository.unit_exists_for_item",
+      "lines": 5
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/repositories/unit.py",
+      "method": "StockItemUnitRepository.clear_default",
+      "lines": 6
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/repositories/recipe.py",
+      "method": "RecipeRepository.get_versions",
+      "lines": 7
+    },
+    {
+      "component": "core-cloud",
+      "path": "stock/repositories/recipe.py",
+      "method": "RecipeRepository.get_next_code_seq",
+      "lines": 11
+    }
+  ],
+  "removed_unused_method_lines": 636,
+  "core_source_hashes": [
+    {
+      "component": "core-desktop",
+      "head": "fbbc9ec05bb8f5cb394a64f79c8948c531cf08b6",
+      "changed_files": {
+        "README.md": "18dda6327bf2596e074309371f072db53aa1e478ca691f3f463edbf8eb38187b",
+        "stock/README.md": "e7a884db8609d9b7971b52c8d319f20eb87bdf59b9aac0b1e8129f0093d63b38",
+        "stock/repositories/item.py": "617791a76f59fe02393514c37e3cc2a2f68841b575ddeb82c4f3e9e79f5ce046",
+        "stock/repositories/level.py": "c88c4eab01b84466be9730f7c77c6623539a80c6e9fb6beb0c24b80a8bfb48f7",
+        "stock/repositories/recipe.py": "2adb497da12b1ab46559108c4a5142a1eb369e0214aae0155d693f91edd26926",
+        "stock/repositories/unit.py": "a2b0d679099d0e4dd7fc98b8bdc33abbd46ff716140d77ebfe3b3af86dd03781",
+        "stock/services/ai_assistant_service.py": "88a6bb5da9968a3f8ce043ff2f308dfaffdf5d477ddb719e39df454bb77ebd03",
+        "stock/services/conversions.py": "247962e3ef51955dd4e9f254a67c1386293747c46eabe5c0b0a4d73c07e58ffe",
+        "stock/services/item_service.py": "c8a525cf9178720cfce6da83ceba0f2638597b56ac320873a39d1b5b2c8dbd3c",
+        "stock/services/level_service.py": "7c60cc01c60913e5267106e66d586b18673c0c851924a7c94d2804e5f136b56b",
+        "stock/services/order_service.py": "6b5f7e297c22009084552e4be6bff6595e36c996720dccccb2a8a903fb0e7080",
+        "stock/services/production_service.py": "165f80ab31f1e3dc85b456ffa6039b47cb16e13cb723e881ae38692fb22401ae",
+        "stock/services/purchase_service.py": "ca4e9e4c87c03af5960d269df375f274b190f554454f699a21d8ea21a2867bd0",
+        "stock/services/recipe_service.py": "a8bd820ce27896c6b2b08a70f75eeb31622570ad8d9fe656fe3a533cebe250f4",
+        "stock/services/recipes/__init__.py": "dda49ca42ca79e12b61f02b3df654d01454c6240ca18c3d46c5f0e6553e53aa9",
+        "stock/services/recipes/byproducts.py": "81ee2f093e734c62a3b9a15a7fac2748ce55924012645287fe52bdef821f7cc8",
+        "stock/services/recipes/catalog.py": "e549d39ae3bf619fcc596cb0509cdddb8b059c3c5cc3b99be0bbec23932f10b5",
+        "stock/services/recipes/costing.py": "3948dd9ee839b58e9389fc0cc4b53e9ea3abc2ccc8601423b8c33e37a1bac7bb",
+        "stock/services/recipes/ingredients.py": "56c1d2b63dab26cfeab87cf1e065422ee1c01d2ba449720ed1006a18e7d04eca",
+        "stock/services/recipes/loading.py": "35ac1a0a8e7c8b750c0966e01d989f9ecd24e515393957f1eebb3083fce44efa",
+        "stock/services/recipes/steps.py": "284db07fe1285705fcef6219370a2dd04472e38c357533090b9187635c603d0c",
+        "stock/services/supplier_service.py": "e44b930dd81881ebad90c37cb3ceaf74de4ef3b3978d046dc75946fc01d24a28",
+        "stock/services/unit_service.py": "93fd3a7c6d0ce33313af8538195f56b6cef465916878075b57616cade368f891",
+        "stock/tests/catalog/test_api_contracts.py": "059de191683f65159482fd61a3fc8c8e124f3919e4e35bb43abf4a70283d16f2",
+        "stock/tests/catalog/test_inventory_filters_and_queries.py": "1717cebf807251545d7f22cab3ae049aeed901679d9df3447bde6bdcf2d87e39",
+        "stock/tests/catalog/test_unit_factor_validation.py": "a4dc96b2b4fc0d9bb896f84bd061b4316ab1e1ff01ac0b1a3714a565e0c87f7b",
+        "stock/tests/conftest.py": "8b28659dcbff0787fb160526869d788a26375efa70dbec7451290abb7c15b6f8",
+        "stock/tests/inventory/test_order_requirements.py": "45df83a0966166bdce536d38c450e6c246040e3e0705f752aed5d8335c65262a",
+        "stock/tests/inventory/test_recipe_lifecycle_and_queries.py": "94987734e6bfe168ad85d5009c91a689890638f1b6f373b742d2d50002549404",
+        "stock/tests/inventory/test_recipe_reads.py": "776913731a4280b57106bdde2817638b7c3ee7af8d17e21e8725d2b31a34e58a",
+        "stock/tests/inventory/test_stock_concurrency.py": "f73ea063151983a86d60e6b66ee07644d442c1da4bb76dbe28ce6b64801270ba",
+        "stock/views/recipe_views.py": "ce7dc2fdfbd2b770a8626be730097c0e81b84d4435d4e9734da68b346053d8ff"
+      }
+    },
+    {
+      "component": "core-cloud",
+      "head": "21d54a747057826bd95da40e885957122620d6a3",
+      "changed_files": {
+        "README.md": "18dda6327bf2596e074309371f072db53aa1e478ca691f3f463edbf8eb38187b",
+        "stock/README.md": "e7a884db8609d9b7971b52c8d319f20eb87bdf59b9aac0b1e8129f0093d63b38",
+        "stock/repositories/item.py": "617791a76f59fe02393514c37e3cc2a2f68841b575ddeb82c4f3e9e79f5ce046",
+        "stock/repositories/level.py": "9b28a511788ffb294cd1346b96777618bab6563c21aaab9b305ad82147b304e7",
+        "stock/repositories/recipe.py": "2adb497da12b1ab46559108c4a5142a1eb369e0214aae0155d693f91edd26926",
+        "stock/repositories/unit.py": "a2b0d679099d0e4dd7fc98b8bdc33abbd46ff716140d77ebfe3b3af86dd03781",
+        "stock/services/ai_assistant_service.py": "88a6bb5da9968a3f8ce043ff2f308dfaffdf5d477ddb719e39df454bb77ebd03",
+        "stock/services/conversions.py": "247962e3ef51955dd4e9f254a67c1386293747c46eabe5c0b0a4d73c07e58ffe",
+        "stock/services/item_service.py": "5079765cd8dea1fd1623eae10b179eec82fcaa6a04345417cefc964d2ff68dbb",
+        "stock/services/level_service.py": "977940edc55e289a829f972a08281a5c97023dcd4723db0e44c513825acd5df4",
+        "stock/services/order_service.py": "6b5f7e297c22009084552e4be6bff6595e36c996720dccccb2a8a903fb0e7080",
+        "stock/services/production_service.py": "165f80ab31f1e3dc85b456ffa6039b47cb16e13cb723e881ae38692fb22401ae",
+        "stock/services/purchase_service.py": "768f27b8bc3ccb194cdd2c5835608f85dd070f553ab1a17126992fd6f38b2a61",
+        "stock/services/recipe_service.py": "a8bd820ce27896c6b2b08a70f75eeb31622570ad8d9fe656fe3a533cebe250f4",
+        "stock/services/recipes/__init__.py": "dda49ca42ca79e12b61f02b3df654d01454c6240ca18c3d46c5f0e6553e53aa9",
+        "stock/services/recipes/byproducts.py": "81ee2f093e734c62a3b9a15a7fac2748ce55924012645287fe52bdef821f7cc8",
+        "stock/services/recipes/catalog.py": "e549d39ae3bf619fcc596cb0509cdddb8b059c3c5cc3b99be0bbec23932f10b5",
+        "stock/services/recipes/costing.py": "3948dd9ee839b58e9389fc0cc4b53e9ea3abc2ccc8601423b8c33e37a1bac7bb",
+        "stock/services/recipes/ingredients.py": "56c1d2b63dab26cfeab87cf1e065422ee1c01d2ba449720ed1006a18e7d04eca",
+        "stock/services/recipes/loading.py": "35ac1a0a8e7c8b750c0966e01d989f9ecd24e515393957f1eebb3083fce44efa",
+        "stock/services/recipes/steps.py": "284db07fe1285705fcef6219370a2dd04472e38c357533090b9187635c603d0c",
+        "stock/services/supplier_service.py": "9c1053d2913c15403be43b2929a823f6f8019e1948eef675704a48ad8459cd7a",
+        "stock/services/unit_service.py": "93fd3a7c6d0ce33313af8538195f56b6cef465916878075b57616cade368f891",
+        "stock/tests/catalog/test_api_contracts.py": "059de191683f65159482fd61a3fc8c8e124f3919e4e35bb43abf4a70283d16f2",
+        "stock/tests/catalog/test_inventory_filters_and_queries.py": "1717cebf807251545d7f22cab3ae049aeed901679d9df3447bde6bdcf2d87e39",
+        "stock/tests/catalog/test_unit_factor_validation.py": "a4dc96b2b4fc0d9bb896f84bd061b4316ab1e1ff01ac0b1a3714a565e0c87f7b",
+        "stock/tests/conftest.py": "8b28659dcbff0787fb160526869d788a26375efa70dbec7451290abb7c15b6f8",
+        "stock/tests/inventory/test_order_requirements.py": "45df83a0966166bdce536d38c450e6c246040e3e0705f752aed5d8335c65262a",
+        "stock/tests/inventory/test_recipe_lifecycle_and_queries.py": "94987734e6bfe168ad85d5009c91a689890638f1b6f373b742d2d50002549404",
+        "stock/tests/inventory/test_recipe_reads.py": "776913731a4280b57106bdde2817638b7c3ee7af8d17e21e8725d2b31a34e58a",
+        "stock/tests/inventory/test_stock_concurrency.py": "f73ea063151983a86d60e6b66ee07644d442c1da4bb76dbe28ce6b64801270ba",
+        "stock/views/recipe_views.py": "ce7dc2fdfbd2b770a8626be730097c0e81b84d4435d4e9734da68b346053d8ff"
+      }
+    }
+  ],
+  "package_checks": [
+    {
+      "component": "core-desktop",
+      "wheel": "alpha_pos_core-0.1.0-py3-none-any.whl",
+      "recipe_modules_present": [
+        "stock/services/conversions.py",
+        "stock/services/recipe_service.py",
+        "stock/services/recipes/__init__.py",
+        "stock/services/recipes/byproducts.py",
+        "stock/services/recipes/catalog.py",
+        "stock/services/recipes/costing.py",
+        "stock/services/recipes/ingredients.py",
+        "stock/services/recipes/loading.py",
+        "stock/services/recipes/steps.py"
+      ]
+    },
+    {
+      "component": "core-cloud",
+      "wheel": "alpha_pos_core-0.1.0-py3-none-any.whl",
+      "recipe_modules_present": [
+        "stock/services/conversions.py",
+        "stock/services/recipe_service.py",
+        "stock/services/recipes/__init__.py",
+        "stock/services/recipes/byproducts.py",
+        "stock/services/recipes/catalog.py",
+        "stock/services/recipes/costing.py",
+        "stock/services/recipes/ingredients.py",
+        "stock/services/recipes/loading.py",
+        "stock/services/recipes/steps.py"
+      ]
+    }
+  ],
+  "system_checks": {
+    "core-desktop": {
+      "component": "core-desktop",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "core-cloud": {
+      "component": "core-cloud",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "local": {
+      "component": "local",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    },
+    "server": {
+      "component": "server",
+      "exit_code": 0,
+      "stdout": "System check identified no issues (0 silenced).\nNo changes detected\n",
+      "stderr": ""
+    }
+  },
+  "lint_counts": {
+    "core-desktop": 0,
+    "core-cloud": 0,
+    "local": 0,
+    "server": 0
+  }
+}
