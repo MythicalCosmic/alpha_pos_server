@@ -1,6 +1,6 @@
 # Alpha POS code audit — 7 September 2026
 
-**Result: 11 confirmed findings.** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
+**Result: 11 findings at the initial audit checkpoint; one additional finding confirmed during PostgreSQL validation.** Two defects can make stored sales disagree with collected payments; authentication and validation defects were also reproduced. The original test suites alone did not catch these cases. The findings below were recorded before application fixes began, at the owner's request.
 
 This is a code and isolated database audit, not a reconciliation of the restaurant's physical counter. No dated cash counts or card/provider statements were supplied. A software reproduction proves a defect exists; it does not prove how frequently that defect occurred at the restaurant or assign responsibility to its staff.
 
@@ -156,6 +156,16 @@ The package declares Python ≥3.11 while pinning Django 6.0.3, whose installed 
 **Fix:** declare Python ≥3.12. No dependency upgrade is required. Tests here run on Python 3.13; this does not constitute a full supported-version matrix.
 
 **Evidence:** project metadata compared with the installed Django distribution's `Requires-Python` field.
+
+### AUD-012 — P2 — PostgreSQL JSON storage changes retry response serialization
+
+**Added after the initial audit, before this item's fix.** The existing server test `test_headerless_admin_pay_exact_retry_is_safe_and_byte_stable` failed when moved from SQLite to PostgreSQL: the initial and replayed responses contain the same payment data but different object key ordering. Payment is still recorded only once; this is a response-contract defect, not evidence of a second charge.
+
+**Location:** both cores, `base/security/idempotency.py`. The first response uses insertion order while a retry serializes the JSONField value read back from PostgreSQL JSONB, which does not preserve that order. The replay path also assumes a dictionary, so valid JSON-array responses raise TypeError on retry.
+
+**Evidence:** `fixed-server-server.xml` (84 passed, 1 failed); `repro-json-replay-core-cloud.xml` (nested-object byte comparison and array replay both fail). The idempotency implementation was unchanged from each released baseline when reproduced: cloud SHA-256 `3dcf852859ce43904d3249e0fc8fb59cefd0cbd6d4cb841c8125ed7e1ff21116`; desktop SHA-256 `5b028192781ba529b13a569e461aae2f1523d0a2d9be0f40fc30331816250aea`.
+
+**Fix:** use consistent key sorting for initial and replayed JSON response bodies and allow array bodies on replay. Preserve the first response's headers and cookies. Regression checks cover both database round-trip cases, one execution only, status, content length and first-response header/cookie preservation. No payment identity or request fingerprint rules need to change.
 
 ## Evidence and reproducibility
 
