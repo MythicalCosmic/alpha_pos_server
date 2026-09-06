@@ -8,6 +8,9 @@ from uuid import UUID, uuid4
 from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository
 from base.services.inkassa_service import InkassaService
 from base.helpers.response import ServiceResponse
+from base.services.order_limits import (
+    validate_item_change, validate_order_subtotal, validate_quantity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -898,22 +901,6 @@ class AdminOrderService:
             return ServiceResponse.error(str(exc))
         target_branch = str(owner_shift.branch_id or '').strip()
 
-        customer = None
-        clean_customer_name = (
-            customer_name.strip()[:120]
-            if isinstance(customer_name, str)
-            else ''
-        )
-        from base.models import Customer
-        normalized_customer_phone = Customer.normalize_phone(phone_number)
-        if normalized_customer_phone and clean_customer_name:
-            customer, _created = Customer.resolve(
-                phone=normalized_customer_phone,
-                name=clean_customer_name,
-                branch_id=target_branch,
-                create=True,
-            )
-
         if not items:
             return ServiceResponse.validation_error(
                 errors={'items': 'At least one item is required'},
@@ -949,12 +936,6 @@ class AdminOrderService:
                     'Delivery person is inactive or belongs to a different branch'
                 )
 
-        display_id = OrderRepository.next_display_id(scope=target_branch)
-        chef_queue_number = OrderRepository.next_chef_queue_number(
-            scope=target_branch,
-        )
-        order_number = OrderRepository.next_order_number(scope=target_branch)
-
         product_ids = [item.get('product_id') for item in items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
 
@@ -965,11 +946,9 @@ class AdminOrderService:
             product_id = item_data.get('product_id')
             quantity = item_data.get('quantity', 1)
 
-            if quantity <= 0:
-                return ServiceResponse.validation_error(
-                    errors={'quantity': 'Must be greater than 0'},
-                    message='Quantity must be greater than 0',
-                )
+            quantity_error = validate_quantity(quantity)
+            if quantity_error:
+                return quantity_error
 
             product = products.get(product_id)
             if not product:
@@ -982,6 +961,32 @@ class AdminOrderService:
                 'price': product.price,
             })
             total_amount += product.price * quantity
+
+        limit_error = validate_order_subtotal(total_amount)
+        if limit_error:
+            return limit_error
+
+        customer = None
+        clean_customer_name = (
+            customer_name.strip()[:120]
+            if isinstance(customer_name, str)
+            else ''
+        )
+        from base.models import Customer
+        normalized_customer_phone = Customer.normalize_phone(phone_number)
+        if normalized_customer_phone and clean_customer_name:
+            customer, _created = Customer.resolve(
+                phone=normalized_customer_phone,
+                name=clean_customer_name,
+                branch_id=target_branch,
+                create=True,
+            )
+
+        display_id = OrderRepository.next_display_id(scope=target_branch)
+        chef_queue_number = OrderRepository.next_chef_queue_number(
+            scope=target_branch,
+        )
+        order_number = OrderRepository.next_order_number(scope=target_branch)
 
         order = OrderRepository.create(
             user_id=user_id,
@@ -1125,14 +1130,19 @@ class AdminOrderService:
         # A zero/negative quantity flows straight into F('quantity') + quantity
         # and the subtotal recalculate, producing a negative line and a negative
         # order total that then removes cash from the register on payment.
-        if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={'quantity': 'Must be a positive integer'},
-                message='Quantity must be greater than 0',
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
+        replacing = existing if existing and not is_instant else None
+        limit_error = validate_item_change(
+            order, quantity=(existing.quantity + quantity) if replacing else quantity,
+            price=existing.price if replacing else product.price, replacing=replacing,
+        )
+        if limit_error:
+            return limit_error
         if existing and not is_instant:
             # The parent Order lock serializes every add for this ticket. Save
             # through SyncMixin so this cloud-originated change enters /changes;
@@ -1181,15 +1191,19 @@ class AdminOrderService:
         if order.status not in ['PREPARING', 'OPEN']:
             return ServiceResponse.error('Cannot modify order that is not in PREPARING status')
 
-        if quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={'quantity': 'Must be greater than 0'},
-                message='Quantity must be greater than 0',
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         item = OrderItemRepository.first(id=item_id, order_id=order_id)
         if not item:
             return ServiceResponse.not_found('Order item not found')
+
+        limit_error = validate_item_change(
+            order, quantity=quantity, price=item.price, replacing=item,
+        )
+        if limit_error:
+            return limit_error
 
         old_quantity = item.quantity
         product_id = item.product_id

@@ -70,3 +70,33 @@ def test_add_item_normalizes_numeric_string_id(package, service_name, method_nam
     request.user = SimpleNamespace(id=1, role='ADMIN')
     assert inspect.unwrap(views.add_item)(request, 1).status_code == 200
     assert operation.call_args.args[:3] == (1, 1, 2)
+
+
+@pytest.mark.parametrize('field', ['user_id', 'cashier_id', 'delivery_person_id'])
+@pytest.mark.parametrize('value', [True, False, 1.5, {'id': 1}, [1], 'abc', 2**63, 0, -1])
+def test_create_rejects_invalid_order_reference_ids(field, value):
+    payload = {'user_id': 1, 'items': [{'product_id': 1}], field: value}
+    request = RequestFactory().post('/orders', data=json.dumps(payload), content_type='application/json')
+    data, error = create_order_request(request)
+    assert data is None
+    assert error[1] == 422
+    assert field in error[0]['errors']
+
+
+@pytest.mark.parametrize('field', ['user_id', 'cashier_id', 'delivery_person_id'])
+def test_create_normalizes_order_reference_ids(field):
+    payload = {'user_id': 1, 'items': [{'product_id': 1}], field: '001'}
+    request = RequestFactory().post('/orders', data=json.dumps(payload), content_type='application/json')
+    data, error = create_order_request(request)
+    assert error is None
+    assert data[field] == 1
+
+
+@pytest.mark.parametrize('field', ['cashier_id', 'delivery_person_id'])
+@pytest.mark.parametrize('value', [None, ''])
+def test_create_keeps_empty_optional_reference_unset(field, value):
+    payload = {'user_id': 1, 'items': [{'product_id': 1}], field: value}
+    request = RequestFactory().post('/orders', data=json.dumps(payload), content_type='application/json')
+    data, error = create_order_request(request)
+    assert error is None
+    assert data[field] is None
