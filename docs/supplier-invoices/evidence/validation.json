@@ -1,0 +1,43 @@
+{
+  "core_commit": "6393830abfd9d19298a688fd45122b9d358216bf",
+  "environment": "isolated synthetic databases; no production invoices created",
+  "checks": {
+    "baseline-core-cloud": {
+      "tests": 1305,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 17,
+      "passed": 1288,
+      "seconds": "112.429"
+    },
+    "baseline-server": {
+      "tests": 699,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "passed": 695,
+      "seconds": "81.398"
+    },
+    "invoices-final-pg-core-cloud": {
+      "tests": 113,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 113,
+      "seconds": "37.869"
+    },
+    "invoices-immutability-core-cloud": {
+      "tests": 99,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 99,
+      "seconds": "35.402"
+    }
+  },
+  "exact_replay_identical": true,
+  "invoice_list_query_bound": 5,
+  "supplier_catalog_query_bound": 5,
+  "schema_drift": "No changes detected",
+  "runtime_lint_findings": 0
+}
