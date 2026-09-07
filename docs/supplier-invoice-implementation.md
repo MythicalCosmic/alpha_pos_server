@@ -3,12 +3,15 @@
 The backend implements the 2026-09-06 supplier-invoice contract through one atomic
 receiving command. Stock and supplier payable are posted together using the
 existing receiving, stock, batch, supplier, audit, and idempotency records.
-Production rollout is pending the isolated image verification; the completed
-rollout revision and health result will be appended below.
+Production deployment completed on 2026-09-07 at 19:27 Asia/Tashkent. All three
+migrations applied, all five application services run the verified image, and
+public health reports the expected revision. The admin frontend can now integrate
+the new endpoints.
 
 ## Source and scope
 
 - Core commit: `6393830abfd9d19298a688fd45122b9d358216bf` on `feature/core-cloud-direct-supplier-invoices`.
+- Deployed server commit: `7ab458987aaac00e1aadda7a3b4f330f8def0f22`.
 - Server integration branch: `feature/direct-supplier-invoices`.
 - Frontend repository is unchanged. The admin frontend can consume the endpoints
   below; it must use the aggregate receive command rather than chain legacy calls.
@@ -189,3 +192,79 @@ python -m pytest -q stock/tests/purchase_invoices stock/tests/test_warehouse_rec
 
 Use a disposable PostgreSQL test database for the concurrency tests. The private
 production keys and database backups are never included in these artifacts.
+
+## Production delivery evidence
+
+The exact source commits above were archived into the release image. The core
+wheel was rebuilt from the committed source without downloading dependencies.
+Verification compared 1,164 Python runtime and migration files across the source
+copy and installed packages. The two repository-only core launch/test helpers
+are correctly excluded from the installed-package comparison.
+
+- Image: `alpha_pos_server:invoices-7ab458987aaa`.
+- Image ID: `sha256:bfea884cb7affa4cbcae042f10cb491091e620f97d86b7168a7a4c7d66b6f3f0`.
+- Core wheel SHA-256: `6f5f552ce1d6a20349a6a6eaac5705f759803b1c1c0b0b9631e96b7cb6aeee7a`.
+- [Verified image and dependency versions](supplier-invoices/evidence/image-verified.json).
+- [Isolated HTTP request/response, replay, rejection, and reversal evidence](supplier-invoices/evidence/canary-verified.json).
+- [Production migration dry run](supplier-invoices/evidence/migration-dry-run.json).
+- [Applied migrations and preservation checks](supplier-invoices/evidence/migration-applied.json).
+- [Production deployment result](supplier-invoices/evidence/deployed.json).
+- [Independent public health and authentication check](supplier-invoices/evidence/public-verification.json).
+
+The canary used a separate internal Docker network, synthetic PostgreSQL data,
+and a synthetic one-day license. It exercised the actual uvicorn/ASGI HTTP stack
+with production-mode settings. The 500,000 UZS invoice returned 201, receiving
+and reversal retries returned byte-identical responses, Warehouse supplier
+payment returned 403, list/detail returned 200, and full reversal restored
+quantity, average cost, supplier price, and payable. Existing checkout,
+fractional tender amounts, payment retry, reservations, recipe versioning, and
+unit-validation checks also passed. The isolated containers and network were
+removed after verification. Initial canary harness issues were an insufficient
+empty-database startup allowance and missing synthetic license registration;
+both were corrected before the successful run, without changing release code.
+
+Production was backed up with PostgreSQL custom-format `pg_dump`; its archive
+directory was validated with `pg_restore --list`. Previous images and environment
+configuration were retained. The dry run executed inside a read-only database
+transaction. The migration command was also verified on a disposable local
+PostgreSQL database before use on production.
+
+Application writers were paused for the upgrade. One outer database transaction
+applied exactly `base.0065`, `stock.0018`, and `stock.0019` and compared every
+pre-existing column in 15 accounting, stock, supplier, purchasing, expense,
+order, and audit tables before/after. All comparisons matched. No stock quantity,
+cost, numeric supplier price, balance, ledger amount, historical invoice number,
+or existing document value was rewritten. All 103 exact-marker supplier links
+became explicitly unknown-price links; no supplier prices were invented.
+The report publishes preservation results without publishing production ledger
+contents or row fingerprints.
+
+The web, Smartfood dispatch, Smartfood messages, staff notification, and customer
+bot services now use the same verified image. All were running with zero
+restarts and zero startup tracebacks; web health was healthy. Database and Redis
+containers and the environment file were preserved. No schema migrations remain
+pending, and the model/migration drift check passed.
+
+Independent public verification at 19:28 Asia/Tashkent returned HTTP 200 with
+`ok 7ab458987aaac00e1aadda7a3b4f330f8def0f22` from
+[the production health endpoint](https://pos.78.111.90.65.nip.io/healthz).
+An unauthenticated invoice-list request returned 401 `AUTHENTICATION_REQUIRED`.
+No synthetic invoice or test account was created in production.
+
+Documentation-only commits after the deployed server revision do not change
+the running application image. Both source repositories are published under
+[MythicalCosmic](https://github.com/MythicalCosmic), on the integration branches
+named above.
+
+## Frontend handoff and desktop scope
+
+The backend contract is deployed and ready for the admin frontend's invoice
+editor. The editor and its translations remain frontend integration work.
+Desktop 1.0.44 remains the released desktop version; this delivery adds cloud
+admin APIs and does not require a new desktop installer for those endpoints.
+
+Posting/correction evidence here verifies the supplier-invoice workflow. It does
+not establish that every historical restaurant counter discrepancy was caused
+by software, nor guarantee future counter reconciliation without dated cash and
+card settlement evidence. Broader reconciliation between concurrent desktop and
+cloud inventory writers remains governed by the existing sync architecture.

@@ -1,0 +1,36 @@
+{
+  "deployed_at_utc": "2026-09-07T14:27:38.773626+00:00",
+  "migrations_applied": [
+    "base.0065_direct_supplier_invoices",
+    "stock.0018_direct_supplier_invoices",
+    "stock.0019_direct_invoice_backfill"
+  ],
+  "existing_accounting_values_preserved": true,
+  "deployed": true,
+  "server_commit": "7ab458987aaac00e1aadda7a3b4f330f8def0f22",
+  "core_commit": "6393830abfd9d19298a688fd45122b9d358216bf",
+  "image": "sha256:bfea884cb7affa4cbcae042f10cb491091e620f97d86b7168a7a4c7d66b6f3f0",
+  "services_updated": [
+    "web",
+    "smartfood_dispatch",
+    "smartfood_messages",
+    "staff_notifications",
+    "bot"
+  ],
+  "public_health": {
+    "status": 200,
+    "body": "ok 7ab458987aaac00e1aadda7a3b4f330f8def0f22"
+  },
+  "environment_preserved": true,
+  "database_and_redis_containers_preserved": true,
+  "no_pending_schema_migrations": true,
+  "database_backup_retained": true,
+  "rollback_images_retained": true,
+  "startup_tracebacks": {
+    "web": 0,
+    "smartfood_dispatch": 0,
+    "smartfood_messages": 0,
+    "staff_notifications": 0,
+    "bot": 0
+  }
+}

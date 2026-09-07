@@ -1,0 +1,19 @@
+{
+  "accounting_records_rewritten": false,
+  "backfill": [
+    "existing PO supplier identity",
+    "existing PO supplier-item identity",
+    "explicit known/unknown price state",
+    "invoice permission grants"
+  ],
+  "dry_run": true,
+  "positive_catalog_prices_without_unknown_marker": 0,
+  "receiving_line_rows": 0,
+  "receiving_rows": 0,
+  "role_grant_candidates": {
+    "MANAGER": 0,
+    "WAREHOUSE": 1
+  },
+  "supplier_links_with_exact_unknown_marker": 103,
+  "zero_price_supplier_links": 103
+}

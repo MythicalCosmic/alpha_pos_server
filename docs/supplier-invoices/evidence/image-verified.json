@@ -1,0 +1,13 @@
+{
+  "git_sha": "7ab458987aaac00e1aadda7a3b4f330f8def0f22",
+  "runtime_files_verified": 1164,
+  "dependencies": {
+    "Django": "6.0.3",
+    "psycopg": "3.3.5",
+    "channels": "4.3.2",
+    "redis": "7.3.0",
+    "uvicorn": "0.49.0"
+  },
+  "image": "sha256:bfea884cb7affa4cbcae042f10cb491091e620f97d86b7168a7a4c7d66b6f3f0",
+  "base_image": "sha256:8179703623e70a304aa229247c932f79de7540af744c8a29dc1ed796a0e3c63a"
+}

@@ -1,0 +1,11 @@
+{
+  "checked_at_utc": "2026-09-07T14:28:36.821723+00:00",
+  "health": {
+    "status": 200,
+    "body": "ok 7ab458987aaac00e1aadda7a3b4f330f8def0f22"
+  },
+  "unauthenticated_invoice_list": {
+    "status": 401,
+    "body": "{\"success\": false, \"code\": \"AUTHENTICATION_REQUIRED\", \"message\": \"Authentication required\"}"
+  }
+}

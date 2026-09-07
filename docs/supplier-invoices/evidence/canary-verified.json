@@ -1,0 +1,322 @@
+{
+  "canary_checkout": "passed",
+  "card_checkout": true,
+  "cloud_cash_settlement_guard": true,
+  "fractional_amount_preserved": true,
+  "timestamp_advanced": true,
+  "retry_single_payment": true,
+  "base_unit_availability": true,
+  "reservation_release": true,
+  "recipe_versioning": true,
+  "invalid_factor_rejected": true,
+  "invoice": {
+    "canary_invoice": "passed",
+    "http_stack": "uvicorn-ASGI-installed-wheel",
+    "post_status": 201,
+    "exact_receive_replay": true,
+    "weighted_average_uzs": "86666.6667",
+    "supplier_payable_increase_uzs": 500000,
+    "stock_purchase_movements": 1,
+    "supplier_purchase_rows": 1,
+    "warehouse_payment_status": 403,
+    "list_status": 200,
+    "detail_status": 200,
+    "reverse_status": 200,
+    "exact_reverse_replay": true,
+    "stock_cost_price_and_debt_restored": true,
+    "no_expense_or_treasury_mutation": true,
+    "request": {
+      "supplier_id": 1,
+      "location_id": 2,
+      "invoice_date": "2026-09-06",
+      "supplier_invoice_number": "INV-CANARY-104",
+      "currency": "UZS",
+      "declared_total_uzs": 500000,
+      "notes": "Isolated synthetic deployment verification",
+      "lines": [
+        {
+          "supplier_item_id": 1,
+          "quantity": 5,
+          "unit_price_uzs": 100000,
+          "is_free": false,
+          "free_reason": "",
+          "batch_number": "",
+          "expiry_date": null,
+          "notes": ""
+        }
+      ]
+    },
+    "posted_response": {
+      "data": {
+        "invoice": {
+          "action_history": [
+            {
+              "action": "POSTED",
+              "actor_id": 2,
+              "at": "2026-09-07T19:21:21.099693+05:00"
+            }
+          ],
+          "allowed_actions": [],
+          "created_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "currency": "UZS",
+          "id": 1,
+          "invoice_date": "2026-09-06",
+          "line_count": 1,
+          "lines": [
+            {
+              "base_quantity": 5,
+              "base_unit": "ikg",
+              "base_unit_cost_uzs": 100000,
+              "batch_id": null,
+              "batch_number": "",
+              "conversion_to_base": 1,
+              "expiry_date": null,
+              "free_reason": "",
+              "id": 1,
+              "is_free": false,
+              "line_total_uzs": 500000,
+              "new_average_cost_uzs": 86666.6667,
+              "notes": "",
+              "previous_average_cost_uzs": 80000,
+              "price_change_confirmed": false,
+              "price_change_reason": "",
+              "purchase_quantity": 5,
+              "purchase_unit": "ikg",
+              "purchase_unit_price_uzs": 100000,
+              "quality_status": "PASSED",
+              "stock_item_id": 3,
+              "stock_item_name": "Invoice meat",
+              "stock_quantity_after": 15,
+              "stock_quantity_before": 10,
+              "stock_transaction_id": 3,
+              "supplier_item_id": 1
+            }
+          ],
+          "location": {
+            "id": 2,
+            "name": "Invoice warehouse"
+          },
+          "notes": "Isolated synthetic deployment verification",
+          "posted_at": "2026-09-07T19:21:21.099693+05:00",
+          "posted_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "purchase_order_id": 1,
+          "receiving_id": 1,
+          "receiving_number": "RCV-20260907-0001",
+          "replacement_invoice_ids": [],
+          "replaces_invoice_id": null,
+          "source_type": "DIRECT_INVOICE",
+          "status": "POSTED",
+          "subtotal_uzs": 500000,
+          "supplier": {
+            "id": 1,
+            "name": "Invoice supplier"
+          },
+          "supplier_balance_after_uzs": 700000,
+          "supplier_balance_before_uzs": 200000,
+          "supplier_invoice_number": "INV-CANARY-104",
+          "supplier_transaction_id": 2,
+          "total_uzs": 500000
+        }
+      },
+      "message": "Supplier invoice posted",
+      "success": true
+    },
+    "replay_response": {
+      "data": {
+        "invoice": {
+          "action_history": [
+            {
+              "action": "POSTED",
+              "actor_id": 2,
+              "at": "2026-09-07T19:21:21.099693+05:00"
+            }
+          ],
+          "allowed_actions": [],
+          "created_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "currency": "UZS",
+          "id": 1,
+          "invoice_date": "2026-09-06",
+          "line_count": 1,
+          "lines": [
+            {
+              "base_quantity": 5,
+              "base_unit": "ikg",
+              "base_unit_cost_uzs": 100000,
+              "batch_id": null,
+              "batch_number": "",
+              "conversion_to_base": 1,
+              "expiry_date": null,
+              "free_reason": "",
+              "id": 1,
+              "is_free": false,
+              "line_total_uzs": 500000,
+              "new_average_cost_uzs": 86666.6667,
+              "notes": "",
+              "previous_average_cost_uzs": 80000,
+              "price_change_confirmed": false,
+              "price_change_reason": "",
+              "purchase_quantity": 5,
+              "purchase_unit": "ikg",
+              "purchase_unit_price_uzs": 100000,
+              "quality_status": "PASSED",
+              "stock_item_id": 3,
+              "stock_item_name": "Invoice meat",
+              "stock_quantity_after": 15,
+              "stock_quantity_before": 10,
+              "stock_transaction_id": 3,
+              "supplier_item_id": 1
+            }
+          ],
+          "location": {
+            "id": 2,
+            "name": "Invoice warehouse"
+          },
+          "notes": "Isolated synthetic deployment verification",
+          "posted_at": "2026-09-07T19:21:21.099693+05:00",
+          "posted_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "purchase_order_id": 1,
+          "receiving_id": 1,
+          "receiving_number": "RCV-20260907-0001",
+          "replacement_invoice_ids": [],
+          "replaces_invoice_id": null,
+          "source_type": "DIRECT_INVOICE",
+          "status": "POSTED",
+          "subtotal_uzs": 500000,
+          "supplier": {
+            "id": 1,
+            "name": "Invoice supplier"
+          },
+          "supplier_balance_after_uzs": 700000,
+          "supplier_balance_before_uzs": 200000,
+          "supplier_invoice_number": "INV-CANARY-104",
+          "supplier_transaction_id": 2,
+          "total_uzs": 500000
+        }
+      },
+      "message": "Supplier invoice posted",
+      "success": true
+    },
+    "warehouse_payment_response": {
+      "success": false,
+      "code": "PERMISSION_DENIED",
+      "message": "You don't have permission to perform this action"
+    },
+    "reversal_response": {
+      "data": {
+        "invoice": {
+          "action_history": [
+            {
+              "action": "POSTED",
+              "actor_id": 2,
+              "at": "2026-09-07T19:21:21.099693+05:00"
+            },
+            {
+              "action": "REVERSED",
+              "actor_id": 3,
+              "at": "2026-09-07T19:21:21.823285+05:00",
+              "reason": "Synthetic full reversal verification"
+            }
+          ],
+          "allowed_actions": [],
+          "created_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "currency": "UZS",
+          "id": 1,
+          "invoice_date": "2026-09-06",
+          "line_count": 1,
+          "lines": [
+            {
+              "base_quantity": 5,
+              "base_unit": "ikg",
+              "base_unit_cost_uzs": 100000,
+              "batch_id": null,
+              "batch_number": "",
+              "conversion_to_base": 1,
+              "expiry_date": null,
+              "free_reason": "",
+              "id": 1,
+              "is_free": false,
+              "line_total_uzs": 500000,
+              "new_average_cost_uzs": 86666.6667,
+              "notes": "",
+              "previous_average_cost_uzs": 80000,
+              "price_change_confirmed": false,
+              "price_change_reason": "",
+              "purchase_quantity": 5,
+              "purchase_unit": "ikg",
+              "purchase_unit_price_uzs": 100000,
+              "quality_status": "PASSED",
+              "stock_item_id": 3,
+              "stock_item_name": "Invoice meat",
+              "stock_quantity_after": 15,
+              "stock_quantity_before": 10,
+              "stock_transaction_id": 3,
+              "supplier_item_id": 1
+            }
+          ],
+          "location": {
+            "id": 2,
+            "name": "Invoice warehouse"
+          },
+          "notes": "Isolated synthetic deployment verification",
+          "posted_at": "2026-09-07T19:21:21.099693+05:00",
+          "posted_by": {
+            "id": 2,
+            "name": "Warehouse Canary"
+          },
+          "purchase_order_id": 1,
+          "receiving_id": 1,
+          "receiving_number": "RCV-20260907-0001",
+          "replacement_invoice_ids": [],
+          "replaces_invoice_id": null,
+          "reversal": {
+            "correction_id": 1,
+            "reason": "Synthetic full reversal verification",
+            "reversed_at": "2026-09-07T19:21:21.823285+05:00",
+            "reversed_by_id": 3,
+            "stock_transaction_ids": [
+              4
+            ],
+            "supplier_balance_after_uzs": 200000,
+            "supplier_balance_before_uzs": 700000,
+            "supplier_transaction_id": 3,
+            "total_uzs": 500000,
+            "version": 1
+          },
+          "source_type": "DIRECT_INVOICE",
+          "status": "REVERSED",
+          "subtotal_uzs": 500000,
+          "supplier": {
+            "id": 1,
+            "name": "Invoice supplier"
+          },
+          "supplier_balance_after_uzs": 700000,
+          "supplier_balance_before_uzs": 200000,
+          "supplier_invoice_number": "INV-CANARY-104",
+          "supplier_transaction_id": 2,
+          "total_uzs": 500000
+        }
+      },
+      "message": "Supplier invoice reversed",
+      "success": true
+    }
+  },
+  "health": {
+    "status": 200,
+    "body": "ok 7ab458987aaac00e1aadda7a3b4f330f8def0f22"
+  }
+}
