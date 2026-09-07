@@ -81,5 +81,16 @@
       "status": 401,
       "body": "{\"success\": false, \"code\": \"AUTHENTICATION_REQUIRED\", \"message\": \"Authentication required\"}"
     }
+  },
+  "after_deployment_business_activity": {
+    "migration_preserved_original_balances": true,
+    "original_opening_debts_registered": 0,
+    "balances_unchanged_since_migration": 7,
+    "balances_with_subsequent_direct_invoice": 1,
+    "subsequent_invoice_posted_at_utc": "2026-09-07T17:01:06.662689+00:00",
+    "new_invoice_exactly_explains_balance_increase": true,
+    "review_required_without_history": 7,
+    "review_required_with_later_invoice_history": 1,
+    "financial_corrections_or_payments_executed_by_deployment": 0
   }
 }

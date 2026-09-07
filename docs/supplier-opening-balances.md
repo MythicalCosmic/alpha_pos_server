@@ -90,3 +90,9 @@ Deployed **2026-09-07 21:57:41 Asia/Tashkent**. The public health endpoint retur
 - The isolated HTTP check registered a synthetic 5,000,000 UZS opening without doubling its displayed balance, paid 3,000,000 UZS with a 15,000 UZS bank fee, replayed each request exactly, and reversed the payment to restore debt and bank balance. Warehouse registration was denied with HTTP 403. Invoice posting/reversal and checkout checks also passed.
 
 See [deployment evidence](supplier-opening-deployment.json). Subsequent documentation commits do not change the runtime revision recorded above.
+
+### Subsequent live activity — 22:01 Asia/Tashkent
+
+A follow-up read-only check found a new direct invoice posted after deployment by an existing application user. Its purchase ledger entry exactly explains one supplier's balance increase, preserving the original opening amount as its `balance_before`. Seven original balances remain exactly unchanged; the eighth now includes that new invoice. No opening debt was registered and no balance correction or payment was executed by this deployment.
+
+All eight original opening debts still require review. Seven suppliers have no ledger history and can use the documented registration command after approval. The supplier with the later invoice now has existing history and requires a reviewed ledger reconciliation; the opening command deliberately refuses to insert an opening into existing history. Its payment remains blocked with `SUPPLIER_LEDGER_RECONCILIATION_REQUIRED`. Do not erase the new invoice or rewrite its ledger to work around that check.
