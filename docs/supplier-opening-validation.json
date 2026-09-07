@@ -1,0 +1,52 @@
+{
+  "core_commit": "ec9769f7daf9f7ea873268ec3b38261d43622144",
+  "tests": {
+    "baseline-core-cloud": {
+      "tests": 1360,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 23,
+      "passed": 1337
+    },
+    "baseline-server": {
+      "tests": 699,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "passed": 695
+    },
+    "opening-complete-core-cloud": {
+      "tests": 55,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 55
+    },
+    "legacy-money-core-cloud": {
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 7
+    },
+    "invoices-regression-core-cloud": {
+      "tests": 106,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 106
+    },
+    "final-postgres-core-cloud": {
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 17
+    }
+  },
+  "system_checks": "passed",
+  "migration_drift": "none",
+  "core_runtime_lint_findings": 0,
+  "production_balances_to_register": 0,
+  "desktop_update_required": false
+}
