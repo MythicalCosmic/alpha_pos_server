@@ -1,0 +1,85 @@
+{
+  "deployment": {
+    "deployed_at_utc": "2026-09-07T16:57:41.451244+00:00",
+    "migrations_applied": [
+      "stock.0020_supplier_opening_balances"
+    ],
+    "existing_accounting_values_preserved": true,
+    "deployed": true,
+    "server_commit": "88f518e1196db4309af25d09985e17e8c76ed2f5",
+    "core_commit": "ec9769f7daf9f7ea873268ec3b38261d43622144",
+    "image": "sha256:e3496043a4e729873ff7dfb59652fbec86750367103ae9314d834825dc5503f6",
+    "services_updated": [
+      "web",
+      "smartfood_dispatch",
+      "smartfood_messages",
+      "staff_notifications",
+      "bot"
+    ],
+    "public_health": {
+      "status": 200,
+      "body": "ok 88f518e1196db4309af25d09985e17e8c76ed2f5"
+    },
+    "environment_preserved": true,
+    "database_and_redis_containers_preserved": true,
+    "no_pending_schema_migrations": true,
+    "database_backup_retained": true,
+    "rollback_images_retained": true,
+    "startup_tracebacks": {
+      "web": 0,
+      "smartfood_dispatch": 0,
+      "smartfood_messages": 0,
+      "staff_notifications": 0,
+      "bot": 0
+    }
+  },
+  "migration": {
+    "all_existing_columns_preserved": true,
+    "applied_migrations": [
+      "stock.0020_supplier_opening_balances"
+    ],
+    "financial_document_and_audit_tables_checked": 17,
+    "impact": {
+      "accounting_records_rewritten": false,
+      "automatic_debt_approval": false,
+      "dry_run": true,
+      "existing_balances_changed": false,
+      "financial_rows_to_create": 0,
+      "pending_migrations": [],
+      "suppliers_requiring_opening_review": 8
+    },
+    "no_pending_migrations": true,
+    "opening_debts_registered": 0
+  },
+  "isolated_http_opening_verification": {
+    "canary_opening": "passed",
+    "http_stack": "uvicorn-ASGI-installed-wheel",
+    "unreviewed_balance_preserved": true,
+    "review_status": "REVIEW_REQUIRED",
+    "unreviewed_payment_status": 409,
+    "warehouse_registration_status": 403,
+    "registered_once_without_balance_increase": true,
+    "exact_registration_replay": true,
+    "changed_payload_conflict": true,
+    "payment_principal_uzs": 3000000,
+    "bank_fee_uzs": 15000,
+    "exact_payment_replay": true,
+    "exact_reversal_replay": true,
+    "debt_and_bank_restored": true,
+    "no_inventory_or_expense_mutation": true
+  },
+  "public_endpoints": {
+    "/healthz": {
+      "status": 200,
+      "body": "ok 88f518e1196db4309af25d09985e17e8c76ed2f5"
+    },
+    "/api/admins/stock/suppliers/0/opening-balance/": {
+      "status": 401,
+      "body": "{\"success\": false, \"code\": \"AUTHENTICATION_REQUIRED\", \"message\": \"Authentication required\"}"
+    },
+    "/api/admins/stock/purchase-invoices/": {
+      "status": 401,
+      "body": "{\"success\": false, \"code\": \"AUTHENTICATION_REQUIRED\", \"message\": \"Authentication required\"}"
+    }
+  }
+}

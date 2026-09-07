@@ -76,3 +76,17 @@ pytest -q stock/tests/supplier_opening_balances stock/tests/purchase_invoices st
 This is a server API release; it does not require a desktop installer update. An admin-panel review form may call the documented registration endpoint after the amounts have been verified.
 
 Validated core commit: `ec9769f7daf9f7ea873268ec3b38261d43622144`. Full suites: **1,337 core passed** (23 skipped) and **695 server passed** (4 skipped). Dedicated PostgreSQL runs: **55 opening**, **106 invoice**, **7 legacy money/receiving**, and **17 final integration/concurrency** tests passed; the last run repeats 11 integration cases after adding the read-only migration report. Schema drift and runtime lint checks passed. See [machine-readable validation](supplier-opening-validation.json).
+
+## Deployed release evidence
+
+Deployed **2026-09-07 21:57:41 Asia/Tashkent**. The public health endpoint returned HTTP 200 with the expected runtime revision. All five application services (`web`, `smartfood_dispatch`, `smartfood_messages`, `staff_notifications`, `bot`) run the verified image with zero restarts and zero startup tracebacks. Database/Redis containers and environment configuration were preserved; a fresh database backup and rollback images were retained.
+
+- Runtime server commit: `88f518e1196db4309af25d09985e17e8c76ed2f5`.
+- Core commit: `ec9769f7daf9f7ea873268ec3b38261d43622144`.
+- Runtime image: `sha256:e3496043a4e729873ff7dfb59652fbec86750367103ae9314d834825dc5503f6`.
+- Applied migration: `stock.0020_supplier_opening_balances`; no pending schema migrations.
+- All existing columns across **17 accounting, stock, document, and audit tables** matched before and after the migration.
+- **Eight supplier balances remain for review; zero live opening entries were registered.** No restaurant payment was executed for testing.
+- The isolated HTTP check registered a synthetic 5,000,000 UZS opening without doubling its displayed balance, paid 3,000,000 UZS with a 15,000 UZS bank fee, replayed each request exactly, and reversed the payment to restore debt and bank balance. Warehouse registration was denied with HTTP 403. Invoice posting/reversal and checkout checks also passed.
+
+See [deployment evidence](supplier-opening-deployment.json). Subsequent documentation commits do not change the runtime revision recorded above.
