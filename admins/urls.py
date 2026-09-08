@@ -18,6 +18,13 @@ from admins.views import (
 urlpatterns = [
     path('money-control/overview', money_control_views.overview,
          name='money_control_overview'),
+    path('money-control/cash-position', money_control_views.cash_position,
+         name='money_control_cash_position'),
+    path('money-control/recurring-costs', money_control_views.recurring_costs,
+         name='money_control_recurring_costs'),
+    path('money-control/recurring-costs/<int:cost_id>',
+         money_control_views.recurring_cost_detail,
+         name='money_control_recurring_cost_detail'),
     path('expense-categories', expense_views.expense_categories,
          name='expense_category_list'),
     path('expense-categories/<int:category_id>',

@@ -1,5 +1,6 @@
 from django.http import JsonResponse
-from django.views.decorators.http import require_GET
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_http_methods
 
 from base.http_validation import (
     QueryValidationError,
@@ -8,8 +9,11 @@ from base.http_validation import (
     validate_period,
 )
 from base.security.permissions import backoffice_permission_required
+from base.helpers.request import parse_json_body
+from base.helpers.response import json_response
 from base.services.business_day import business_date
 from base.services.money_control_service import MoneyControlService
+from admins.services.cash_position_service import CashPositionService
 
 
 @require_GET
@@ -35,3 +39,38 @@ def overview(request):
         location_id=location_id,
     )
     return JsonResponse(result, status=status)
+
+
+@require_GET
+@backoffice_permission_required('money.control.view')
+def cash_position(request):
+    return json_response(CashPositionService.get(actor=request.user))
+
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+@backoffice_permission_required('money.control.view')
+def recurring_costs(request):
+    if request.method == 'GET':
+        return json_response(CashPositionService.recurring_costs(actor=request.user))
+    payload, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    return json_response(CashPositionService.save_recurring(
+        actor=request.user,
+        payload=payload,
+    ))
+
+
+@csrf_exempt
+@require_http_methods(['PATCH'])
+@backoffice_permission_required('money.control.view')
+def recurring_cost_detail(request, cost_id):
+    payload, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    return json_response(CashPositionService.save_recurring(
+        actor=request.user,
+        payload=payload,
+        cost_id=cost_id,
+    ))
