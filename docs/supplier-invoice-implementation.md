@@ -176,15 +176,10 @@ invalid/scoped input, PASSED-only posting, ledger uniqueness, no financial-accou
 mutation, rollback, replay/concurrency, permissions, soft deletion, safe/blocked
 reversal, legacy receiving, migrations, and bounded list queries.
 
-Commands use an isolated environment without production credentials:
-
-```sh
-python3 .implementation-work/supplier-invoices-2026-09-07/run_checks.py core-cloud tests
-python3 .implementation-work/supplier-invoices-2026-09-07/run_checks.py server tests
-python3 .implementation-work/supplier-invoices-2026-09-07/run_checks.py core-cloud targeted invoices-final-pg stock/tests/purchase_invoices stock/tests/test_warehouse_receiving.py stock/tests/test_money_control_contract.py --postgres
-```
-
-In a configured checkout, the equivalent focused command is:
+The original checks used an isolated environment without production credentials.
+Their runner and evidence are retained in the local workspace archive
+`archive/snapshots/implementation-work.tar.zst`. In a configured core checkout,
+the focused command is:
 
 ```sh
 python -m pytest -q stock/tests/purchase_invoices stock/tests/test_warehouse_receiving.py stock/tests/test_money_control_contract.py

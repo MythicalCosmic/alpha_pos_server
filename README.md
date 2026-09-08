@@ -29,6 +29,7 @@ config/                  Django server configuration
 deploy/                  Deployment and support-relay assets
 postman/                 Generated manual API collection
 tests/                   Repository and deployment tests
+docs/                    API contracts, operating guides, and dated reports
 ```
 
 Each application keeps tests under its own `tests/` package, grouped by domain.
