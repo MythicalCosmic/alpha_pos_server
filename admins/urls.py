@@ -13,9 +13,16 @@ from admins.views import (
     profitability_views,
     money_control_views,
     expense_views,
+    product_performance_views,
 )
 
 urlpatterns = [
+    path('reports/product-performance',
+         product_performance_views.product_performance,
+         name='product_performance_report'),
+    path('reports/product-performance/export',
+         product_performance_views.product_performance_export,
+         name='product_performance_export'),
     path('money-control/overview', money_control_views.overview,
          name='money_control_overview'),
     path('money-control/cash-position', money_control_views.cash_position,

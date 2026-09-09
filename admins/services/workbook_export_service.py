@@ -12,7 +12,10 @@ from io import BytesIO
 
 from django.utils import timezone
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, Reference
+from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
 
@@ -488,4 +491,325 @@ def build_shift_report_workbook(report, *, generated_at=None):
             },
         )
 
+    return _workbook_bytes(workbook)
+
+
+def _report_number(value):
+    """Convert a canonical decimal string to a typed spreadsheet number."""
+    if value in (None, ''):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return value
+    if not number.is_finite():
+        return None
+    return int(number) if number == number.to_integral_value() else float(number)
+
+
+def _add_excel_table(sheet, name, start_row, end_row, column_count):
+    if end_row <= start_row:
+        return
+    ref = (
+        f'A{start_row}:{get_column_letter(column_count)}{end_row}'
+    )
+    table = Table(displayName=name, ref=ref)
+    table.tableStyleInfo = TableStyleInfo(
+        name='TableStyleMedium2',
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    sheet.add_table(table)
+
+
+def build_product_performance_workbook(report):
+    """Render the canonical product performance dataset as a polished XLSX."""
+    date_range = report.get('range') or {}
+    date_from = date_range.get('from') or ''
+    date_to = date_range.get('to') or ''
+    subtitle = (
+        f'Business dates {date_from} to {date_to} · '
+        f'{report.get("currency", "UZS")} · {report.get("branch_id", "")}'
+    )
+    summary_data = report.get('summary') or {}
+    product_rows = report.get('products') or []
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    workbook.properties.creator = 'Alpha POS'
+    workbook.properties.title = 'Product performance report'
+    workbook.properties.subject = _excel_value(subtitle)
+    workbook.calculation.fullCalcOnLoad = True
+
+    summary = workbook.create_sheet('Summary')
+    _write_title(summary, 'Alpha POS · Product Performance', subtitle, width=8)
+    metrics = (
+        ('Products', summary_data.get('product_count', 0), '0'),
+        ('Units sold', summary_data.get('total_units_sold', 0), '#,##0'),
+        ('Net revenue', summary_data.get('total_revenue'), '#,##0.00'),
+        ('Ingredient cost', summary_data.get('total_ingredient_cost'), '#,##0.00'),
+        ('Gross profit', summary_data.get('total_gross_profit'), '#,##0.00'),
+        ('Gross margin', summary_data.get('gross_profit_margin_pct'), '0.00"%"'),
+        ('Orders', summary_data.get('order_count', 0), '#,##0'),
+        ('Cost coverage', summary_data.get('cost_coverage_pct'), '0.00"%"'),
+    )
+    for index, (label, value, number_format) in enumerate(metrics):
+        row = 4 + (index // 4) * 3
+        column = 1 + (index % 4) * 2
+        summary.merge_cells(
+            start_row=row, start_column=column,
+            end_row=row, end_column=column + 1,
+        )
+        title_cell = summary.cell(row, column, label)
+        title_cell.fill = PatternFill('solid', fgColor='E8F3F4')
+        title_cell.font = Font(size=10, bold=True, color='355465')
+        title_cell.alignment = Alignment(horizontal='center')
+        summary.merge_cells(
+            start_row=row + 1, start_column=column,
+            end_row=row + 1, end_column=column + 1,
+        )
+        value_cell = summary.cell(row + 1, column, _report_number(value))
+        value_cell.font = Font(size=16, bold=True, color=_NAVY)
+        value_cell.alignment = Alignment(horizontal='center')
+        value_cell.number_format = number_format
+        for card_row in (row, row + 1):
+            for card_column in (column, column + 1):
+                summary.cell(card_row, card_column).border = Border(
+                    left=_GRID, right=_GRID, top=_GRID, bottom=_GRID,
+                )
+
+    filters = report.get('filters') or {}
+    filter_rows = [
+        ('Generated at', report.get('generated_at')),
+        ('Preset', date_range.get('preset')),
+        ('Window start', date_range.get('start_at')),
+        ('Window end (exclusive)', date_range.get('end_at')),
+        ('Category ID', filters.get('category_id') or 'All'),
+        ('Product ID', filters.get('product_id') or 'All'),
+        ('Search', filters.get('search') or 'All'),
+        ('Cashier ID', filters.get('cashier_id') or 'All'),
+        ('Order type', filters.get('order_type') or 'All'),
+        ('Order origin', filters.get('order_origin') or 'All'),
+        ('Payment method', filters.get('payment_method') or 'All'),
+        ('Sort', filters.get('sort')),
+        ('Cost complete', summary_data.get('cost_complete')),
+        ('Products missing cost', summary_data.get('products_missing_cost', 0)),
+    ]
+    _write_table(summary, 11, ('report detail', 'value'), filter_rows, freeze=False)
+    summary.column_dimensions['A'].width = 27
+    summary.column_dimensions['B'].width = 34
+    for column in 'CDEFGH':
+        summary.column_dimensions[column].width = 15
+
+    headers = (
+        'rank', 'product_id', 'product_name', 'category_name',
+        'units_sold', 'units_refunded', 'net_units', 'orders_sold',
+        'selling_price_per_unit', 'minimum_selling_price',
+        'maximum_selling_price', 'current_catalog_price',
+        'gross_sales_revenue', 'refund_amount', 'total_revenue',
+        'ingredient_cost_per_unit', 'gross_ingredient_cost',
+        'ingredient_cost_credit', 'total_ingredient_cost',
+        'gross_profit_per_item', 'gross_profit',
+        'gross_profit_margin_pct', 'cost_source', 'cost_coverage_pct',
+        'cost_complete',
+    )
+    money_columns = {
+        'selling_price_per_unit', 'minimum_selling_price',
+        'maximum_selling_price', 'current_catalog_price',
+        'gross_sales_revenue', 'refund_amount', 'total_revenue',
+        'ingredient_cost_per_unit', 'gross_ingredient_cost',
+        'ingredient_cost_credit', 'total_ingredient_cost',
+        'gross_profit_per_item', 'gross_profit',
+    }
+    integer_columns = {
+        'rank', 'product_id', 'units_sold', 'units_refunded', 'net_units',
+        'orders_sold',
+    }
+    percent_columns = {'gross_profit_margin_pct', 'cost_coverage_pct'}
+    typed_products = []
+    for source in product_rows:
+        row = dict(source)
+        for column in money_columns | percent_columns:
+            row[column] = _report_number(row.get(column))
+        typed_products.append(row)
+
+    products = workbook.create_sheet('Products')
+    _write_title(products, 'Product Performance', subtitle, width=len(headers))
+    product_end = _write_table(
+        products, 4, headers, typed_products,
+        numeric_columns=money_columns | integer_columns | percent_columns,
+    )
+    _add_excel_table(products, 'ProductPerformance', 4, product_end, len(headers))
+    header_indexes = {header: index + 1 for index, header in enumerate(headers)}
+    for row in range(5, product_end + 1):
+        for column in money_columns:
+            products.cell(row, header_indexes[column]).number_format = '#,##0.00'
+        for column in percent_columns:
+            products.cell(row, header_indexes[column]).number_format = '0.00"%"'
+        products.cell(row, header_indexes['product_name']).alignment = Alignment(
+            vertical='top', wrap_text=False,
+        )
+    if product_rows:
+        for field in ('gross_profit', 'gross_profit_margin_pct'):
+            column = get_column_letter(header_indexes[field])
+            products.conditional_formatting.add(
+                f'{column}5:{column}{product_end}',
+                ColorScaleRule(
+                    start_type='min', start_color='FECACA',
+                    mid_type='percentile', mid_value=50, mid_color='FEF3C7',
+                    end_type='max', end_color='BBF7D0',
+                ),
+            )
+    total_row = product_end + 2
+    products.cell(total_row, 1, 'TOTAL')
+    products.cell(total_row, 1).font = Font(bold=True, color=_WHITE)
+    for column in range(1, len(headers) + 1):
+        products.cell(total_row, column).fill = PatternFill('solid', fgColor=_NAVY)
+        products.cell(total_row, column).font = Font(bold=True, color=_WHITE)
+    total_values = {
+        'units_sold': summary_data.get('total_units_sold'),
+        'units_refunded': summary_data.get('total_units_refunded'),
+        'net_units': summary_data.get('net_units'),
+        'gross_sales_revenue': summary_data.get('gross_sales_revenue'),
+        'refund_amount': summary_data.get('refund_amount'),
+        'total_revenue': summary_data.get('total_revenue'),
+        'gross_ingredient_cost': summary_data.get('gross_ingredient_cost'),
+        'ingredient_cost_credit': summary_data.get('ingredient_cost_credit'),
+        'total_ingredient_cost': summary_data.get('total_ingredient_cost'),
+        'gross_profit': summary_data.get('total_gross_profit'),
+        'gross_profit_margin_pct': summary_data.get('gross_profit_margin_pct'),
+        'cost_coverage_pct': summary_data.get('cost_coverage_pct'),
+        'cost_complete': summary_data.get('cost_complete'),
+    }
+    for field, value in total_values.items():
+        cell = products.cell(total_row, header_indexes[field], _report_number(value))
+        cell.fill = PatternFill('solid', fgColor=_NAVY)
+        cell.font = Font(bold=True, color=_WHITE)
+        if field in money_columns:
+            cell.number_format = '#,##0.00'
+        elif field in percent_columns:
+            cell.number_format = '0.00"%"'
+    products.auto_filter.ref = f'A4:{get_column_letter(len(headers))}{product_end}'
+    products.freeze_panes = 'E5'
+    products.sheet_properties.pageSetUpPr.fitToPage = True
+    products.page_setup.orientation = 'landscape'
+    products.page_setup.fitToWidth = 1
+    products.page_setup.fitToHeight = 0
+    products.print_title_rows = '1:4'
+
+    if product_rows:
+        chart_end = min(product_end, 14)
+        chart = BarChart()
+        chart.type = 'bar'
+        chart.style = 10
+        chart.title = 'Top products · net revenue and gross profit'
+        chart.y_axis.title = 'Product'
+        chart.x_axis.title = 'UZS'
+        chart.height = 8.5
+        chart.width = 16
+        chart.add_data(
+            Reference(
+                products,
+                min_col=header_indexes['total_revenue'],
+                min_row=4,
+                max_row=chart_end,
+            ),
+            titles_from_data=True,
+        )
+        chart.add_data(
+            Reference(
+                products,
+                min_col=header_indexes['gross_profit'],
+                min_row=4,
+                max_row=chart_end,
+            ),
+            titles_from_data=True,
+        )
+        chart.set_categories(
+            Reference(
+                products,
+                min_col=header_indexes['product_name'],
+                min_row=5,
+                max_row=chart_end,
+            )
+        )
+        chart.legend.position = 'b'
+        summary.add_chart(chart, 'D11')
+
+    category_headers = (
+        'category_id', 'category_name', 'product_count', 'orders',
+        'units_sold', 'units_refunded', 'net_units', 'gross_sales_revenue',
+        'refund_amount', 'total_revenue', 'total_ingredient_cost',
+        'gross_profit', 'gross_profit_margin_pct', 'cost_complete',
+    )
+    category_money = {
+        'gross_sales_revenue', 'refund_amount', 'total_revenue',
+        'total_ingredient_cost', 'gross_profit',
+    }
+    typed_categories = []
+    for source in report.get('categories') or []:
+        row = dict(source)
+        for field in category_money | {'gross_profit_margin_pct'}:
+            row[field] = _report_number(row.get(field))
+        typed_categories.append(row)
+    categories = _sheet_with_table(
+        workbook, 'Categories', 'Category Performance', category_headers,
+        typed_categories, subtitle=subtitle,
+        numeric_columns=category_money | {
+            'category_id', 'product_count', 'orders', 'units_sold',
+            'units_refunded', 'net_units', 'gross_profit_margin_pct',
+        },
+    )
+    category_end = 4 + len(typed_categories)
+    _add_excel_table(categories, 'CategoryPerformance', 4, category_end, len(category_headers))
+
+    daily_headers = (
+        'business_date', 'orders', 'refund_events', 'units_sold',
+        'units_refunded', 'net_units', 'gross_sales_revenue', 'refund_amount',
+        'total_revenue', 'total_ingredient_cost', 'gross_profit',
+        'gross_profit_margin_pct', 'cost_complete',
+    )
+    daily_money = {
+        'gross_sales_revenue', 'refund_amount', 'total_revenue',
+        'total_ingredient_cost', 'gross_profit',
+    }
+    typed_daily = []
+    for source in report.get('daily') or []:
+        row = dict(source)
+        for field in daily_money | {'gross_profit_margin_pct'}:
+            row[field] = _report_number(row.get(field))
+        typed_daily.append(row)
+    daily = _sheet_with_table(
+        workbook, 'Daily', 'Daily Product Performance', daily_headers,
+        typed_daily, subtitle=subtitle,
+        numeric_columns=daily_money | {
+            'orders', 'refund_events', 'units_sold', 'units_refunded',
+            'net_units', 'gross_profit_margin_pct',
+        },
+    )
+    daily_end = 4 + len(typed_daily)
+    _add_excel_table(daily, 'DailyProductPerformance', 4, daily_end, len(daily_headers))
+
+    methodology_rows = [
+        ('Report status', report.get('status')),
+        ('Sales event clock', (report.get('source_policy') or {}).get('sales_clock')),
+        ('Refund event clock', (report.get('source_policy') or {}).get('refund_clock')),
+        ('Revenue calculation', (report.get('source_policy') or {}).get('revenue')),
+        ('Ingredient cost calculation', (report.get('source_policy') or {}).get('ingredient_cost')),
+        ('Refund cost calculation', (report.get('source_policy') or {}).get('refund_cost')),
+        ('Cost coverage policy', (report.get('coverage') or {}).get('policy')),
+        ('Window convention', 'Half-open [start, end); business day 07:00 to next day 03:00 Asia/Tashkent'),
+        ('Profit rule', 'Net product revenue minus historical ingredient cost after eligible return credits'),
+        ('Missing cost rule', 'Profit cells remain blank until cost evidence is registered; missing cost is never treated as zero'),
+    ]
+    methodology = _sheet_with_table(
+        workbook, 'Methodology', 'Calculation Methodology',
+        ('rule', 'definition'), methodology_rows, subtitle=subtitle,
+    )
+    methodology.column_dimensions['A'].width = 30
+    methodology.column_dimensions['B'].width = 100
+
+    workbook.active = 0
     return _workbook_bytes(workbook)
