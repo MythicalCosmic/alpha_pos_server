@@ -20,6 +20,7 @@ cashier, which creates a real base.Order under that cashier (DispatchService).
 """
 import uuid
 
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -45,6 +46,10 @@ class BotConfig(models.Model):
     "closed" payload and the bot stops offering the menu — flippable at runtime
     with no restart.
     """
+    class LoyaltyEarningBasis(models.TextChoices):
+        PAID_MERCHANDISE = 'PAID_MERCHANDISE', 'Merchandise after point discounts'
+        MERCHANDISE_SUBTOTAL = 'MERCHANDISE_SUBTOTAL', 'Merchandise before point discounts'
+
     enabled = models.BooleanField(default=False)
     # Optional runtime override for settings.CUSTOMER_BOT_TOKEN. The operator
     # API never serializes this value; it only returns configured + masked
@@ -57,8 +62,17 @@ class BotConfig(models.Model):
     default_tip_options = models.JSONField(default=list, blank=True)
     service_area = models.JSONField(default=dict, blank=True)   # {city, center{lat,lng}, polygon[]}
     default_lang = models.CharField(max_length=2, choices=LANG_CHOICES, default='uz')
-    loyalty_earn_per = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # 1 point per N UZS (0 = off)
-    loyalty_point_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)  # 1 point = N UZS at redeem
+    loyalty_earn_per = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                          validators=[MinValueValidator(0)])  # UZS per point (0 = off)
+    loyalty_point_value = models.DecimalField(max_digits=10, decimal_places=2, default=0,
+                                             validators=[MinValueValidator(0)])  # UZS per redeemed point
+    loyalty_earning_basis = models.CharField(
+        max_length=24, choices=LoyaltyEarningBasis.choices,
+        default=LoyaltyEarningBasis.PAID_MERCHANDISE,
+    )
+    reward_valid_days = models.PositiveSmallIntegerField(
+        default=30, validators=[MinValueValidator(1), MaxValueValidator(3650)],
+    )
     support_phone = models.CharField(max_length=32, blank=True, default='')
     support_telegram = models.CharField(max_length=64, blank=True, default='')
     support_email = models.CharField(max_length=120, blank=True, default='')
@@ -78,6 +92,8 @@ class BotConfig(models.Model):
         super().save(*args, **kwargs)
         from django.core.cache import cache
         cache.delete(self._CACHE_KEY)
+        from django.db import transaction
+        transaction.on_commit(lambda: cache.delete(self._CACHE_KEY))
 
     @classmethod
     def load(cls):
@@ -86,7 +102,9 @@ class BotConfig(models.Model):
         if cached is not None:
             return cached
         obj, _ = cls.objects.get_or_create(pk=1)
-        cache.set(cls._CACHE_KEY, obj, cls._CACHE_TTL)
+        from django.db import connection
+        if not connection.in_atomic_block:
+            cache.set(cls._CACHE_KEY, obj, cls._CACHE_TTL)
         return obj
 
     def __str__(self):
@@ -411,6 +429,7 @@ class BotOrder(TimeStamped):
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     loyalty_points_used = models.IntegerField(default=0)
     loyalty_points_earned = models.IntegerField(default=0)
+    loyalty_policy_snapshot = models.JSONField(default=dict, blank=True)
     loyalty_earned_settled_at = models.DateTimeField(null=True, blank=True)
     loyalty_spend_restored_at = models.DateTimeField(null=True, blank=True)
     loyalty_earn_reversed_at = models.DateTimeField(null=True, blank=True)
@@ -696,6 +715,7 @@ class Redemption(TimeStamped):
         ISSUED = 'ISSUED', 'Issued'
         FULFILLED = 'FULFILLED', 'Fulfilled'
         CANCELED = 'CANCELED', 'Canceled'
+        EXPIRED = 'EXPIRED', 'Expired (points returned)'
 
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='redemptions')
     reward = models.ForeignKey(Reward, on_delete=models.PROTECT, related_name='redemptions')
@@ -708,6 +728,14 @@ class Redemption(TimeStamped):
     fulfilled_at = models.DateTimeField(null=True, blank=True)
     fulfilled_by = models.ForeignKey('base.User', on_delete=models.SET_NULL,
                                      null=True, blank=True, related_name='+')
+    reward_snapshot = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    canceled_at = models.DateTimeField(null=True, blank=True)
+    canceled_by = models.ForeignKey('base.User', on_delete=models.SET_NULL,
+                                    null=True, blank=True, related_name='+')
+    cancellation_reason = models.CharField(max_length=200, blank=True, default='')
+    stock_reserved = models.BooleanField(default=False)
+    action_history = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['-id']
@@ -725,6 +753,7 @@ class LoyaltyTransaction(TimeStamped):
     class Kind(models.TextChoices):
         EARN_ORDER = 'EARN_ORDER', 'Earned (order)'
         EARN_SCAN = 'EARN_SCAN', 'Earned (in-store)'
+        REVERSE_SCAN = 'REVERSE_SCAN', 'Reversed (in-store refund)'
         SPEND_ORDER = 'SPEND_ORDER', 'Spent (order)'
         REDEEM = 'REDEEM', 'Redeemed (gift)'
         GRANT = 'GRANT', 'Granted (bonus/gift)'
@@ -740,10 +769,17 @@ class LoyaltyTransaction(TimeStamped):
     reward = models.ForeignKey(Reward, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     redemption = models.ForeignKey(Redemption, on_delete=models.SET_NULL, null=True, blank=True, related_name='txns')
     staff = models.ForeignKey('base.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    pos_order = models.ForeignKey('base.Order', on_delete=models.PROTECT,
+                                 null=True, blank=True, related_name='+')
 
     class Meta:
         ordering = ['-id']
         indexes = [models.Index(fields=['customer', '-id'])]
+        constraints = [models.UniqueConstraint(
+            fields=['pos_order', 'kind'],
+            condition=Q(kind__in=['EARN_SCAN', 'REVERSE_SCAN'], pos_order__isnull=False),
+            name='sf_loyalty_scan_order_unique',
+        )]
 
     def __str__(self):
         return f"LoyaltyTxn({self.customer_id}, {self.kind}, {self.points:+d})"

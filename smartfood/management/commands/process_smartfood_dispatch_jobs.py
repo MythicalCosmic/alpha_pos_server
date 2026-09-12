@@ -43,7 +43,11 @@ class Command(BaseCommand):
             self.stdout.write(
                 'SMARTFOOD_AUTO_DISPATCH is disabled; loyalty repair remains active',
             )
+        from smartfood.services.loyalty_service import LoyaltyService
+
         while running:
+            LoyaltyService.expire_due(limit=batch_size)
+            LoyaltyService.reconcile_scans(limit=batch_size)
             loyalty = reconcile_due_bot_order_loyalty(limit=batch_size)
             if loyalty['reconciled']:
                 self.stdout.write(

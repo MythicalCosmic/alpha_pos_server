@@ -283,7 +283,9 @@ def kitchen_shift_analytics_view(request):
     if err:
         return err
     user_id = _int_or_none(request.GET.get('user_id'))
-    role = (request.GET.get('role') or 'WAITER').upper()
+    role = (request.GET.get('role') or 'CHEF').upper()
+    if role not in {'CHEF', 'WAITER', 'CASHIER', 'MANAGER', 'ADMIN'}:
+        return JsonResponse({'success': False, 'message': 'Invalid staff role.'}, status=422)
     target_min = _int_or_none(request.GET.get('target_prep_minutes'))
     kwargs = {'user_id': user_id, 'role': role}
     if target_min and target_min > 0:

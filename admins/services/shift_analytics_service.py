@@ -364,6 +364,8 @@ def _kitchen_shift_row(shift, att_map, target_prep_seconds, *, now=None):
         units=Coalesce(Sum('quantity'), 0), lines=Count('id'))
 
     return {
+        'attribution': 'BRANCH_SHIFT_WINDOW',
+        'personal_preparation_attribution_available': False,
         'shift_id': shift.id,
         'user_id': shift.user_id,
         'user_name': _user_name(shift.user),
@@ -1175,14 +1177,13 @@ def shift_handover_report(shift, *, now=None):
     }
 
 
-def kitchen_shift_analytics(date_from, date_to, user_id=None, role='WAITER',
+def kitchen_shift_analytics(date_from, date_to, user_id=None, role='CHEF',
                             target_prep_seconds=DEFAULT_TARGET_PREP_SECONDS,
                             *, window=None, now=None):
     """Everything about kitchen/chef shifts over [date_from, date_to].
 
-    No dedicated chef role exists yet, so `role` selects which staff are
-    treated as kitchen (default WAITER). Prep metrics are window-based since
-    per-item chef attribution isn't tracked — see module docstring.
+    CHEF is the default role. Metrics describe the branch kitchen during each
+    shift window, not personal output; no per-item chef attribution is stored.
     """
     now = now or timezone.now()
     shifts = _shifts_in_range(

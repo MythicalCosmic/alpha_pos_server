@@ -2,6 +2,9 @@ import logging
 
 from base.helpers.response import ServiceResponse
 from base.repositories.app_settings import AppSettingsRepository
+from base.models import AppSettings
+from django.db import transaction
+from base.services.waiter_settings import policy_payload
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,8 @@ class AppSettingsService:
 
         data = {
             'hr_enabled': settings.hr_enabled,
-            'waiter_enabled': settings.waiter_enabled,
+            **policy_payload(settings),
+            'waiter_policy_scope': 'this_backend',
             # Canonical operating-day opening. Reporting itself deliberately
             # enforces 07:00 -> next-day 03:00 independently of this display
             # setting, so an old database row cannot change money membership.
@@ -58,10 +62,18 @@ class AppSettingsService:
         return ServiceResponse.success(data={'settings': data})
 
     @staticmethod
+    @transaction.atomic
     def update(**kwargs):
-        settings = AppSettingsRepository.load()
+        AppSettingsRepository.load()
+        settings = AppSettings.objects.select_for_update().get(pk=1)
+        for field in ('hr_enabled', 'stock_enabled', 'waiter_enabled', 'waiter_require_shift'):
+            if field in kwargs and type(kwargs[field]) is not bool:
+                return ServiceResponse.validation_error({field: 'Use true or false.'})
+        if ('waiter_payment_mode' in kwargs and
+                kwargs['waiter_payment_mode'] not in AppSettings.WaiterPaymentMode.values):
+            return ServiceResponse.validation_error({'waiter_payment_mode': 'Choose a supported payment mode.'})
 
-        app_fields = {'hr_enabled', 'waiter_enabled'}
+        app_fields = {'hr_enabled', 'waiter_enabled', 'waiter_payment_mode', 'waiter_require_shift'}
         stock_fields = {'stock_enabled'}
 
         for key, value in kwargs.items():

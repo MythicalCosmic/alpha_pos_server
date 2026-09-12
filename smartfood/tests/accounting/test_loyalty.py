@@ -31,10 +31,12 @@ def test_record_updates_balance_and_writes_ledger(customer):
 
 
 @pytest.mark.django_db
-def test_record_clamps_at_zero(customer):
+def test_record_preserves_debt_and_exact_ledger(customer):
     LoyaltyService.record(customer.id, LoyaltyTransaction.Kind.GRANT, 30)
     _, bal = LoyaltyService.record(customer.id, LoyaltyTransaction.Kind.ADJUST, -100)
-    assert bal == 0
+    assert bal == -70
+    from django.db.models import Sum
+    assert customer.loyalty_txns.aggregate(total=Sum('points'))['total'] == bal
 
 
 @pytest.mark.django_db
@@ -75,15 +77,11 @@ def test_per_customer_limit(customer, reward):
 
 
 @pytest.mark.django_db
-def test_staff_scan_awards_by_amount(customer):
-    cfg = BotConfig.load()
-    cfg.loyalty_earn_per = Decimal('1000')          # 1 point per 1000 UZS
-    cfg.save()
+def test_staff_scan_rejects_unverified_amount(customer):
     result, status = LoyaltyService.award_scan('SF-55501', 25000)
-    assert result['success'], result
-    assert result['data']['awarded'] == 25          # 25000 / 1000
-    customer.refresh_from_db()
-    assert customer.loyalty_points == 25
+    assert status == 422
+    assert 'order_id' in result['errors']
+    assert not customer.loyalty_txns.exists()
 
 
 @pytest.mark.django_db
@@ -102,6 +100,6 @@ def test_fulfill_redemption(customer, reward):
     code = result['data']['redemption']['code']
     res, st = LoyaltyService.fulfill(code)
     assert res['success'] and res['data']['redemption']['status'] == 'FULFILLED'
-    # double fulfilment is rejected
+    # Same-result replay preserves the fulfilled gift.
     res2, _ = LoyaltyService.fulfill(code)
-    assert not res2['success']
+    assert res2 == res

@@ -137,8 +137,11 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
 
     discount = Decimal('0.00')
     if points_used and cfg.loyalty_point_value and customer is not None:
-        points_used = min(points_used, max(0, customer.loyalty_points))
-        discount = min(Decimal(points_used) * Decimal(cfg.loyalty_point_value), subtotal)
+        # Spend only whole points with their full configured value. A remainder
+        # smaller than one point remains payable; no point is partially wasted.
+        affordable_points = int(subtotal // Decimal(cfg.loyalty_point_value))
+        points_used = min(points_used, max(0, customer.loyalty_points), affordable_points)
+        discount = Decimal(points_used) * Decimal(cfg.loyalty_point_value)
     else:
         points_used = 0
 
@@ -152,8 +155,12 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
         )
 
     earned = 0
+    earning_base = (subtotal - discount if cfg.loyalty_earning_basis ==
+                    BotConfig.LoyaltyEarningBasis.PAID_MERCHANDISE else subtotal)
     if cfg.loyalty_earn_per and Decimal(cfg.loyalty_earn_per) > 0:
-        earned = int(subtotal / Decimal(cfg.loyalty_earn_per))
+        earned = int(earning_base / Decimal(cfg.loyalty_earn_per))
+    if earned > 2_147_483_647:
+        raise OrderInputError('loyalty_points_overflow', 'The configured earn rate exceeds the point limit.')
 
     return {
         'lines': lines,
@@ -165,6 +172,12 @@ def price_cart(items, order_type='DELIVERY', tip=0, points_used=0, customer=None
         'total': total,
         'points_used': points_used,
         'points_earned': earned,
+        'loyalty_policy_snapshot': {
+            'version': 1, 'earning_basis': cfg.loyalty_earning_basis,
+            'uzs_per_point': str(cfg.loyalty_earn_per),
+            'point_value_uzs': str(cfg.loyalty_point_value),
+            'earning_amount_uzs': str(earning_base),
+        },
         'normalized_items': items,
         'order_type': order_type,
     }

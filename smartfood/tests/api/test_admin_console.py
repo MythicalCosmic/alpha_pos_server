@@ -608,7 +608,7 @@ class TestMarketingAdministration:
         assert item['limit_reached'] is True
         assert item['can_redeem'] is False
 
-        rejected = auth_client.post(f'{C}/rewards/{reward.id}/redeem')
+        rejected = auth_client.post(f'{C}/rewards/{reward.id}/redeem', data='{}', content_type='application/json', HTTP_IDEMPOTENCY_KEY='limit-check')
         assert rejected.status_code == 400
         assert 'limit' in rejected.json()['message'].lower()
 

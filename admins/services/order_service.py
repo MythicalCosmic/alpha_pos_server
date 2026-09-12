@@ -1,3 +1,5 @@
+from base.services.order_state import validate_transition
+from base.services.order_floor import reconcile_table
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from django.db import transaction
@@ -380,6 +382,9 @@ def _serialize_order_list(order, include_items=True):
         'order_number': order.order_number,
         'order_type': order.order_type,
         'order_origin': order.order_origin,
+        'waiter_id': order.waiter_id,
+        'waiter_shift_id': order.waiter_shift_id,
+        'waiter_policy_snapshot': order.waiter_policy_snapshot,
         'phone_number': order.phone_number,
         'delivery_address': getattr(order, 'delivery_address', '') or '',
         'description': order.description,
@@ -467,6 +472,9 @@ def _serialize_order_detail(order):
         'order_number': order.order_number,
         'order_type': order.order_type,
         'order_origin': order.order_origin,
+        'waiter_id': order.waiter_id,
+        'waiter_shift_id': order.waiter_shift_id,
+        'waiter_policy_snapshot': order.waiter_policy_snapshot,
         'phone_number': order.phone_number,
         'delivery_address': getattr(order, 'delivery_address', '') or '',
         'description': order.description,
@@ -771,9 +779,10 @@ def _apply_order_stock_transition(order_id, old_status, new_status,
                 or not getattr(stock_settings, 'auto_deduct_on_sale', True)):
             return None
         location_id = StockSettingsService.get_default_location_id()
+        from stock.services.order_service import deduction_due
         needs_location = (
             (stock_settings.reserve_on_order_create and old_status is None)
-            or new_status == stock_settings.deduct_on_order_status
+            or deduction_due(stock_settings.deduct_on_order_status, old_status, new_status)
         )
         if needs_location and not location_id:
             return ServiceResponse.error(
@@ -801,17 +810,15 @@ def _apply_order_stock_transition(order_id, old_status, new_status,
 
 
 def _check_and_update_ready(order):
-    total = order.items.filter(is_deleted=False).count()
-    ready = order.items.filter(is_deleted=False, ready_at__isnull=False).count()
-    all_ready = total > 0 and total == ready
-
+    items = order.items.filter(is_deleted=False)
+    all_ready = items.exists() and not items.filter(ready_at__isnull=True).exists()
     if all_ready and order.status != 'READY':
-        order.status = 'READY'
-        order.ready_at = timezone.now()
-        order.save(update_fields=['status', 'ready_at'])
-        return True, True
-
-    return all_ready, False
+        result, status = AdminOrderService.update_order_status(order.pk, 'READY')
+        if status >= 400:
+            return all_ready, False, (result, status)
+        order.refresh_from_db()
+        return True, True, None
+    return all_ready, False, None
 
 
 class AdminOrderService:
@@ -1051,7 +1058,7 @@ class AdminOrderService:
             for row, item in zip(order_items_data, new_items)
         ]
         stock_error = _apply_order_stock_transition(
-            order.id, None, 'PREPARING', stock_items, user_id,
+            order.id, None, order.status, stock_items, user_id,
         )
         if stock_error:
             transaction.set_rollback(True)
@@ -1258,9 +1265,13 @@ class AdminOrderService:
 
         if not order.items.filter(is_deleted=False).exists():
             order.delete()
+            reconcile_table(order.table_id)
             return ServiceResponse.success(message='Order deleted (no items remaining)')
 
-        _check_and_update_ready(order)
+        _, _, ready_error = _check_and_update_ready(order)
+        if ready_error:
+            transaction.set_rollback(True)
+            return ready_error
         _recalculate_total(order)
         return ServiceResponse.success(message='Item removed from order successfully')
 
@@ -1277,6 +1288,11 @@ class AdminOrderService:
         if order.status == 'CANCELED':
             return ServiceResponse.error('Cannot update cancelled order')
 
+        error = validate_transition(order, status)
+        if error:
+            return error
+        if order.status == status:
+            return ServiceResponse.success(data={'status': status})
         old_status = order.status
         update_fields = ['status']
         order.status = status
@@ -1319,6 +1335,8 @@ class AdminOrderService:
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
+
+        reconcile_table(order.table_id)
 
         # Loyalty accrual — silent no-op for non-eligible transitions
         # (not COMPLETED, unpaid, no phone, already credited). Idempotent.
@@ -1627,47 +1645,31 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def mark_order_ready(order_id):
-        # Row-lock the order so two concurrent ready-flips can't both pass
-        # the status guard and run the side-effects twice.
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
-
-        if order.status == 'CANCELED':
-            return ServiceResponse.error('Cannot mark cancelled order as ready')
-
-        if order.status == 'READY':
-            return ServiceResponse.error('Order is already ready')
-
-        now = timezone.now()
-        order.status = 'READY'
-        order.ready_at = now
-        order.save(update_fields=['status', 'ready_at'])
-        for item in order.items.select_for_update().filter(
-            is_deleted=False, ready_at__isnull=True,
-        ):
-            item.ready_at = now
-            item.save(update_fields=['ready_at'])
-
-        order_prep_time = (order.ready_at - order.created_at).total_seconds()
-
-        return ServiceResponse.success(
-            data={
-                'status': order.status,
-                'ready_at': order.ready_at.isoformat(),
-                'preparation_time_seconds': order_prep_time,
-                'preparation_time_formatted': _format_duration(order_prep_time),
-            },
-            message='Order marked as ready',
-        )
+        result, status = AdminOrderService.update_order_status(order_id, 'READY')
+        if status >= 400:
+            return result, status
+        order.refresh_from_db()
+        duration = (order.ready_at - order.created_at).total_seconds() if order.ready_at else None
+        return ServiceResponse.success(data={
+            'status': order.status,
+            'ready_at': order.ready_at.isoformat() if order.ready_at else None,
+            'preparation_time_seconds': duration,
+            'preparation_time_formatted': _format_duration(duration) if duration is not None else None,
+        }, message='Order marked as ready')
 
     @staticmethod
     @transaction.atomic
     def mark_item_ready(order_id, item_id):
-        order = OrderRepository.get_by_id_with_relations(order_id)
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
+        error = validate_transition(order, 'READY')
+        if error:
+            return error
         if order.status == 'CANCELED':
             return ServiceResponse.error('Cannot modify cancelled order')
 
@@ -1686,7 +1688,10 @@ class AdminOrderService:
         item.save(update_fields=['ready_at'])
 
         item_prep_time = (item.ready_at - order.created_at).total_seconds()
-        all_ready, order_became_ready = _check_and_update_ready(order)
+        all_ready, order_became_ready, ready_error = _check_and_update_ready(order)
+        if ready_error:
+            transaction.set_rollback(True)
+            return ready_error
 
         order_prep_time = None
         if order_became_ready and order.ready_at:
@@ -1717,16 +1722,21 @@ class AdminOrderService:
     @staticmethod
     @transaction.atomic
     def unmark_item_ready(order_id, item_id):
-        order = OrderRepository.get_by_id(order_id)
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
+        error = validate_transition(order, 'PREPARING', reopen=True)
+        if error:
+            return error
+        if order.is_paid:
+            return ServiceResponse.error('A paid order cannot be reopened')
         if order.status == 'CANCELED':
             return ServiceResponse.error('Cannot modify cancelled order')
 
         from base.models import OrderItem as OI
         item = OI.objects.select_for_update().filter(
-            id=item_id, order=order, ready_at__isnull=False
+            id=item_id, order=order, is_deleted=False, ready_at__isnull=False
         ).first()
 
         if not item:

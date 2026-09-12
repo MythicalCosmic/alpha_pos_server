@@ -62,7 +62,7 @@ class BotConfigAdmin(admin.ModelAdmin):
             'fields': ('service_area', 'default_lang'),
         }),
         ('Loyalty', {
-            'fields': ('loyalty_earn_per', 'loyalty_point_value'),
+            'fields': ('loyalty_earn_per', 'loyalty_point_value', 'loyalty_earning_basis', 'reward_valid_days'),
         }),
         ('Support contacts', {
             'fields': ('support_phone', 'support_telegram', 'support_email',
@@ -166,7 +166,7 @@ class CustomerAdmin(admin.ModelAdmin):
                      'phone_number')
     readonly_fields = (
         'first_name', 'last_name', 'phone_number', 'profile_confirmed_at',
-        'broadcast_opted_in', 'telegram_reachable',
+        'broadcast_opted_in', 'telegram_reachable', 'loyalty_points',
     )
 
     def has_add_permission(self, request):
@@ -179,20 +179,11 @@ class CustomerAdmin(admin.ModelAdmin):
         return False
 
     def save_model(self, request, obj, form, change):
-        # Editing loyalty_points by hand must stay audited: write a matching
-        # ADJUST ledger row so the balance and the LoyaltyTransaction ledger never
-        # drift. (staff stays null — request.user here is the Django auth user,
-        # not a base.User.)
-        delta = 0
-        if change and form and 'loyalty_points' in form.changed_data:
-            old = (Customer.objects.filter(pk=obj.pk)
-                   .values_list('loyalty_points', flat=True).first()) or 0
-            delta = obj.loyalty_points - old
-        super().save_model(request, obj, form, change)
-        if delta:
-            LoyaltyTransaction.objects.create(
-                customer=obj, kind=LoyaltyTransaction.Kind.ADJUST, points=delta,
-                balance_after=obj.loyalty_points, reason='Admin adjustment')
+        # Profile moderation must never overwrite a concurrently updated ledger balance.
+        fields = [field for field in form.changed_data if field != 'loyalty_points']
+        if fields:
+            obj.save(update_fields=[*fields, 'updated_at'])
+
 
 
 @admin.register(CustomerSession)
@@ -361,23 +352,12 @@ class RewardAdmin(admin.ModelAdmin):
         ('Limits', {'fields': ('stock', 'per_customer_limit')}),
     )
 
-
-@admin.action(description="Mark FULFILLED (gift handed over)")
-def fulfill_redemptions(modeladmin, request, queryset):
-    from .services.loyalty_service import LoyaltyService
-    for r in queryset.filter(status=Redemption.Status.ISSUED):
-        LoyaltyService.fulfill(r.code)
-
-
-@admin.action(description="Cancel & refund points")
-def cancel_redemptions(modeladmin, request, queryset):
-    from .services.loyalty_service import LoyaltyService
-    for r in queryset.filter(status=Redemption.Status.ISSUED):
-        LoyaltyService.record(
-            r.customer_id, LoyaltyTransaction.Kind.REFUND, r.points_spent,
-            reason="Canceled %s" % r.reward_name, redemption=r)
-        r.status = Redemption.Status.CANCELED
-        r.save(update_fields=['status'])
+    def save_model(self, request, obj, form, change):
+        # A catalogue edit must not overwrite stock consumed after the form loaded.
+        if change:
+            obj.save(update_fields=[*form.changed_data, 'updated_at'])
+        else:
+            obj.save()
 
 
 @admin.register(Redemption)
@@ -388,11 +368,16 @@ class RedemptionAdmin(admin.ModelAdmin):
     search_fields = ('code', 'customer__telegram_id', 'reward_name')
     autocomplete_fields = ('customer', 'reward', 'fulfilled_by')
     readonly_fields = ('code', 'customer', 'reward', 'reward_name', 'kind',
-                       'points_spent', 'status', 'fulfilled_at', 'fulfilled_by')
-    actions = (fulfill_redemptions, cancel_redemptions)
+                       'points_spent', 'status', 'fulfilled_at', 'fulfilled_by',
+                       'reward_snapshot', 'expires_at', 'canceled_at', 'canceled_by',
+                       'cancellation_reason', 'stock_reserved', 'action_history')
+    actions = None
 
     # Redemptions are minted by the customer redeem flow, never hand-added.
     def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 

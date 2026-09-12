@@ -9,6 +9,12 @@ from decimal import Decimal, ROUND_HALF_UP
 _LANGS = ('uz', 'ru', 'en')
 
 
+def decimal_number(value):
+    """Preserve configured decimal precision at the JSON boundary."""
+    value = Decimal(str(value or 0))
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
 def uzs(d):
     """Decimal/None -> integer so'm (UZS has no minor unit in practice)."""
     if d is None:
@@ -231,6 +237,7 @@ def bot_order_dict(o):
         },
         'loyalty_points_used': o.loyalty_points_used,
         'loyalty_points_earned': o.loyalty_points_earned,
+        'loyalty_policy_snapshot': o.loyalty_policy_snapshot,
         'items': [bot_order_item_dict(it) for it in o.items.all()],
         'pos_order': None if not pos else {
             'id': pos.id, 'uuid': str(pos.uuid), 'status': pos.status,
@@ -353,6 +360,11 @@ def redemption_dict(r):
         'status': r.status,
         'created_at': r.created_at.isoformat() if r.created_at else None,
         'fulfilled_at': r.fulfilled_at.isoformat() if r.fulfilled_at else None,
+        'expires_at': r.expires_at.isoformat() if r.expires_at else None,
+        'canceled_at': r.canceled_at.isoformat() if r.canceled_at else None,
+        'cancellation_reason': r.cancellation_reason,
+        'reward_snapshot': r.reward_snapshot,
+        'allowed_actions': ['cancel'] if r.status == 'ISSUED' else [],
     }
 
 
@@ -366,6 +378,7 @@ def loyalty_txn_dict(t):
     else:
         code = t.get_kind_display()
     return {
+        'id': t.id,
         'kind': t.kind,
         'points': t.points,
         'balance_after': t.balance_after,

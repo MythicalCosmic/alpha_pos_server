@@ -205,6 +205,7 @@ class BotOrderService:
             discount=priced['discount'], tip=priced['tip'], total=priced['total'],
             loyalty_points_used=priced['points_used'],
             loyalty_points_earned=priced['points_earned'],
+            loyalty_policy_snapshot=priced['loyalty_policy_snapshot'],
             payment_method=payment_method,
         )
         BotOrderItem.objects.bulk_create([

@@ -272,7 +272,10 @@ class RewardCatalogService:
             return reward.product_id in visible_product_ids
         if reward.kind == Reward.Kind.DISCOUNT:
             return reward.discount_amount > 0
-        return reward.kind in (Reward.Kind.FREE_DELIVERY, Reward.Kind.CUSTOM)
+        if reward.kind == Reward.Kind.FREE_DELIVERY:
+            from smartfood.models import BotConfig
+            return BotConfig.load().delivery_fee > 0
+        return reward.kind == Reward.Kind.CUSTOM
 
     @staticmethod
     def _admin_payload(reward, visible_product_ids=None):
