@@ -598,8 +598,11 @@ def profitability_report(
     unclassified_hr = []
     for expense in paid_expenses:
         group = (
-            expense.category.reporting_group
-            if expense.category_id else FinancialReportingGroup.REVIEW
+            expense.category_reporting_group_snapshot
+            or (
+                expense.category.reporting_group
+                if expense.category_id else FinancialReportingGroup.REVIEW
+            )
         )
         if group == FinancialReportingGroup.REVIEW:
             unclassified_hr.append(expense)
@@ -1458,7 +1461,7 @@ def setup_data(
     ).order_by('sort_order', 'name')
     hr_categories = ExpenseCategory.objects.filter(
         is_deleted=False, is_active=True,
-    ).order_by('name')
+    ).select_related('parent').order_by('name')
     payout_query = CashboxExpense.objects.filter(
         is_deleted=False,
         created_at__date__gte=config.reporting_start_date,
@@ -1527,6 +1530,13 @@ def setup_data(
             {
                 'id': row.id,
                 'name': row.name,
+                'parent_id': row.parent_id,
+                'parent_name': row.parent.name if row.parent_id else None,
+                'path': [
+                    *([row.parent.name] if row.parent_id else []),
+                    row.name,
+                ],
+                'cost_behavior': row.cost_behavior,
                 'reporting_group': row.reporting_group,
             }
             for row in hr_categories

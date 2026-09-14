@@ -3,7 +3,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from base.helpers.request import parse_json_body
-from base.helpers.response import json_response
+from base.helpers.response import ServiceResponse, json_response
 from base.http_validation import (
     QueryValidationError,
     boolean,
@@ -56,8 +56,10 @@ def expense_categories(request):
     if request.method == 'GET':
         try:
             include_inactive = boolean(request.GET, 'include_inactive', False)
+            roots_only = boolean(request.GET, 'roots_only', False)
             page = positive_int(request.GET, 'page', 1)
             per_page = positive_int(request.GET, 'per_page', 100, maximum=100)
+            parent_id = optional_int(request.GET, 'parent_id')
         except QueryValidationError as exc:
             return _filter_error(exc)
         if include_inactive and not user_has_permission(
@@ -74,6 +76,10 @@ def expense_categories(request):
             per_page=per_page,
             search=request.GET.get('search'),
             include_inactive=include_inactive,
+            parent_id=parent_id,
+            cost_behavior=request.GET.get('cost_behavior'),
+            roots_only=roots_only,
+            actor=request.user,
         )
         return JsonResponse(result, status=status)
     data, error = parse_json_body(request)
@@ -107,7 +113,10 @@ def expense_category_detail(request, category_id):
     if denied := permission_denied_response(request, permission):
         return denied
     if request.method == 'GET':
-        result, status = ExpenseCategoryService.get(category_id)
+        result, status = ExpenseCategoryService.get(
+            category_id,
+            actor=request.user,
+        )
     else:
         data, error = parse_json_body(request)
         if error:
@@ -171,6 +180,12 @@ def expenses(request):
         page = positive_int(request.GET, 'page', 1)
         per_page = positive_int(request.GET, 'per_page', 25, maximum=100)
         category_id = optional_int(request.GET, 'category_id')
+        category_parent_id = optional_int(request.GET, 'category_parent_id')
+        include_subcategories = boolean(
+            request.GET,
+            'include_subcategories',
+            False,
+        )
         date_from = iso_date(request.GET, 'date_from')
         date_to = iso_date(request.GET, 'date_to')
     except QueryValidationError as exc:
@@ -180,12 +195,71 @@ def expenses(request):
         per_page=per_page,
         status=request.GET.get('status'),
         category_id=category_id,
+        category_parent_id=category_parent_id,
+        include_subcategories=include_subcategories,
+        cost_behavior=request.GET.get('cost_behavior'),
+        reporting_group=request.GET.get('reporting_group'),
+        source_account=request.GET.get('source_account'),
         date_from=date_from,
         date_to=date_to,
         search=request.GET.get('search'),
         actor=request.user,
         view_all=view_all,
     )
+    return JsonResponse(result, status=status)
+
+
+@csrf_exempt
+@require_POST
+@backoffice_permission_required(
+    'expense.category.manage',
+    'expense.request.approve',
+)
+@idempotent(
+    'expense.request.reclassify',
+    required=True,
+    expose_action_id=True,
+    recover_inflight_after_seconds=5,
+)
+def expense_reclassify(request):
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    allowed = {
+        'expense_ids', 'category_id', 'expected_category_id',
+        'reason', 'dry_run',
+    }
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        result, status = ServiceResponse.validation_error({
+            field: ['Unknown field.'] for field in unknown
+        })
+        return JsonResponse(result, status=status)
+    result, status = ExpenseService.reclassify_pending(
+        expense_ids=data.get('expense_ids'),
+        category_id=data.get('category_id'),
+        expected_category_id=data.get('expected_category_id'),
+        reason=data.get('reason', ''),
+        dry_run=data.get('dry_run', True),
+        actor=request.user,
+        action_id=getattr(request, 'idempotency_action_id', None),
+        idempotency_key=getattr(request, 'idempotency_key', ''),
+    )
+    reclassification = result.get('data', {}).get('reclassification', {})
+    applied_now = reclassification.pop('_applied_now', False)
+    if result.get('success') and applied_now:
+        audit(
+            request,
+            AuditLog.Action.EXPENSE_CATEGORY_UPDATE,
+            target_type='ExpenseBatch',
+            target_id=reclassification['target_category']['id'],
+            metadata={
+                'operation': 'PENDING_EXPENSE_RECLASSIFICATION',
+                'expense_count': reclassification['expense_count'],
+                'amount_uzs': reclassification['amount_uzs'],
+                'target_category_id': reclassification['target_category']['id'],
+            },
+        )
     return JsonResponse(result, status=status)
 
 

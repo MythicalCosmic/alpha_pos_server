@@ -468,7 +468,16 @@ class CashPositionService:
                 status=Expense.Status.PAID,
                 expense_date__gte=month["previous_start"],
                 expense_date__lte=month["previous_end"],
-                category__reporting_group=FinancialReportingGroup.UTILITIES,
+            ).filter(
+                Q(
+                    category_reporting_group_snapshot=(
+                        FinancialReportingGroup.UTILITIES
+                    )
+                )
+                | Q(
+                    category_reporting_group_snapshot='',
+                    category__reporting_group=FinancialReportingGroup.UTILITIES,
+                )
             ).filter(
                 Q(treasury_transaction__isnull=False)
                 | Q(cashbox_payment__isnull=False)
@@ -526,13 +535,24 @@ class CashPositionService:
                 status=Expense.Status.PAID,
                 expense_date__gte=month["current_start"],
                 expense_date__lte=as_of,
-                category__reporting_group__in=tuple(accrued_by_group),
+            ).filter(
+                Q(
+                    category_reporting_group_snapshot__in=tuple(accrued_by_group)
+                )
+                | Q(
+                    category_reporting_group_snapshot='',
+                    category__reporting_group__in=tuple(accrued_by_group),
+                )
             ).filter(
                 Q(treasury_transaction__isnull=False)
                 | Q(cashbox_payment__isnull=False)
             ).select_related("category").order_by("id")
             for expense in current_expenses:
-                paid_by_group[expense.category.reporting_group] += Decimal(
+                reporting_group = (
+                    expense.category_reporting_group_snapshot
+                    or expense.category.reporting_group
+                )
+                paid_by_group[reporting_group] += Decimal(
                     expense.amount or 0
                 )
 

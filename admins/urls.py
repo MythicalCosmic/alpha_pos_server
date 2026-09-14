@@ -41,6 +41,8 @@ urlpatterns = [
          expense_views.expense_category_deactivate,
          name='expense_category_deactivate'),
     path('expenses', expense_views.expenses, name='expense_list'),
+    path('expenses/reclassify', expense_views.expense_reclassify,
+         name='expense_reclassify'),
     path('expenses/<int:expense_id>', expense_views.expense_detail,
          name='expense_detail'),
     path('expenses/<int:expense_id>/approve', expense_views.expense_approve,
