@@ -1,9 +1,8 @@
 """Smart Club loyalty ledger and redemption tests."""
 import pytest
-from decimal import Decimal
 
 from smartfood.models import (
-    BotConfig, Customer, Reward, Redemption, LoyaltyTransaction,
+    Customer, Reward, Redemption, LoyaltyTransaction,
 )
 from smartfood.services.loyalty_service import LoyaltyService
 

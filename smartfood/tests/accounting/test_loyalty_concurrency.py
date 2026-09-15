@@ -5,7 +5,7 @@ import pytest
 from django.db import close_old_connections, connection, connections
 from django.test import Client
 
-from smartfood.models import Customer, LoyaltyTransaction, Redemption, Reward
+from smartfood.models import LoyaltyTransaction, Redemption, Reward
 from smartfood.services.loyalty_service import LoyaltyService
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.skipif(
@@ -36,5 +36,6 @@ def test_concurrent_same_key_returns_one_reward_and_exact_response(auth_client, 
     assert results[0] == results[1] and results[0][0] == 201, results
     assert Redemption.objects.count() == 1
     assert LoyaltyTransaction.objects.filter(kind='REDEEM').count() == 1
-    customer.refresh_from_db(); reward.refresh_from_db()
+    customer.refresh_from_db()
+    reward.refresh_from_db()
     assert customer.loyalty_points == 400 and reward.stock == 1

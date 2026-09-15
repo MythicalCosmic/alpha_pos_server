@@ -231,11 +231,13 @@ def test_operator_permissions_and_idempotent_adjustment(operator_client, manager
 
 
 def test_refunded_receipt_reverses_earned_points_once(cfg, customer, cashier, manager):
-    manager.branch_id = 'branch1'; manager.save(update_fields=['branch_id'])
+    manager.branch_id = 'branch1'
+    manager.save(update_fields=['branch_id'])
     order = receipt(customer, cashier)
     assert LoyaltyService.award_scan(f'SF-{customer.telegram_id}', staff_id=manager.pk, order_id=order.pk)[1] == 200
     LoyaltyService.record(customer.pk, 'ADJUST', -25, reason='Spent earned balance')
-    order.status = 'CANCELED'; order.save(update_fields=['status'])
+    order.status = 'CANCELED'
+    order.save(update_fields=['status'])
     assert LoyaltyService.reverse_refunded_scan(order.pk) is True
     assert LoyaltyService.reverse_refunded_scan(order.pk) is False
     customer.refresh_from_db()
@@ -256,7 +258,8 @@ def test_dynamic_config_changes_future_calculation_and_keeps_saved_policy(cfg, c
 def test_read_only_audit_reports_balance_mismatch(customer):
     from io import StringIO
     from django.core.management import call_command
-    customer.loyalty_points = 25; customer.save(update_fields=['loyalty_points'])
+    customer.loyalty_points = 25
+    customer.save(update_fields=['loyalty_points'])
     output = StringIO()
     call_command('audit_loyalty_waiter', stdout=output)
     report = json.loads(output.getvalue())
