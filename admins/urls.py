@@ -196,6 +196,8 @@ urlpatterns = [
          name='dashboard_sales_expenses'),
     path('dashboard/operations', dashboard_views.operations_view, name='dashboard_operations'),
     path('dashboard/export', dashboard_views.export_view, name='dashboard_export'),
+    path('dashboard/owner-summary', dashboard_views.owner_summary_view,
+         name='dashboard_owner_summary'),
     path('dashboard', dashboard_views.range_view, name='dashboard_range'),
     path('sidebar-counts', dashboard_views.sidebar_counts_view, name='sidebar_counts'),
 

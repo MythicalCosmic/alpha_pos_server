@@ -41,6 +41,20 @@ def range_view(request):
 
 
 @require_GET
+@admin_required
+def owner_summary_view(request):
+    """GET /dashboard/owner-summary — sales, supplier, operating and payroll costs,
+    raw profit and current Safe/Bank balances for the same reporting window."""
+    from admins.services.owner_summary_service import get_owner_summary
+
+    try:
+        data = get_owner_summary(**_reporting_kwargs(request))
+    except ValueError as exc:
+        return _range_error(exc)
+    return JsonResponse({'success': True, 'data': data})
+
+
+@require_GET
 @rate_limit('admin_dashboard_export', max_attempts=10, window=60)
 @admin_required
 def export_view(request):
