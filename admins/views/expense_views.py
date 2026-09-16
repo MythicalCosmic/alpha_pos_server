@@ -188,6 +188,7 @@ def expenses(request):
         )
         date_from = iso_date(request.GET, 'date_from')
         date_to = iso_date(request.GET, 'date_to')
+        supplier_id = optional_int(request.GET, 'supplier_id')
     except QueryValidationError as exc:
         return _filter_error(exc)
     result, status = ExpenseService.list(
@@ -203,6 +204,8 @@ def expenses(request):
         date_from=date_from,
         date_to=date_to,
         search=request.GET.get('search'),
+        supplier_purchases=request.GET.get('supplier_purchases'),
+        supplier_id=supplier_id,
         actor=request.user,
         view_all=view_all,
     )

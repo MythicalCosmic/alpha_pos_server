@@ -109,6 +109,46 @@ def _expense_buckets(branch_id, window):
     return buckets, pending_total, pending_count
 
 
+def _payroll_without_salary_month(branch_id, window):
+    """Staff payments recorded as expenses in months that have no salary records yet.
+
+    Once a month's salaries are recorded, its staff payments have been reconciled
+    against them (advances are itemized inside the salary), so only months still
+    waiting for payroll are flagged.
+    """
+    rows = Expense.objects.filter(
+        is_deleted=False,
+        branch_id=branch_id,
+        status__in=COUNTED_EXPENSE_STATUSES,
+        expense_date__gte=window.date_from,
+        expense_date__lte=window.date_to,
+        category_reporting_group_snapshot=Group.PAYROLL,
+    ).values_list('expense_date', 'amount', 'fee_uzs')
+    paid_months = set(
+        SalaryPayment.objects.filter(is_deleted=False, branch_id=branch_id)
+        .values_list('period_year', 'period_month')
+    )
+    count, amount = 0, ZERO
+    for expense_date, value, fee in rows:
+        if (expense_date.year, expense_date.month) not in paid_months:
+            count += 1
+            amount += value + (fee or ZERO)
+    return {'count': count, 'amount': amount}
+
+
+def _unlinked_supplier_purchases(branch_id, window):
+    """Supplier-purchase expenses that are not yet attributed to a supplier."""
+    return Expense.objects.filter(
+        is_deleted=False,
+        branch_id=branch_id,
+        status__in=COUNTED_EXPENSE_STATUSES,
+        expense_date__gte=window.date_from,
+        expense_date__lte=window.date_to,
+        category_reporting_group_snapshot=Group.INVENTORY_PURCHASE,
+        supplier_link__isnull=True,
+    ).aggregate(count=Count('id'), amount=Sum('amount'))
+
+
 def _ledger_overlaps(branch_id, payments):
     """Supplier ledger payments that also appear as a supplier-purchase expense.
 
@@ -218,15 +258,17 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_
     warnings = []
     if not salaries['count']:
         warnings.append(_warning('SALARY_RECORDS_MISSING'))
-    if buckets['payroll']['count']:
+    unreconciled = _payroll_without_salary_month(branch_id, window) if buckets['payroll']['count'] else None
+    if unreconciled and unreconciled['count']:
         warnings.append(_warning(
             'PAYROLL_RECORDED_AS_EXPENSES',
-            count=buckets['payroll']['count'], amount=buckets['payroll']['total'],
+            count=unreconciled['count'], amount=unreconciled['amount'],
         ))
-    if buckets['suppliers']['count']:
+    unlinked = _unlinked_supplier_purchases(branch_id, window) if buckets['suppliers']['count'] else None
+    if unlinked and unlinked['count']:
         warnings.append(_warning(
             'SUPPLIER_PURCHASES_RECORDED_AS_EXPENSES',
-            count=buckets['suppliers']['count'], amount=buckets['suppliers']['total'],
+            count=unlinked['count'], amount=unlinked['amount'],
         ))
     overlap_count, overlap_total = (
         _ledger_overlaps(branch_id, ledger_payments)

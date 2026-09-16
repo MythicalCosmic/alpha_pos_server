@@ -12,7 +12,7 @@ from base.financial import FinancialReportingGroup
 from base.models import Session, TreasuryAccount, User
 from base.repositories import SessionRepository
 from base.security.permission_catalog import DEFAULT_ROLE_PERMISSIONS
-from hr.models import Employee, Expense, ExpenseCategory, SalaryPayment
+from hr.models import Employee, Expense, ExpenseCategory, ExpenseSupplierLink, SalaryPayment
 from stock.models import Supplier, SupplierPayment, SupplierTransaction
 
 
@@ -187,6 +187,46 @@ def test_supplier_payment_is_flagged_only_when_an_expense_repeats_it(ledger):
     assert codes["SUPPLIER_LEDGER_OVERLAP_POSSIBLE"] == {
         "code": "SUPPLIER_LEDGER_OVERLAP_POSSIBLE", "count": 1, "amount_uzs": 4_000_000,
     }
+
+
+def test_supplier_purchase_warning_counts_only_unlinked_purchases(ledger):
+    donar = Supplier.objects.get(name="Donar go'sht")
+    linked = Expense.objects.get(amount=Decimal("4000000"))
+    ExpenseSupplierLink.objects.create(expense=linked, supplier=donar, branch_id=BRANCH)
+
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+
+    assert data["costs"]["suppliers"]["total_uzs"] == 5_000_000
+    codes = {warning["code"]: warning for warning in data["warnings"]}
+    assert codes["SUPPLIER_PURCHASES_RECORDED_AS_EXPENSES"] == {
+        "code": "SUPPLIER_PURCHASES_RECORDED_AS_EXPENSES", "count": 1, "amount_uzs": 1_000_000,
+    }
+
+    ExpenseSupplierLink.objects.create(
+        expense=Expense.objects.get(amount=Decimal("1000000")), supplier=donar, branch_id=BRANCH,
+    )
+
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+
+    assert "SUPPLIER_PURCHASES_RECORDED_AS_EXPENSES" not in {warning["code"] for warning in data["warnings"]}
+
+
+def test_staff_payments_are_flagged_only_for_months_without_salaries(ledger):
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+    assert "PAYROLL_RECORDED_AS_EXPENSES" in {warning["code"] for warning in data["warnings"]}
+
+    worker = _user("CASHIER", "august-worker@example.test")
+    employee = Employee.objects.create(user=worker, position="Cashier", hire_date=date(2026, 1, 1), branch_id=BRANCH)
+    SalaryPayment.objects.create(
+        employee=employee, period_year=2026, period_month=8,
+        base_amount=Decimal("3000000"), net_amount=Decimal("3000000"),
+        status=SalaryPayment.Status.PAID, paid_at=datetime(2026, 8, 31, 23, tzinfo=TASHKENT), branch_id=BRANCH,
+    )
+
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+
+    assert data["costs"]["payroll"]["from_expenses_uzs"] == 700_000
+    assert "PAYROLL_RECORDED_AS_EXPENSES" not in {warning["code"] for warning in data["warnings"]}
 
 
 def test_endpoint_requires_an_administrator(ledger):
