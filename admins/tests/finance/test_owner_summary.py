@@ -13,7 +13,7 @@ from base.models import Session, TreasuryAccount, User
 from base.repositories import SessionRepository
 from base.security.permission_catalog import DEFAULT_ROLE_PERMISSIONS
 from hr.models import Employee, Expense, ExpenseCategory, SalaryPayment
-from stock.models import Supplier
+from stock.models import Supplier, SupplierPayment, SupplierTransaction
 
 
 pytestmark = pytest.mark.django_db
@@ -155,6 +155,38 @@ def test_paid_salary_payments_count_as_payroll(ledger):
     assert payroll["salary_payment_count"] == 1
     assert payroll["total_uzs"] == 3_700_000
     assert "SALARY_RECORDS_MISSING" not in {warning["code"] for warning in data["warnings"]}
+
+
+def _supplier_payment(amount, paid_at):
+    supplier = Supplier.objects.get(name="Donar go'sht")
+    entry = SupplierTransaction.objects.create(
+        supplier=supplier, type=SupplierTransaction.Type.PAYMENT, amount=Decimal(amount), branch_id=BRANCH,
+    )
+    return SupplierPayment.objects.create(
+        supplier=supplier, branch_id=BRANCH, principal_uzs=Decimal(amount), total_debited_uzs=Decimal(amount),
+        source_account=SupplierPayment.SourceAccount.SAFE,
+        allocation_mode=SupplierPayment.AllocationMode.AUTO_OLDEST_DUE, status=SupplierPayment.Status.POSTED,
+        supplier_balance_before_uzs=Decimal("0"), supplier_balance_after_uzs=Decimal("0"),
+        supplier_transaction=entry, paid_at=paid_at,
+    )
+
+
+def test_supplier_payment_is_flagged_only_when_an_expense_repeats_it(ledger):
+    _supplier_payment("3000000", datetime(2026, 8, 6, 12, tzinfo=TASHKENT))
+
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+
+    assert data["costs"]["suppliers"]["from_supplier_payments_uzs"] == 3_000_000
+    assert "SUPPLIER_LEDGER_OVERLAP_POSSIBLE" not in {warning["code"] for warning in data["warnings"]}
+
+    _supplier_payment("4000000", datetime(2026, 8, 6, 1, tzinfo=TASHKENT))
+
+    data = get_owner_summary("2026-08-01", "2026-08-10", branch_id=BRANCH)
+
+    codes = {warning["code"]: warning for warning in data["warnings"]}
+    assert codes["SUPPLIER_LEDGER_OVERLAP_POSSIBLE"] == {
+        "code": "SUPPLIER_LEDGER_OVERLAP_POSSIBLE", "count": 1, "amount_uzs": 4_000_000,
+    }
 
 
 def test_endpoint_requires_an_administrator(ledger):

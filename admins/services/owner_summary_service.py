@@ -6,6 +6,7 @@ supplier debt. Each figure keeps its sources visible, and ``warnings`` lists
 data that is still incomplete instead of silently treating it as zero.
 """
 from collections import defaultdict
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Count, Sum
@@ -108,6 +109,29 @@ def _expense_buckets(branch_id, window):
     return buckets, pending_total, pending_count
 
 
+def _ledger_overlaps(branch_id, payments):
+    """Supplier ledger payments that also appear as a supplier-purchase expense.
+
+    A match is the same amount recorded within a day of the payment, which is how
+    a single payment ends up counted twice. Unrelated purchases are not flagged.
+    """
+    count, total = 0, ZERO
+    for payment in payments:
+        paid_on = timezone.localtime(payment.paid_at).date()
+        duplicate = Expense.objects.filter(
+            is_deleted=False,
+            branch_id=branch_id,
+            status__in=COUNTED_EXPENSE_STATUSES,
+            category_reporting_group_snapshot=Group.INVENTORY_PURCHASE,
+            amount=payment.principal_uzs,
+            expense_date__range=(paid_on - timedelta(days=1), paid_on + timedelta(days=1)),
+        ).exists()
+        if duplicate:
+            count += 1
+            total += payment.principal_uzs + payment.fee_uzs
+    return count, total
+
+
 def _sales(branch_id, window):
     orders = window.filter(
         Order.objects.filter(
@@ -164,13 +188,14 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_
     net_sales = gross - refunded
     buckets, pending_total, pending_count = _expense_buckets(branch_id, window)
 
-    ledger = window.filter(
+    ledger_payments = window.filter(
         SupplierPayment.objects.filter(
             branch_id=branch_id,
             status=SupplierPayment.Status.POSTED,
         ),
         'paid_at',
-    ).aggregate(total=Sum('principal_uzs'), fees=Sum('fee_uzs'), count=Count('id'))
+    )
+    ledger = ledger_payments.aggregate(total=Sum('principal_uzs'), fees=Sum('fee_uzs'), count=Count('id'))
     ledger_total = (ledger['total'] or ZERO) + (ledger['fees'] or ZERO)
 
     salaries = window.filter(
@@ -203,9 +228,13 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_
             'SUPPLIER_PURCHASES_RECORDED_AS_EXPENSES',
             count=buckets['suppliers']['count'], amount=buckets['suppliers']['total'],
         ))
-    if buckets['suppliers']['count'] and ledger['count']:
+    overlap_count, overlap_total = (
+        _ledger_overlaps(branch_id, ledger_payments)
+        if buckets['suppliers']['count'] and ledger['count'] else (0, ZERO)
+    )
+    if overlap_count:
         warnings.append(_warning(
-            'SUPPLIER_LEDGER_OVERLAP_POSSIBLE', count=ledger['count'], amount=ledger_total,
+            'SUPPLIER_LEDGER_OVERLAP_POSSIBLE', count=overlap_count, amount=overlap_total,
         ))
     if buckets['unclassified']['count']:
         warnings.append(_warning(
