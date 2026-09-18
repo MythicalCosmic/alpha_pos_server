@@ -57,3 +57,6 @@ update_repo
 # Generated deployment files that belong on the host, never in the app image
 docker-compose.edge.yml
 deploy/caddy/Caddyfile
+
+# Mounted secret files (Firebase service account)
+secrets

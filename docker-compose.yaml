@@ -141,6 +141,46 @@ services:
       redis:
         condition: service_healthy
 
+  owner_push:
+    # Owner mobile app notifications: delivers the push outbox through Firebase
+    # with retries and sends yesterday's summary once a day. The Firebase
+    # service-account file is read from ./secrets (read-only mount).
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: alpha_pos_server:local
+    command:
+      - python
+      - manage.py
+      - owner_push_worker
+      - --interval
+      - "5"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    env_file:
+      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: '${SECRET_KEY:?SECRET_KEY must be set in .env}'
+      DB_ENGINE: ${DB_ENGINE:-django.db.backends.postgresql}
+      DB_NAME: ${DB_NAME:-alpha_pos}
+      DB_USER: ${DB_USER:-alpha_pos}
+      DB_HOST: db
+      DB_PORT: "5432"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      USE_REDIS: ${USE_REDIS:-True}
+      CLOUD_DEFAULT_TARGET_BRANCH_ID: ${CLOUD_DEFAULT_TARGET_BRANCH_ID:-branch1}
+    volumes:
+      - ./secrets:/run/secrets/alpha:ro
+    depends_on:
+      web:
+        # Uses the owner-push tables; wait until web has migrated.
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
   smartfood_dispatch:
     build:
       context: .

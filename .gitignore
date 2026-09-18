@@ -39,3 +39,6 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+# Owner-app Firebase service account and other mounted secret files
+secrets/

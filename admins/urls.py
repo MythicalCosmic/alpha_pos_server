@@ -14,6 +14,7 @@ from admins.views import (
     money_control_views,
     expense_views,
     product_performance_views,
+    mobile_views,
 )
 
 urlpatterns = [
@@ -93,6 +94,9 @@ urlpatterns = [
     path('auth-me', auth_views.me),
     path('auth-change-password', auth_views.change_password),
     path('auth-sessions', auth_views.sessions),
+    path('auth-refresh', mobile_views.auth_refresh, name='auth_refresh'),
+    path('devices', mobile_views.devices, name='owner_devices'),
+    path('devices/<int:device_id>', mobile_views.device_detail, name='owner_device_detail'),
 
     path('categories', category_views.categories),
     path('categories/active', category_views.active_categories),

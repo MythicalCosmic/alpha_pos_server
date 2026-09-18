@@ -97,6 +97,45 @@ class AdminAuthService:
         )
 
     @staticmethod
+    def refresh(session_key, ip_address, user_agent):
+        """Rotate the caller's token and restart the session lifetime.
+
+        The owner app calls this while in use so an active owner stays signed
+        in; the old token stops working immediately. The session's user agent
+        is kept, so the app's fixed agent keeps matching. Phones registered for
+        push move to the new session.
+        """
+        from django.db import transaction
+
+        from admins.models import AdminDevice
+
+        with transaction.atomic():
+            session = SessionRepository.get_by_session_key(session_key)
+            if not session or session.is_expired():
+                return ServiceResponse.unauthorized("Invalid session")
+            user = session.user_id
+            new_key = secrets.token_hex(32)
+            expires_at = timezone.now() + timedelta(days=SESSION_TTL_DAYS)
+            new_session = SessionRepository.create(
+                user_id=user,
+                ip_address=(ip_address or '')[:45],
+                user_agent=session.user_agent,
+                payload=SessionRepository.hash_token(new_key),
+                expires_at=expires_at,
+            )
+            AdminDevice.objects.filter(session=session).update(session=new_session)
+            SessionRepository.invalidate_cache(session_key)
+            SessionRepository.delete(session)
+        return ServiceResponse.success(
+            data={
+                'token': new_key,
+                'expires_at': expires_at.isoformat(),
+                'user': AdminAuthService._user_data(user),
+            },
+            message="Session refreshed",
+        )
+
+    @staticmethod
     def logout(session_key):
         session = AdminAuthService._get_session(session_key)
         if not session:

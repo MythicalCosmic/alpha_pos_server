@@ -243,3 +243,76 @@ class ProfitPeriodClose(models.Model):
             f'{self.branch_id} {self.period_start}..{self.period_end} '
             f'r{self.revision}'
         )
+
+
+class AdminDevice(models.Model):
+    """A phone running the owner app, registered for push notifications.
+
+    Tied to the login session that registered it: logging out (or the session
+    expiring) stops pushes to that phone, so financial alerts never reach a
+    signed-out device.
+    """
+
+    class Platform(models.TextChoices):
+        IOS = 'ios', 'iOS'
+        ANDROID = 'android', 'Android'
+
+    DEFAULT_PREFS = {'expense_pending': True, 'shift_closed': True, 'daily_summary': True}
+
+    user = models.ForeignKey('base.User', on_delete=models.CASCADE, related_name='admin_devices')
+    session = models.ForeignKey(
+        'base.Session', on_delete=models.CASCADE, null=True, blank=True, related_name='admin_devices',
+    )
+    token = models.CharField(max_length=512, unique=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+    app_version = models.CharField(max_length=32, blank=True, default='')
+    locale = models.CharField(max_length=8, default='uz')
+    prefs = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['user', 'is_active'])]
+
+    def wants(self, kind):
+        return bool({**self.DEFAULT_PREFS, **(self.prefs or {})}.get(kind, False))
+
+    def __str__(self):
+        return f'{self.platform} device of user {self.user_id}'
+
+
+class OwnerPushOutbox(models.Model):
+    """One notification for one device, written in the same transaction as its event.
+
+    ``event_key`` identifies the business event (for example ``expense:1492``);
+    the unique pair with the device makes every event notify each phone at most
+    once, however many times the event is saved or synced.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        SENT = 'SENT', 'Sent'
+        DEAD = 'DEAD', 'Gave up'
+
+    device = models.ForeignKey(AdminDevice, on_delete=models.CASCADE, related_name='outbox')
+    event_key = models.CharField(max_length=80)
+    kind = models.CharField(max_length=32)
+    title = models.CharField(max_length=120)
+    body = models.CharField(max_length=400)
+    data = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField()
+    last_error = models.CharField(max_length=300, blank=True, default='')
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['device', 'event_key'], name='uniq_owner_push_device_event'),
+        ]
+        indexes = [models.Index(fields=['status', 'next_attempt_at'])]
+
+    def __str__(self):
+        return f'{self.event_key} -> device {self.device_id} ({self.status})'

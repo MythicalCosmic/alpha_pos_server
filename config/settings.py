@@ -25,6 +25,21 @@ LEGACY_COMPAT_DASHBOARD_ENABLED = os.environ.get(
 # couriers = the delivery-rider backend (assignment, courier lifecycle, GPS relay).
 INSTALLED_APPS = build_installed_apps(['admins', 'smartfood', 'couriers'])  # noqa: F405
 
+# Store-review accounts (permission flag ``app.review_readonly``) may look but never change data.
+MIDDLEWARE = [*MIDDLEWARE]  # noqa: F405
+MIDDLEWARE.insert(
+    MIDDLEWARE.index('base.middlewares.login_transition_guard.LoginTransitionGuardMiddleware') + 1,
+    'admins.middleware.ReviewReadOnlyMiddleware',
+)
+
+# Owner mobile app push (Firebase Cloud Messaging HTTP v1). Empty = pushes off.
+FCM_PROJECT_ID = os.environ.get('FCM_PROJECT_ID', '')
+FCM_SERVICE_ACCOUNT_FILE = os.environ.get('FCM_SERVICE_ACCOUNT_FILE', '')
+OWNER_PUSH_ENABLED = os.environ.get(
+    'OWNER_PUSH_ENABLED', 'True').strip().lower() in ('1', 'true', 'yes', 'on')
+# Tashkent time after which yesterday's summary is pushed.
+OWNER_DAILY_SUMMARY_AT = os.environ.get('OWNER_DAILY_SUMMARY_AT', '09:00')
+
 # Expo push (courier app background notifications). Optional in dev; set for prod.
 EXPO_ACCESS_TOKEN = os.environ.get('EXPO_ACCESS_TOKEN', '')
 

@@ -35,6 +35,7 @@ def test_docker_build_context_excludes_live_secrets_and_backups():
         'reports',
         'media',
         'private_media',
+        'secrets',
     } <= patterns
 
 

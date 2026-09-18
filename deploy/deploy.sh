@@ -106,6 +106,12 @@ A_SDLEASE="$(keep "$A_ENV" SMARTFOOD_DISPATCH_LEASE_SECONDS)"; A_SDLEASE="${A_SD
 A_SMAXQ="$(keep "$A_ENV" SMARTFOOD_MAX_ITEM_QUANTITY)"; A_SMAXQ="${A_SMAXQ:-100}"
 # Generate the application bootstrap password once, preserve it in the
 # server-side .env, and never place it on a command line or in deploy output.
+# Owner mobile app push (Firebase). The service-account JSON itself lives in
+# ./secrets/ on the server (mounted read-only into owner_push), never in .env.
+A_FCMPROJECT="$(keep "$A_ENV" FCM_PROJECT_ID)"
+A_FCMFILE="$(keep "$A_ENV" FCM_SERVICE_ACCOUNT_FILE)"
+A_OWNERPUSH="$(keep "$A_ENV" OWNER_PUSH_ENABLED)"; A_OWNERPUSH="${A_OWNERPUSH:-True}"
+A_OWNERDAILY="$(keep "$A_ENV" OWNER_DAILY_SUMMARY_AT)"; A_OWNERDAILY="${A_OWNERDAILY:-09:00}"
 A_ADMIN_EMAIL="$(keep "$A_ENV" ALPHA_POS_ADMIN_EMAIL)"; A_ADMIN_EMAIL="${A_ADMIN_EMAIL:-admin@alpha.local}"
 A_ADMIN_PASS="$(keep "$A_ENV" ALPHA_POS_ADMIN_PASSWORD)"; A_ADMIN_PASS="${A_ADMIN_PASS:-$(rand 32)}"
 cat > "$A_ENV" <<EOF
@@ -175,6 +181,12 @@ LLM_READ_TIMEOUT_SECONDS=${A_LLMREAD}
 AI_REQUEST_DEADLINE_SECONDS=${A_AIDEADLINE}
 AI_MAX_TOOL_ITERATIONS=${A_AITOOLS}
 AI_FALLBACK_PROVIDERS=${A_AIFALLBACKS}
+
+# Owner mobile app push notifications (empty project = pushes off).
+FCM_PROJECT_ID=${A_FCMPROJECT}
+FCM_SERVICE_ACCOUNT_FILE=${A_FCMFILE}
+OWNER_PUSH_ENABLED=${A_OWNERPUSH}
+OWNER_DAILY_SUMMARY_AT=${A_OWNERDAILY}
 
 # Smart Food customer Telegram bot (Mini App delivery). The bot poller service
 # (docker-compose 'bot') reads these; CUSTOMER_WEBAPP_URL should be the Mini App's
