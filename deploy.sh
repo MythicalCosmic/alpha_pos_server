@@ -18,6 +18,10 @@ HOST="pos.${IP}.nip.io"
 DELIVERY_HOST="delivery.${IP}.nip.io"
 DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"
 ADMIN_HOST="alpha-pos-admin.${IP}.nip.io"
+# Back-office panel ("admin table"). Its container is deployed separately and
+# keeps the fixed name below, so this route survives every deploy.
+PANEL_HOST="new.${IP}.nip.io"
+PANEL_UPSTREAM="pos-cloud-admin-table"
 CONTROL_URL="${LICENSE_CONTROL_CENTER_URL:-https://control.${IP}.nip.io}"
 
 echo ">> Alpha POS server  ->  https://${HOST}"
@@ -184,6 +188,10 @@ ${DELIVERY_HOST} {
 
 ${ADMIN_HOST} {
 	reverse_proxy alpha-pos-admin:80
+}
+
+${PANEL_HOST} {
+	reverse_proxy ${PANEL_UPSTREAM}:80
 }
 EOF
 cat > "$DIR/caddy/docker-compose.yml" <<'EOF'
