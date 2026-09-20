@@ -288,6 +288,15 @@ def test_current_month_paid_cost_is_not_reserved_twice(monkeypatch):
     assert costs["paid_current_period_uzs"] == 1_000_000
     assert costs["due_estimate_uzs"] == 700_000
     assert body["data"]["positions"]["final_uzs"] == 8_300_000
+    # The owner sees each monthly bill as a balance: planned, paid, still owed.
+    assert costs["groups"] == [{
+        "reporting_group": FinancialReportingGroup.RENT,
+        "planned_monthly_uzs": 3_000_000,
+        "accrued_to_date_uzs": 1_700_000,
+        "paid_current_period_uzs": 1_000_000,
+        "remaining_uzs": 2_000_000,
+        "row_keys": [row["row_key"] for row in costs["rows"]],
+    }]
 
 
 def test_recurring_cost_api_is_branch_scoped_and_manager_gated(monkeypatch):

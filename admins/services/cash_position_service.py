@@ -573,7 +573,29 @@ class CashPositionService:
             row["name"].casefold(),
             row["row_key"],
         ))
+        # Per reporting group: what the month is planned to cost, what has been
+        # paid so far and what is still outstanding. Payments are matched by
+        # reporting group (rent, utilities, taxes), never split across the
+        # individual schedules inside a group, so nothing is invented.
+        groups = []
+        for group in sorted(accrued_by_group):
+            planned = sum(
+                (Decimal(row["monthly_baseline_uzs"]) for row in rows
+                 if row["reporting_group"] == group),
+                Decimal("0"),
+            )
+            paid = paid_by_group[group]
+            groups.append({
+                "reporting_group": group,
+                "planned_monthly_uzs": _uzs(planned),
+                "accrued_to_date_uzs": _uzs(accrued_by_group[group]),
+                "paid_current_period_uzs": _uzs(paid),
+                "remaining_uzs": _uzs(max(planned - paid, Decimal("0"))),
+                "row_keys": [row["row_key"] for row in rows
+                             if row["reporting_group"] == group],
+            })
         return ({
+            "groups": groups,
             "accrued_estimate_uzs": _uzs(accrued_total),
             "paid_current_period_uzs": _uzs(paid_offset),
             "due_estimate_uzs": _uzs(due_total),
