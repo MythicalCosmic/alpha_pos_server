@@ -107,7 +107,49 @@ class ShiftService(CoreShiftService):
         return qs, requested_statuses, parsed_from, parsed_to, user_id, window
 
     @staticmethod
-    def _global_summary(filtered, *, now):
+    def _window_key(shift):
+        """Fields that decide which orders a shift's window claims."""
+        return (shift.status, shift.start_time, shift.end_time,
+                shift.branch_id, shift.user_id)
+
+    @staticmethod
+    def _page_extras_from_summary(shifts, filtered, order_by, evidence, *, first_page):
+        """Reuse the summary's evidence pass for the page, or None.
+
+        The summary already ran _batch_list_extras over every filtered shift.
+        For the FIRST newest-first page, running it again over the page gives
+        the same answer: every shift left off that page started earlier, so it
+        can never out-rank a page shift for an order (the latest-started window
+        wins). Later pages are not equivalent: the newer shifts on earlier pages
+        out-rank them. The reuse is also refused for any other sort, a
+        start-time tie, a shift that changed between the two reads, or an
+        evidence pass that failed.
+        """
+        if not first_page or order_by != '-start_time' or not shifts:
+            return None
+        extras = evidence.get('extras') or {}
+        windows = evidence.get('windows') or {}
+        seen_starts = set()
+        for shift in shifts:
+            row = extras.get(shift.id)
+            if row is None or windows.get(shift.id) != ShiftService._window_key(shift):
+                return None
+            if 'EVIDENCE_UNAVAILABLE' in (row.get('frozen_tender_evidence_issues') or ()):
+                return None
+            if shift.start_time is not None:
+                owner_start = (shift.branch_id, shift.user_id, shift.start_time)
+                if owner_start in seen_starts:
+                    return None
+                seen_starts.add(owner_start)
+        starts = [shift.start_time for shift in shifts if shift.start_time]
+        if starts and filtered.order_by().filter(
+            start_time=min(starts),
+        ).exclude(id__in=[shift.id for shift in shifts]).exists():
+            return None
+        return {shift.id: extras[shift.id] for shift in shifts}
+
+    @staticmethod
+    def _global_summary(filtered, *, now, evidence_out=None):
         """Aggregate the complete filtered population, before sort/page."""
         base = filtered.order_by()
         total = base.count()
@@ -161,6 +203,12 @@ class ShiftService(CoreShiftService):
         evidence_extras = CoreShiftService._batch_list_extras(
             evidence_rows, now=now,
         )
+        if evidence_out is not None:
+            evidence_out['extras'] = evidence_extras
+            evidence_out['windows'] = {
+                shift.id: ShiftService._window_key(shift)
+                for shift in evidence_rows
+            }
         unavailable_shift_ids = {
             shift.id
             for shift in evidence_rows
@@ -583,12 +631,20 @@ class ShiftService(CoreShiftService):
         if order_by not in _SHIFT_SORT_FIELDS:
             order_by = '-start_time'
         now = timezone.now()
-        summary = ShiftService._global_summary(filtered, now=now)
+        evidence = {}
+        summary = ShiftService._global_summary(
+            filtered, now=now, evidence_out=evidence,
+        )
 
         paginator = Paginator(filtered.order_by(order_by, '-id'), per_page)
         page_obj = paginator.get_page(page)
         shifts = list(page_obj.object_list)
-        extras = CoreShiftService._batch_list_extras(shifts, now=now)
+        extras = ShiftService._page_extras_from_summary(
+            shifts, filtered, order_by, evidence,
+            first_page=page_obj.number == 1,
+        )
+        if extras is None:
+            extras = CoreShiftService._batch_list_extras(shifts, now=now)
         rows = [
             CoreShiftService._serialize_shift(
                 shift,
