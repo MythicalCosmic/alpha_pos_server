@@ -12,7 +12,9 @@ WEBAPP_CONTAINER="${DELIVERY_WEBAPP_CONTAINER:-smartfood-webapp}"
 [ -f "$ENV_FILE" ] || { echo "delivery reconcile: missing $ENV_FILE" >&2; exit 1; }
 
 if [ -z "$PUBLIC_IP" ]; then
-    POS_HOST="$(sed -n 's/^ALLOWED_HOSTS=\([^,]*\).*/\1/p' "$ENV_FILE" | head -n1)"
+    # The nip.io POS host is first, or second after a domain host.
+    POS_HOST="$(sed -n 's/^ALLOWED_HOSTS=//p' "$ENV_FILE" | head -n1 | tr ',' '\n' \
+        | grep -m1 '^pos\..*\.nip\.io$' || true)"
     case "$POS_HOST" in
         pos.*.nip.io)
             PUBLIC_IP="${POS_HOST#pos.}"
@@ -25,7 +27,12 @@ if [ -z "$PUBLIC_IP" ]; then
     esac
 fi
 
-DELIVERY_HOST="delivery.${PUBLIC_IP}.nip.io"
+# deploy.sh serves delivery.<domain> when ALPHAPOS_DOMAIN is set, with the
+# nip.io name as an alias on the same Caddy route.
+DOMAIN="$(sed -n 's/^ALPHAPOS_DOMAIN=//p' "$ENV_FILE" | head -n1)"
+IP_DELIVERY_HOST="delivery.${PUBLIC_IP}.nip.io"
+DELIVERY_HOST="${DOMAIN:+delivery.${DOMAIN}}"
+DELIVERY_HOST="${DELIVERY_HOST:-$IP_DELIVERY_HOST}"
 DELIVERY_URL="https://${DELIVERY_HOST}/webapp/"
 ENV_CHANGED=false
 
@@ -78,7 +85,7 @@ CADDYFILE="$(docker inspect --format \
 [ -f "$CADDYFILE" ] \
     || { echo "delivery reconcile: active Caddyfile mount not found" >&2; exit 1; }
 
-if ! grep -Fqx "$DELIVERY_HOST {" "$CADDYFILE"; then
+if ! grep -Eq "^${DELIVERY_HOST//./\\.}( \{|,)" "$CADDYFILE"; then
     CADDY_BACKUP="$(mktemp "${CADDYFILE}.delivery.XXXXXX")"
     cp "$CADDYFILE" "$CADDY_BACKUP"
     {
@@ -129,11 +136,14 @@ if [ -n "$BOT_TOKEN" ]; then
     fi
 fi
 
+# Until DNS points the domain here, the nip.io alias proves the same route.
 for _attempt in $(seq 1 6); do
-    if curl -fsS --max-time 5 "https://${DELIVERY_HOST}/healthz" >/dev/null; then
-        echo "delivery reconcile: healthy at $DELIVERY_URL"
-        exit 0
-    fi
+    for _host in $(printf '%s\n' "$DELIVERY_HOST" "$IP_DELIVERY_HOST" | sort -u); do
+        if curl -fsS --max-time 5 "https://${_host}/healthz" >/dev/null 2>&1; then
+            echo "delivery reconcile: healthy at https://${_host}/webapp/"
+            exit 0
+        fi
+    done
     sleep 3
 done
 
