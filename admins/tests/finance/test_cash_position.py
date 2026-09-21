@@ -186,8 +186,10 @@ def test_cash_position_calculates_each_net_step_and_keeps_unreviewed_debt(
         row for row in position["monthly_costs"]["rows"]
         if row["basis"] == "PREVIOUS_MONTH_ACTUAL"
     )
-    assert historical["accrued_estimate_uzs"] == 1_700_000
-    assert historical["divisor_days"] == 31
+    # Last month's electricity bill is spread over THIS month's 30 days, the
+    # same way a fixed monthly amount is: 3,100,000 / 30 * 17.
+    assert historical["accrued_estimate_uzs"] == 1_756_667
+    assert historical["divisor_days"] == 30
     fixed = next(
         row for row in position["monthly_costs"]["rows"]
         if row["basis"] == "FIXED_MONTHLY"
@@ -197,7 +199,7 @@ def test_cash_position_calculates_each_net_step_and_keeps_unreviewed_debt(
     assert position["positions"] == {
         "after_suppliers_uzs": 10_853_000,
         "after_payroll_uzs": 9_153_000,
-        "final_uzs": 5_753_000,
+        "final_uzs": 5_696_333,
     }
     assert position["status"] == "REVIEW_REQUIRED"
     assert any(
@@ -348,3 +350,64 @@ def test_cash_position_endpoint_permissions(monkeypatch):
     assert allowed.json()["data"]["funds"]["total_uzs"] == 3_000_000
     assert forbidden.status_code == 403
     assert forbidden.json()["code"] == "PERMISSION_DENIED"
+
+
+def test_bills_without_a_fixed_amount_are_planned_from_last_month(monkeypatch):
+    """Rent, utilities and taxes fall back to last month's paid bills.
+
+    Bills paid from the till drawer carry no safe/bank movement; they still
+    set the plan and still count as paid.
+    """
+    _freeze(monkeypatch)
+    actor = _user(User.RoleChoices.ADMIN, "admin-bills@test.local")
+    _safe, safe_rows = _treasury(TreasuryAccount.Kind.SAFE, [20_000_000, -15_000_000])
+    _treasury(TreasuryAccount.Kind.BANK, [0])
+
+    def category(code, name, group):
+        return ExpenseCategory.objects.create(
+            code=code, name=name, reporting_group=group, branch_id=BRANCH,
+        )
+
+    def expense(cat, amount, day, *, status=Expense.Status.PAID, money=None):
+        return Expense.objects.create(
+            category=cat,
+            category_code_snapshot=cat.code,
+            category_name_snapshot=cat.name,
+            category_reporting_group_snapshot=cat.reporting_group,
+            amount=amount,
+            expense_date=day,
+            status=status,
+            treasury_transaction=money,
+            branch_id=BRANCH,
+        )
+
+    rent = category("RENT", "Rent", FinancialReportingGroup.RENT)
+    gas = category("GAS", "Cooking gas", FinancialReportingGroup.UTILITIES)
+    tax = category("TAX", "Taxes", FinancialReportingGroup.TAXES)
+    expense(rent, 15_000_000, date(2026, 8, 1), money=safe_rows[-1])
+    expense(gas, 2_600_000, date(2026, 8, 12))            # paid from the drawer
+    expense(gas, 900_000, date(2026, 8, 20), status=Expense.Status.PENDING)
+    expense(tax, 72_000, date(2026, 8, 25))
+    expense(gas, 1_000_000, date(2026, 9, 3))             # paid this month, drawer
+
+    body, status = CashPositionService.get(actor=actor)
+
+    assert status == 200
+    costs = body["data"]["monthly_costs"]
+    groups = {group["reporting_group"]: group for group in costs["groups"]}
+    assert groups[FinancialReportingGroup.RENT] | {"row_keys": None} == {
+        "reporting_group": FinancialReportingGroup.RENT,
+        "planned_monthly_uzs": 15_000_000,
+        "accrued_to_date_uzs": 8_500_000,        # 15,000,000 / 30 * 17
+        "paid_current_period_uzs": 0,
+        "remaining_uzs": 15_000_000,
+        "row_keys": None,
+    }
+    # The pending August request is not a bill that was paid.
+    assert groups[FinancialReportingGroup.UTILITIES]["planned_monthly_uzs"] == 2_600_000
+    assert groups[FinancialReportingGroup.UTILITIES]["paid_current_period_uzs"] == 1_000_000
+    assert groups[FinancialReportingGroup.UTILITIES]["remaining_uzs"] == 1_600_000
+    assert groups[FinancialReportingGroup.TAXES]["planned_monthly_uzs"] == 72_000
+    assert all(row["basis"] == "PREVIOUS_MONTH_ACTUAL" for row in costs["rows"])
+    assert costs["historical_count"] == 3
+    assert costs["historical_utility_count"] == 1

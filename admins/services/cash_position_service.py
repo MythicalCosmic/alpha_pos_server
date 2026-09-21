@@ -38,6 +38,13 @@ MANAGED_RECURRING_GROUPS = (
     FinancialReportingGroup.OPERATING,
     FinancialReportingGroup.TAXES,
 )
+# Monthly bills planned from last month's actual spending when no fixed
+# monthly amount is configured for the group.
+HISTORY_PLANNED_GROUPS = (
+    FinancialReportingGroup.RENT,
+    FinancialReportingGroup.UTILITIES,
+    FinancialReportingGroup.TAXES,
+)
 
 
 def _uzs(value):
@@ -455,13 +462,20 @@ class CashPositionService:
 
         historical_total = Decimal("0")
         historical_count = 0
-        has_fixed_utilities = any(
-            row.reporting_group == FinancialReportingGroup.UTILITIES
-            for row in schedules
-        )
+        historical_utility_count = 0
+        fixed_groups = {row.reporting_group for row in schedules}
         issues = []
-        if not has_fixed_utilities:
-            grouped = defaultdict(lambda: {"name": "", "amount": Decimal("0")})
+        # A bill without a fixed monthly amount is planned at what it cost last
+        # month. Every PAID expense counts, including bills paid from the till
+        # drawer, which carry no safe/bank movement.
+        history_groups = [
+            group for group in HISTORY_PLANNED_GROUPS
+            if group not in fixed_groups
+        ]
+        if history_groups:
+            grouped = defaultdict(lambda: {
+                "name": "", "group": "", "amount": Decimal("0"),
+            })
             expense_rows = Expense.objects.filter(
                 branch_id=branch_id,
                 is_deleted=False,
@@ -469,53 +483,58 @@ class CashPositionService:
                 expense_date__gte=month["previous_start"],
                 expense_date__lte=month["previous_end"],
             ).filter(
-                Q(
-                    category_reporting_group_snapshot=(
-                        FinancialReportingGroup.UTILITIES
-                    )
-                )
+                Q(category_reporting_group_snapshot__in=history_groups)
                 | Q(
                     category_reporting_group_snapshot='',
-                    category__reporting_group=FinancialReportingGroup.UTILITIES,
+                    category__reporting_group__in=history_groups,
                 )
-            ).filter(
-                Q(treasury_transaction__isnull=False)
-                | Q(cashbox_payment__isnull=False)
             ).select_related("category").order_by("id")
             for expense in expense_rows:
+                reporting_group = (
+                    expense.category_reporting_group_snapshot
+                    or expense.category.reporting_group
+                )
                 key = expense.category_id or expense.category_code_snapshot or expense.id
+                grouped[key]["group"] = reporting_group
                 grouped[key]["name"] = (
                     expense.category_name_snapshot
                     or (expense.category.name if expense.category_id else "")
-                    or "Utilities"
+                    or reporting_group.title()
                 )
                 grouped[key]["amount"] += Decimal(expense.amount or 0)
 
             for key, value in grouped.items():
                 baseline = value["amount"]
+                # Last month's bill spread over THIS month's days, like a
+                # fixed monthly amount, so "day 22 of 30" matches the maths.
                 accrued = _prorate(
                     baseline,
                     month["elapsed_days"],
-                    month["previous_days"],
+                    month["current_days"],
                 )
                 historical_total += accrued
-                accrued_by_group[FinancialReportingGroup.UTILITIES] += accrued
+                accrued_by_group[value["group"]] += accrued
                 historical_count += 1
+                if value["group"] == FinancialReportingGroup.UTILITIES:
+                    historical_utility_count += 1
                 rows.append({
                     "row_key": f"history-{key}",
                     "recurring_cost_id": None,
                     "name": value["name"],
-                    "reporting_group": FinancialReportingGroup.UTILITIES,
+                    "reporting_group": value["group"],
                     "basis": "PREVIOUS_MONTH_ACTUAL",
                     "monthly_baseline_uzs": _uzs(baseline),
                     "elapsed_days": month["elapsed_days"],
-                    "divisor_days": month["previous_days"],
+                    "divisor_days": month["current_days"],
                     "accrued_estimate_uzs": _uzs(accrued),
                     "is_active": True,
                     "start_date": month["previous_start"].isoformat(),
                     "end_date": month["previous_end"].isoformat(),
                 })
-            if not grouped:
+            if (
+                FinancialReportingGroup.UTILITIES in history_groups
+                and not historical_utility_count
+            ):
                 issues.append(_issue(
                     "UTILITY_HISTORY_NOT_FOUND",
                     "INFO",
@@ -529,6 +548,7 @@ class CashPositionService:
         accrued_total = fixed_total + historical_total
         paid_by_group = defaultdict(lambda: Decimal("0"))
         if accrued_by_group:
+            # Paid this month: every PAID bill, wherever the money came from.
             current_expenses = Expense.objects.filter(
                 branch_id=branch_id,
                 is_deleted=False,
@@ -543,9 +563,6 @@ class CashPositionService:
                     category_reporting_group_snapshot='',
                     category__reporting_group__in=tuple(accrued_by_group),
                 )
-            ).filter(
-                Q(treasury_transaction__isnull=False)
-                | Q(cashbox_payment__isnull=False)
             ).select_related("category").order_by("id")
             for expense in current_expenses:
                 reporting_group = (
@@ -565,7 +582,7 @@ class CashPositionService:
             issues.append(_issue(
                 "MONTHLY_COST_PAYMENTS_APPLIED",
                 "INFO",
-                "Verified current-month expenses reduce the remaining estimate.",
+                "Current-month paid bills reduce the remaining estimate.",
                 amount_uzs=paid_offset,
             ))
         rows.sort(key=lambda row: (
@@ -602,7 +619,8 @@ class CashPositionService:
             "fixed_accrued_estimate_uzs": _uzs(fixed_total),
             "historical_accrued_estimate_uzs": _uzs(historical_total),
             "fixed_schedule_count": len(schedules),
-            "historical_utility_count": historical_count,
+            "historical_count": historical_count,
+            "historical_utility_count": historical_utility_count,
             "rows": rows,
         }, issues)
 
