@@ -216,13 +216,20 @@ EOF
 
 # --- 5. Caddy (automatic HTTPS; reverse_proxy upgrades WebSockets for free) -
 mkdir -p "$DIR/caddy"
-cat > "$DIR/caddy/Caddyfile" <<EOF
+# Written to a side file and validated before it replaces the live one: a
+# running Caddy that restarts on a bad Caddyfile takes every site down.
+cat > "$DIR/caddy/Caddyfile.new" <<EOF
 (compress) {
 	encode {
 		zstd
 		gzip
 		match {
-			header Content-Type application/json* text/html* text/css* application/javascript* text/javascript* image/svg+xml*
+			header Content-Type application/json*
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type application/javascript*
+			header Content-Type text/javascript*
+			header Content-Type image/svg+xml*
 		}
 	}
 }
@@ -247,6 +254,15 @@ $(site "$PANEL_HOST" "$IP_PANEL_HOST") {
 	reverse_proxy ${PANEL_UPSTREAM}:80
 }
 EOF
+if ! CADDY_CHECK="$(docker run --rm -v "$DIR/caddy/Caddyfile.new:/etc/caddy/Caddyfile:ro" \
+        caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
+    echo "!! generated Caddyfile is invalid; the live one was left unchanged:" >&2
+    printf '%s\n' "$CADDY_CHECK" | tail -3 >&2
+    exit 1
+fi
+# Rewrite in place: Caddy bind-mounts this single file and would not see a new inode.
+cat "$DIR/caddy/Caddyfile.new" > "$DIR/caddy/Caddyfile"
+rm -f "$DIR/caddy/Caddyfile.new"
 cat > "$DIR/caddy/docker-compose.yml" <<'EOF'
 services:
   caddy:
