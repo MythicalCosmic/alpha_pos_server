@@ -97,6 +97,12 @@ SDLEASE="$(keep SMARTFOOD_DISPATCH_LEASE_SECONDS)"; SDLEASE="${SDLEASE:-60}"
 SMAXQ="$(keep SMARTFOOD_MAX_ITEM_QUANTITY)"; SMAXQ="${SMAXQ:-100}"
 CAA="$(keep COURIER_AUTO_ASSIGN)";       CAA="${CAA:-false}"
 WEBCONCURRENCY="$(keep WEB_CONCURRENCY)"; WEBCONCURRENCY="${WEBCONCURRENCY:-3}"
+# PostgreSQL memory sizing (docker-compose.yaml). Empty = PostgreSQL defaults.
+PGSB="$(keep PG_SHARED_BUFFERS)"; PGECS="$(keep PG_EFFECTIVE_CACHE_SIZE)"
+PGWM="$(keep PG_WORK_MEM)"; PGMWM="$(keep PG_MAINTENANCE_WORK_MEM)"
+PGRPC="$(keep PG_RANDOM_PAGE_COST)"; PGSHM="$(keep PG_SHM_SIZE)"
+# Django connection pool per process; empty/0 = a new connection per request.
+DBPOOL="$(keep DB_POOL_MAX_SIZE)"
 # AI assistant. Keys are preserved across redeploys via keep() — set each once in
 # .env (never committed to git). Provider + model are safe to bake. OpenAI is the
 # active provider; Claude + Gemini config are kept as fallbacks.
@@ -136,6 +142,13 @@ DB_HOST=db
 DB_PORT=5432
 WEB_PORT=127.0.0.1:8000
 WEB_CONCURRENCY=${WEBCONCURRENCY}
+PG_SHARED_BUFFERS=${PGSB}
+PG_EFFECTIVE_CACHE_SIZE=${PGECS}
+PG_WORK_MEM=${PGWM}
+PG_MAINTENANCE_WORK_MEM=${PGMWM}
+PG_RANDOM_PAGE_COST=${PGRPC}
+PG_SHM_SIZE=${PGSHM}
+DB_POOL_MAX_SIZE=${DBPOOL}
 # Make a later bare "docker compose up" retain the Caddy edge attachment.
 # Without this, Compose recreates the web service from only docker-compose.yaml and the
 # healthy app becomes publicly unreachable with a 502 until the overlay is
@@ -204,19 +217,33 @@ EOF
 # --- 5. Caddy (automatic HTTPS; reverse_proxy upgrades WebSockets for free) -
 mkdir -p "$DIR/caddy"
 cat > "$DIR/caddy/Caddyfile" <<EOF
+(compress) {
+	encode {
+		zstd
+		gzip
+		match {
+			header Content-Type application/json* text/html* text/css* application/javascript* text/javascript* image/svg+xml*
+		}
+	}
+}
+
 $(site "$HOST" "$IP_HOST") {
+	import compress
 	reverse_proxy alpha-web:8000
 }
 
 $(site "$DELIVERY_HOST" "$IP_DELIVERY_HOST") {
+	import compress
 	reverse_proxy smartfood-webapp:80
 }
 
 $(site "$ADMIN_HOST" "$IP_ADMIN_HOST") {
+	import compress
 	reverse_proxy alpha-pos-admin:80
 }
 
 $(site "$PANEL_HOST" "$IP_PANEL_HOST") {
+	import compress
 	reverse_proxy ${PANEL_UPSTREAM}:80
 }
 EOF

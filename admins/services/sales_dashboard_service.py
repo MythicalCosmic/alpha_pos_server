@@ -72,6 +72,9 @@ def _series(d_from, d_to, tod_from=None, tod_to=None, *, window=None):
 
     start = business_day_start()
     offset = timedelta(hours=start.hour, minutes=start.minute, seconds=start.second)
+    # localtime() looks the active zone up on every call; these loops make one
+    # call per order row, so resolve it once.
+    tz = timezone.get_current_timezone()
     lo, hi = (
         (window.start_at, window.end_at)
         if window is not None else range_window(d_from, d_to)
@@ -83,7 +86,7 @@ def _series(d_from, d_to, tod_from=None, tod_to=None, *, window=None):
         while cursor < hi:
             bucket_starts.append(cursor)
             cursor += timedelta(days=1)
-        labels = [timezone.localtime(value).isoformat() for value in bucket_starts]
+        labels = [timezone.localtime(value, tz).isoformat() for value in bucket_starts]
 
         def bucket_index(moment):
             elapsed = (moment - lo).total_seconds()
@@ -95,7 +98,7 @@ def _series(d_from, d_to, tod_from=None, tod_to=None, *, window=None):
         idx = {day: i for i, day in enumerate(days)}
 
         def bucket_index(moment):
-            local = timezone.localtime(moment)
+            local = timezone.localtime(moment, tz)
             return idx.get((local - offset).date())
 
     revenue = [Decimal('0.00')] * len(labels)
@@ -118,7 +121,7 @@ def _series(d_from, d_to, tod_from=None, tod_to=None, *, window=None):
     for created_at, otype, status in (
         _oqs.values_list('created_at', 'order_type', 'status')
     ):
-        local = timezone.localtime(created_at)
+        local = timezone.localtime(created_at, tz)
         i = bucket_index(created_at)
         if i is None:
             continue
@@ -184,6 +187,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
     start = business_day_start()
     lo, hi = day_window(bday, start)
     hours = business_day_hour_order(start)
+    tz = timezone.get_current_timezone()
     hpos = {h: i for i, h in enumerate(hours)}
     labels = [f'{h:02d}:00' for h in hours]
 
@@ -201,7 +205,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
     for created_at, otype, status in _oqs.values_list(
             'created_at', 'order_type', 'status'):
-        local = timezone.localtime(created_at)
+        local = timezone.localtime(created_at, tz)
         i = hpos.get(local.hour)
         if i is None:
             continue
@@ -219,7 +223,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
         paid_at__gte=lo, paid_at__lt=hi,
     ), tod_from, tod_to, field='paid_at')
     for paid_at, total in _pqs.values_list('paid_at', 'total_amount'):
-        i = hpos.get(timezone.localtime(paid_at).hour)
+        i = hpos.get(timezone.localtime(paid_at, tz).hour)
         if i is not None:
             revenue[i] += (total or Decimal('0'))
             gross_revenue[i] += (total or Decimal('0'))
@@ -228,7 +232,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
     for refunded_at, amount in refund_events(
         lo, hi, tod_from=tod_from, tod_to=tod_to,
     ).values_list('refunded_at', 'amount'):
-        i = hpos.get(timezone.localtime(refunded_at).hour)
+        i = hpos.get(timezone.localtime(refunded_at, tz).hour)
         if i is not None:
             value = amount or Decimal('0')
             revenue[i] -= value
@@ -237,7 +241,7 @@ def _series_hourly(bday, tod_from=None, tod_to=None):
     _eqs = tod_filter(CashboxExpense.objects.filter(
         is_deleted=False, created_at__gte=lo, created_at__lt=hi), tod_from, tod_to)
     for created_at, amount in _eqs.values_list('created_at', 'amount'):
-        i = hpos.get(timezone.localtime(created_at).hour)
+        i = hpos.get(timezone.localtime(created_at, tz).hour)
         if i is not None:
             expense[i] += (amount or Decimal('0'))
 
