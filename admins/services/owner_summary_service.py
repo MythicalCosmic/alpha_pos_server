@@ -220,7 +220,8 @@ def _warning(code, *, count=None, amount=None):
     return warning
 
 
-def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_kwargs):
+def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, include_expected=True,
+                      **window_kwargs):
     branch_id = resolve_branch_id(branch_id)
     window = resolve_reporting_window(date_from=date_from, date_to=date_to, **window_kwargs)
 
@@ -288,6 +289,20 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_
             'EXPENSES_NOT_PAID_THROUGH_TREASURY', count=pending_count, amount=pending_total,
         ))
 
+    expected = None
+    if include_expected:
+        from admins.services.owner_expected_costs import expected_costs, reference_month
+        from base.services.business_day import business_date
+
+        ref_from, ref_to = reference_month(window)
+        reference = get_owner_summary(ref_from, ref_to, branch_id=branch_id, include_expected=False)
+        expected = expected_costs(
+            branch_id, window,
+            net_sales=net_sales, supplier_total=supplier_total, payroll_total=payroll_total,
+            raw_profit=raw_profit, owner_withdrawals=buckets['owner']['total'],
+            reference_summary=reference, today=business_date(),
+        )
+
     def bucket_payload(name):
         bucket = buckets[name]
         return {
@@ -337,6 +352,7 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, **window_
             'after_owner_withdrawals_uzs': uzs_int(after_owner),
         },
         'balances': _balances(branch_id),
+        'expected': expected,
         'warnings': warnings,
         'generated_at': timezone.now().isoformat(),
     }
