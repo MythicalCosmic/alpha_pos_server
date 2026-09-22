@@ -21,12 +21,16 @@ import calendar
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+from zoneinfo import ZoneInfo
+
 from django.db.models import Q, Sum
 
 from admins.models import RecurringCost
 from base.financial import FinancialReportingGroup as Group
 from base.money import uzs_int
-from hr.models import Expense
+from hr.models import Expense, SalaryPayment
+
+TASHKENT = ZoneInfo('Asia/Tashkent')
 
 ZERO = Decimal('0')
 BILL_GROUPS = (Group.RENT, Group.UTILITIES, Group.TAXES)
@@ -75,10 +79,29 @@ def _schedules(branch_id, group, month_start, month_end):
     ).filter(Q(end_date__isnull=True) | Q(end_date__gte=month_start))
 
 
+def _payroll_recorded(branch_id, seg_from, seg_to):
+    """Payroll recorded in a date span, counted like the owner summary does."""
+    expenses = _expense_total(branch_id, (Group.PAYROLL,), seg_from, seg_to)
+    salaries = ZERO
+    for paid_at, amount in SalaryPayment.objects.filter(
+        is_deleted=False, branch_id=branch_id, status=SalaryPayment.Status.PAID, paid_at__isnull=False,
+    ).values_list('paid_at', 'net_amount'):
+        if seg_from <= paid_at.astimezone(TASHKENT).date() <= seg_to:
+            salaries += Decimal(amount or 0)
+    return expenses + salaries
+
+
 def _planned(branch_id, group, date_from, date_to, *, history):
-    """Planned cost of ``group`` for the window, with its basis."""
-    planned, monthly, basis, reference = ZERO, ZERO, None, None
+    """Plan vs recorded for ``group``, month by month inside the window.
+
+    Each calendar month's plan is compared only with what was recorded in that
+    same month's part of the window, so last month's payment can never cover
+    this month's plan when a window spans two months.
+    """
+    planned = recorded = remaining = ZERO
+    monthly, basis, reference = ZERO, None, None
     for month_start, month_end, days, covered in _months(date_from, date_to):
+        seg_from, seg_to = max(date_from, month_start), min(date_to, month_end)
         schedules = list(_schedules(branch_id, group, month_start, month_end))
         if schedules:
             amount = sum((Decimal(s.monthly_amount) for s in schedules), ZERO)
@@ -94,9 +117,18 @@ def _planned(branch_id, group, date_from, date_to, *, history):
                 reference = reference or previous_start.strftime('%Y-%m')
         else:
             amount = ZERO
+        if group == Group.PAYROLL:
+            seg_recorded = _payroll_recorded(branch_id, seg_from, seg_to)
+        else:
+            seg_recorded = _expense_total(branch_id, (group,), seg_from, seg_to)
+        seg_planned = _share(amount, covered, days)
         monthly = max(monthly, amount)
-        planned += _share(amount, covered, days)
-    return planned, monthly, basis, reference
+        planned += seg_planned
+        recorded += seg_recorded
+        if amount:
+            remaining += max(seg_planned - seg_recorded, ZERO)
+    return {'planned': planned, 'recorded': recorded, 'remaining': remaining,
+            'monthly': monthly, 'basis': basis, 'reference': reference}
 
 
 def expected_costs(branch_id, window, *, net_sales, supplier_total, payroll_total,
@@ -109,33 +141,29 @@ def expected_costs(branch_id, window, *, net_sales, supplier_total, payroll_tota
     covered_days = (date_to - date_from).days + 1
 
     lines = []
-    salary_plan, salary_monthly, salary_basis, _ = _planned(
-        branch_id, Group.PAYROLL, date_from, date_to, history=False,
-    )
+    plan = _planned(branch_id, Group.PAYROLL, date_from, date_to, history=False)
+    salary_basis = plan['basis']
     salaries = {
         'basis': salary_basis,
-        'monthly_plan_uzs': uzs_int(salary_monthly),
-        'planned_uzs': uzs_int(salary_plan),
-        'recorded_uzs': uzs_int(payroll_total),
-        'remaining_uzs': uzs_int(max(salary_plan - payroll_total, ZERO)),
+        'monthly_plan_uzs': uzs_int(plan['monthly']),
+        'planned_uzs': uzs_int(plan['planned']),
+        'recorded_uzs': uzs_int(plan['recorded']),
+        'remaining_uzs': uzs_int(plan['remaining']),
     }
     if salary_basis:
         lines.append(salaries['remaining_uzs'])
 
     bills = []
     for group in BILL_GROUPS:
-        planned, monthly, basis, reference = _planned(
-            branch_id, group, date_from, date_to, history=True,
-        )
-        recorded = _expense_total(branch_id, (group,), date_from, date_to)
+        plan = _planned(branch_id, group, date_from, date_to, history=True)
         bills.append({
             'reporting_group': group,
-            'basis': basis,
-            'reference_month': reference,
-            'monthly_plan_uzs': uzs_int(monthly),
-            'planned_uzs': uzs_int(planned),
-            'recorded_uzs': uzs_int(recorded),
-            'remaining_uzs': uzs_int(max(planned - recorded, ZERO)),
+            'basis': plan['basis'],
+            'reference_month': plan['reference'],
+            'monthly_plan_uzs': uzs_int(plan['monthly']),
+            'planned_uzs': uzs_int(plan['planned']),
+            'recorded_uzs': uzs_int(plan['recorded']),
+            'remaining_uzs': uzs_int(plan['remaining']),
         })
         lines.append(bills[-1]['remaining_uzs'])
 

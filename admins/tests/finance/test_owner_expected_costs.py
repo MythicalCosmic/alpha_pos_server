@@ -130,3 +130,28 @@ def test_future_days_of_the_window_are_not_planned(cashier, today_is):
     rent = next(row for row in data['expected']['bills'] if row['reporting_group'] == Group.RENT)
     assert rent['basis'] == 'FIXED'
     assert rent['planned_uzs'] == 300_000     # 3 of 30 days, not the whole month
+
+
+def test_last_months_payment_never_covers_this_months_plan(cashier, today_is):
+    """A 30-day window spanning August and September: August's salary and rent
+    payments must not hide September's salaries and rent still to pay."""
+    staff = _category('STAFF', Group.PAYROLL)
+    rent = _category('RENT', Group.RENT)
+    _expense(staff, '910000', date(2026, 8, 31))            # August payroll, paid Aug 31
+    _expense(rent, '150000', date(2026, 8, 28))              # August rent
+    _expense(staff, '50000', date(2026, 9, 6))               # September advance
+    RecurringCost.objects.create(
+        branch_id=BRANCH, name='Salaries (workbook)', reporting_group=Group.PAYROLL,
+        monthly_amount=Decimal('900000'), start_date=date(2026, 9, 1), end_date=date(2026, 9, 30),
+        created_by=cashier,
+    )
+    today_is(date(2026, 9, 10))
+
+    data = get_owner_summary('2026-08-12', '2026-09-10', branch_id=BRANCH)
+
+    expected = data['expected']
+    # September: 900k x 10/30 = 300k planned, 50k recorded; August has no plan.
+    assert expected['salaries']['remaining_uzs'] == 250_000
+    rent_row = next(row for row in expected['bills'] if row['reporting_group'] == Group.RENT)
+    # September rent planned from August's 150k bill: 150k x 10/30 = 50k, none paid in September.
+    assert rent_row['remaining_uzs'] == 50_000
