@@ -121,12 +121,13 @@ def _planned(branch_id, group, date_from, date_to, *, history):
             seg_recorded = _payroll_recorded(branch_id, seg_from, seg_to)
         else:
             seg_recorded = _expense_total(branch_id, (group,), seg_from, seg_to)
+        if not amount:
+            continue  # no plan for this month: nothing to compare its records with
         seg_planned = _share(amount, covered, days)
         monthly = max(monthly, amount)
         planned += seg_planned
         recorded += seg_recorded
-        if amount:
-            remaining += max(seg_planned - seg_recorded, ZERO)
+        remaining += max(seg_planned - seg_recorded, ZERO)
     return {'planned': planned, 'recorded': recorded, 'remaining': remaining,
             'monthly': monthly, 'basis': basis, 'reference': reference}
 

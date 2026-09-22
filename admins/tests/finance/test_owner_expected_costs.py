@@ -155,3 +155,6 @@ def test_last_months_payment_never_covers_this_months_plan(cashier, today_is):
     rent_row = next(row for row in expected['bills'] if row['reporting_group'] == Group.RENT)
     # September rent planned from August's 150k bill: 150k x 10/30 = 50k, none paid in September.
     assert rent_row['remaining_uzs'] == 50_000
+    # Only the planned month's records are shown next to the plan.
+    assert expected['salaries']['recorded_uzs'] == 50_000
+    assert rent_row['recorded_uzs'] == 0
