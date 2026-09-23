@@ -75,7 +75,7 @@ def test_running_month_shows_what_is_still_missing(cashier, today_is):
     )
     today_is(date(2026, 9, 10))
 
-    data = get_owner_summary('2026-09-01', '2026-09-30', branch_id=BRANCH)
+    data = get_owner_summary('2026-09-01', '2026-09-30', branch_id=BRANCH, include_expected=True)
 
     assert data['profit']['raw_profit_uzs'] == 450_000   # 600k - 100k - 50k, unchanged
     expected = data['expected']
@@ -108,7 +108,7 @@ def test_no_plan_and_no_complete_reference_month_estimates_nothing(cashier, toda
     _expense(loss, '30000', date(2026, 8, 31))
     today_is(date(2026, 9, 22))
 
-    data = get_owner_summary('2026-08-01', '2026-08-31', branch_id=BRANCH)
+    data = get_owner_summary('2026-08-01', '2026-08-31', branch_id=BRANCH, include_expected=True)
 
     expected = data['expected']
     assert expected['covered_days'] == 31
@@ -126,7 +126,7 @@ def test_future_days_of_the_window_are_not_planned(cashier, today_is):
         start_date=date(2026, 1, 1), created_by=cashier,
     )
     today_is(date(2026, 9, 3))
-    data = get_owner_summary('2026-09-01', '2026-09-30', branch_id=BRANCH)
+    data = get_owner_summary('2026-09-01', '2026-09-30', branch_id=BRANCH, include_expected=True)
     rent = next(row for row in data['expected']['bills'] if row['reporting_group'] == Group.RENT)
     assert rent['basis'] == 'FIXED'
     assert rent['planned_uzs'] == 300_000     # 3 of 30 days, not the whole month
@@ -147,7 +147,7 @@ def test_last_months_payment_never_covers_this_months_plan(cashier, today_is):
     )
     today_is(date(2026, 9, 10))
 
-    data = get_owner_summary('2026-08-12', '2026-09-10', branch_id=BRANCH)
+    data = get_owner_summary('2026-08-12', '2026-09-10', branch_id=BRANCH, include_expected=True)
 
     expected = data['expected']
     # September: 900k x 10/30 = 300k planned, 50k recorded; August has no plan.

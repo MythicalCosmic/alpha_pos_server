@@ -48,7 +48,10 @@ def owner_summary_view(request):
     from admins.services.owner_summary_service import get_owner_summary
 
     try:
-        data = get_owner_summary(**_reporting_kwargs(request))
+        data = get_owner_summary(
+            include_expected=request.GET.get('expected') in ('1', 'true'),
+            **_reporting_kwargs(request),
+        )
     except ValueError as exc:
         return _range_error(exc)
     return JsonResponse({'success': True, 'data': data})

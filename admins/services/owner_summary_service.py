@@ -220,8 +220,11 @@ def _warning(code, *, count=None, amount=None):
     return warning
 
 
-def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, include_expected=True,
+def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, include_expected=False,
                       **window_kwargs):
+    """Recorded money for one window. ``include_expected`` adds the estimate of
+    costs the period still carries (owner_expected_costs); it costs a second
+    pass over the previous month, so it is off unless a caller asks for it."""
     branch_id = resolve_branch_id(branch_id)
     window = resolve_reporting_window(date_from=date_from, date_to=date_to, **window_kwargs)
 
