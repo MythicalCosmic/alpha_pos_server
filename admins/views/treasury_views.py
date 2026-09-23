@@ -132,7 +132,7 @@ def treasury_expense(request):
         requested_source=source,
         source_account=source,
         fee_uzs=data.get(
-            'fee_uzs', data.get('fee', data.get('commission', 0))
+            'fee_uzs', data.get('fee', data.get('commission'))
         ),
         fee_percent=data.get('fee_percent'),
         description=data.get('description', ''),
