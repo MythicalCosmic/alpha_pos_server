@@ -247,3 +247,50 @@ def test_invalid_range_returns_422(ledger):
     )
 
     assert response.status_code == 422
+
+
+def test_salary_advances_count_when_paid_and_the_full_salary_only_on_payday():
+    from base.models import TreasuryTransaction
+    from base.services.treasury_service import TreasuryService
+
+    actor = _user("ADMIN", "advances-admin@test.local")
+    staff = User.objects.create(first_name="Abror", last_name="Staff", email="abror.staff@test.local",
+                                password="!", role=User.RoleChoices.USER, branch_id=BRANCH)
+    employee = Employee.objects.create(user=staff, position="Cook", hire_date=date(2026, 9, 1),
+                                       base_salary=Decimal("6050000"), branch_id=BRANCH)
+    TreasuryAccount.objects.create(kind=TreasuryAccount.Kind.SAFE, balance=Decimal("5000000"), branch_id=BRANCH)
+    salary = SalaryPayment.objects.create(
+        employee=employee, period_year=2026, period_month=9, base_amount=Decimal("6050000"),
+        net_amount=Decimal("6050000"), status=SalaryPayment.Status.PENDING, branch_id=BRANCH,
+    )
+
+    def advance(amount):
+        body, status = TreasuryService.record_expense(
+            "SAFE", amount, category="SALARY", txn_type=TreasuryTransaction.Type.SALARY_PAYMENT,
+            description="advance", performed_by=actor, reference_type="SalaryPayment",
+            reference_id=salary.id, branch_id=BRANCH,
+        )
+        assert status < 400, body
+        return TreasuryTransaction.objects.get(pk=body["data"]["transaction"]["id"])
+
+    today = timezone.localdate()
+    window = (today - timedelta(days=1), today + timedelta(days=1))
+    advance(1313000)
+    reversed_advance = advance(200000)
+    body, status = TreasuryService.reverse_transaction(
+        reversed_advance.id, performed_by=actor, reason="typo", branch_id=BRANCH)
+    assert status < 400, body
+
+    payroll = get_owner_summary(*window, branch_id=BRANCH)["costs"]["payroll"]
+    assert payroll["from_salary_advances_uzs"] == 1313000
+    assert payroll["salary_advance_count"] == 1
+    assert payroll["from_salary_payments_uzs"] == 0
+    assert payroll["total_uzs"] == 1313000
+
+    # Payday: the whole salary counts once, its advances are not added again.
+    salary.status = SalaryPayment.Status.PAID
+    salary.paid_at = timezone.now()
+    salary.save()
+    payroll = get_owner_summary(*window, branch_id=BRANCH)["costs"]["payroll"]
+    assert payroll["from_salary_advances_uzs"] == 0
+    assert payroll["total_uzs"] == 6050000

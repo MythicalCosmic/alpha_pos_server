@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from admins.services.profitability_service import resolve_branch_id
 from base.financial import FinancialReportingGroup as Group
-from base.models import Order, OrderRefund, TreasuryAccount
+from base.models import Order, OrderRefund, TreasuryAccount, TreasuryTransaction
 from base.money import uzs_int
 from base.services.business_day import resolve_reporting_window
 from hr.models import Expense, SalaryPayment
@@ -136,6 +136,32 @@ def _payroll_without_salary_month(branch_id, window):
     return {'count': count, 'amount': amount}
 
 
+def _salary_advances(branch_id, window):
+    """Advances paid from the safe/bank on salaries that are not paid yet.
+
+    Salaries are paid in two parts: an advance in the middle of the month and
+    the rest on payday. The salary itself only counts once it is PAID; until
+    then its advances are the part of it that has already left the money, so
+    they count when they are paid. Once the salary is PAID it counts in full
+    and its advances drop out here, so nothing is counted twice.
+    """
+    unpaid = SalaryPayment.objects.filter(
+        is_deleted=False, branch_id=branch_id,
+    ).exclude(status=SalaryPayment.Status.PAID).values('id')
+    rows = window.filter(
+        TreasuryTransaction.objects.filter(
+            is_deleted=False,
+            branch_id=branch_id,
+            type=TreasuryTransaction.Type.SALARY_PAYMENT,
+            reference_type='SalaryPayment',
+            reference_id__in=unpaid,
+            reversal__isnull=True,
+        ),
+        'created_at',
+    ).aggregate(total=Sum('delta'), count=Count('id'))
+    return -(rows['total'] or ZERO), rows['count']
+
+
 def _unlinked_supplier_purchases(branch_id, window):
     """Supplier-purchase expenses that are not yet attributed to a supplier."""
     return Expense.objects.filter(
@@ -252,9 +278,10 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, include_e
         'paid_at',
     ).aggregate(total=Sum('net_amount'), count=Count('id'))
     salary_total = salaries['total'] or ZERO
+    advance_total, advance_count = _salary_advances(branch_id, window)
 
     supplier_total = buckets['suppliers']['total'] + ledger_total
-    payroll_total = buckets['payroll']['total'] + salary_total
+    payroll_total = buckets['payroll']['total'] + salary_total + advance_total
     operating_total = buckets['operating']['total']
     raw_profit = net_sales - supplier_total - operating_total - payroll_total
     after_owner = raw_profit - buckets['owner']['total']
@@ -338,6 +365,8 @@ def get_owner_summary(date_from=None, date_to=None, *, branch_id=None, include_e
                 'from_expenses_uzs': uzs_int(buckets['payroll']['total']),
                 'from_salary_payments_uzs': uzs_int(salary_total),
                 'salary_payment_count': salaries['count'],
+                'from_salary_advances_uzs': uzs_int(advance_total),
+                'salary_advance_count': advance_count,
             },
             'total_uzs': uzs_int(supplier_total + operating_total + payroll_total),
         },
